@@ -13,6 +13,11 @@ export const LlmUsageSchema = z.object({
 
 export type LlmUsage = z.infer<typeof LlmUsageSchema>;
 
+export const AskFormatSchema = z.enum(["free", "json"]);
+
+export type AskFormat = z.infer<typeof AskFormatSchema>;
+
+/** @deprecated day02 uses AskFormatSchema; kept for older callers */
 export const AskControlsSchema = z.enum(["none", "strict"]);
 
 export const ReasoningModeSchema = z.enum([
@@ -25,6 +30,7 @@ export const ReasoningModeSchema = z.enum([
 export const AskRequestSchema = z.object({
   pointId: z.string().min(1),
   question: z.string().min(1),
+  format: AskFormatSchema.optional().default("free"),
   controls: AskControlsSchema.optional(),
   reasoningMode: ReasoningModeSchema.optional(),
 });
@@ -34,6 +40,7 @@ export type AskRequest = z.infer<typeof AskRequestSchema>;
 export const AskResponseSchema = z.object({
   reply: z.string(),
   usage: LlmUsageSchema,
+  format: AskFormatSchema,
 });
 
 export type AskResponse = z.infer<typeof AskResponseSchema>;

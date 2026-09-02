@@ -6,6 +6,14 @@ export type ChatMessage = {
   content: string;
 };
 
+export type ChatOptions = {
+  /** Cap completion length (Advent day02 length control). */
+  maxTokens?: number;
+  /** DeepSeek JSON Output mode. */
+  jsonMode?: boolean;
+  temperature?: number;
+};
+
 type DeepSeekUsage = {
   prompt_tokens?: number;
   completion_tokens?: number;
@@ -17,6 +25,7 @@ type DeepSeekUsage = {
 type DeepSeekResponse = {
   model?: string;
   choices?: Array<{
+    finish_reason?: string;
     message?: {
       content?: string;
     };
@@ -30,6 +39,7 @@ type DeepSeekResponse = {
 export type ChatResult = {
   reply: string;
   usage: LlmUsage;
+  finishReason?: string;
 };
 
 /** deepseek-chat list prices, USD / 1M tokens (Feb 2026, approximate). */
@@ -81,18 +91,33 @@ function normalizeUsage(model: string, raw?: DeepSeekUsage): LlmUsage {
 export class DeepSeekService {
   constructor(private readonly env: Env) {}
 
-  async chat(messages: ChatMessage[]): Promise<ChatResult> {
+  async chat(
+    messages: ChatMessage[],
+    options: ChatOptions = {},
+  ): Promise<ChatResult> {
+    const body: Record<string, unknown> = {
+      model: this.env.DEEPSEEK_MODEL,
+      messages,
+      stream: false,
+    };
+
+    if (options.maxTokens !== undefined) {
+      body.max_tokens = options.maxTokens;
+    }
+    if (options.jsonMode) {
+      body.response_format = { type: "json_object" };
+    }
+    if (options.temperature !== undefined) {
+      body.temperature = options.temperature;
+    }
+
     const response = await fetch("https://api.deepseek.com/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.env.DEEPSEEK_API_KEY}`,
       },
-      body: JSON.stringify({
-        model: this.env.DEEPSEEK_MODEL,
-        messages,
-        stream: false,
-      }),
+      body: JSON.stringify(body),
     });
 
     const payload = (await response.json()) as DeepSeekResponse;
@@ -102,7 +127,8 @@ export class DeepSeekService {
       throw new Error(`DeepSeek API error (${response.status}): ${message}`);
     }
 
-    const reply = payload.choices?.[0]?.message?.content?.trim();
+    const choice = payload.choices?.[0];
+    const reply = choice?.message?.content?.trim();
     if (!reply) {
       throw new Error("DeepSeek API returned an empty reply");
     }
@@ -112,6 +138,7 @@ export class DeepSeekService {
     return {
       reply,
       usage: normalizeUsage(model, payload.usage),
+      finishReason: choice?.finish_reason,
     };
   }
 }

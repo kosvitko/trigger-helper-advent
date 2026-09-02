@@ -96,6 +96,40 @@
     .msg-meta {
       font-size: 0.7rem;
       color: var(--muted);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: #faf8f5;
+    }
+
+    .badge.format-json {
+      color: #3a4a6b;
+      border-color: #c5cde0;
+      background: #eef1f8;
+    }
+
+    .badge.json-ok {
+      color: #1f5c38;
+      border-color: #9ec9ae;
+      background: #e8f5ee;
+    }
+
+    .badge.json-bad {
+      color: var(--error);
+      border-color: #e0b4b4;
+      background: #f8eeee;
     }
 
     .bubble {
@@ -104,6 +138,13 @@
       white-space: pre-wrap;
       word-break: break-word;
       font-size: 0.95rem;
+    }
+
+    .bubble.json {
+      font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      background: #f7f8fb;
     }
 
     .msg.user .bubble {
@@ -162,7 +203,19 @@
       margin-bottom: 8px;
     }
 
-    .zone-row label {
+    .controls-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    @media (max-width: 420px) {
+      .controls-row { grid-template-columns: 1fr; }
+    }
+
+    .zone-row label,
+    .controls-row label {
       display: block;
       font-size: 0.75rem;
       font-weight: 600;
@@ -170,7 +223,8 @@
       color: var(--muted);
     }
 
-    .zone-row select {
+    .zone-row select,
+    .controls-row select {
       width: 100%;
       font: inherit;
       font-size: 0.9rem;
@@ -250,13 +304,22 @@
     <div class="composer-wrap">
       <div class="session-bar" id="session-bar"></div>
       <form id="ask-form">
-        <div class="zone-row">
-          <label for="zone">Где болит?</label>
-          <select id="zone" name="zone" required>
-            <option value="head">Голова</option>
-            <option value="shoulder">Плечо (верх, у шеи)</option>
-            <option value="arm">Рука</option>
-          </select>
+        <div class="controls-row">
+          <div>
+            <label for="zone">Где болит?</label>
+            <select id="zone" name="zone" required>
+              <option value="head">Голова</option>
+              <option value="shoulder">Плечо (верх, у шеи)</option>
+              <option value="arm">Рука</option>
+            </select>
+          </div>
+          <div>
+            <label for="format">Формат ответа</label>
+            <select id="format" name="format">
+              <option value="free">Свободный</option>
+              <option value="json">JSON</option>
+            </select>
+          </div>
         </div>
         <div class="input-row">
           <textarea id="question" name="question" rows="1" required placeholder="Сообщение…"></textarea>
@@ -386,19 +449,42 @@
       `;
     }
 
-    function replaceTypingWithReply(typingEl, text, usage) {
+    function isParseableJson(text) {
+      try {
+        JSON.parse(text);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function replaceTypingWithReply(typingEl, payload) {
       typingEl.removeAttribute("data-typing");
+      const format = payload.format || "free";
+      const isJson = format === "json";
+      let badges = "";
+      if (isJson) {
+        const ok = isParseableJson(payload.reply);
+        badges = [
+          `<span class="badge format-json">JSON</span>`,
+          ok
+            ? `<span class="badge json-ok">✓ JSON Ok</span>`
+            : `<span class="badge json-bad">JSON invalid</span>`,
+        ].join("");
+      }
+
       typingEl.innerHTML = `
-        <span class="msg-meta">Ответ</span>
-        <div class="bubble"></div>
-        ${usage ? usageDetailsHtml(usage) : ""}
+        <span class="msg-meta">Ответ ${badges}</span>
+        <div class="bubble${isJson ? " json" : ""}"></div>
+        ${payload.usage ? usageDetailsHtml(payload.usage) : ""}
       `;
-      typingEl.querySelector(".bubble").textContent = text;
+      typingEl.querySelector(".bubble").textContent = payload.reply;
       scrollToBottom();
     }
 
     function replaceTypingWithError(typingEl, message) {
-      typingEl.innerHTML = `<div class="bubble" style="border-color: var(--error); color: var(--error);">${message}</div>`;
+      typingEl.innerHTML = `<div class="bubble" style="border-color: var(--error); color: var(--error);"></div>`;
+      typingEl.querySelector(".bubble").textContent = message;
       scrollToBottom();
     }
 
@@ -423,6 +509,7 @@
       errorEl.classList.remove("visible");
 
       const zone = document.getElementById("zone").value;
+      const format = document.getElementById("format").value;
       const pointId = zoneToPoint[zone];
       const question = questionEl.value.trim();
       if (!question) return;
@@ -438,16 +525,16 @@
         const response = await fetch("/api/ask", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pointId, question }),
+          body: JSON.stringify({ pointId, question, format }),
         });
 
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || data.message || `HTTP ${response.status}`);
+          throw new Error(data.message || data.error || `HTTP ${response.status}`);
         }
 
-        replaceTypingWithReply(typingEl, data.reply, data.usage);
+        replaceTypingWithReply(typingEl, data);
         if (data.usage) addToSession(data.usage);
       } catch (err) {
         replaceTypingWithError(typingEl, err.message || "Не удалось отправить");
