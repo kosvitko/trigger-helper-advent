@@ -1,0 +1,14 @@
+{
+  "name": "trigger-helper",
+  "private": true,
+  "workspaces": [
+    "server",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "npm run build -w @trigger-helper/shared && npm run dev -w @trigger-helper/server",
+    "build": "npm run build -w @trigger-helper/shared && npm run build -w @trigger-helper/server",
+    "start": "npm run start -w @trigger-helper/server"
+  },
+  "devDependencies": {}
+}
