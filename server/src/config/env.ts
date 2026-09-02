@@ -5,6 +5,8 @@ const envSchema = z.object({
   DEEPSEEK_MODEL: z.string().default("deepseek-chat"),
   PORT: z.coerce.number().int().positive().default(3000),
   DATA_DIR: z.string().optional(),
+  /** Persistent usage totals JSON on VPS (default: <repo>/var/usage-totals.json). */
+  USAGE_FILE: z.string().optional(),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 });
 

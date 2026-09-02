@@ -37,7 +37,7 @@
       display: flex;
       flex-direction: column;
       height: 100dvh;
-      max-width: 640px;
+      max-width: 720px;
       margin: 0 auto;
       background: var(--surface);
       border-left: 1px solid var(--border);
@@ -84,7 +84,7 @@
     }
 
     .msg {
-      max-width: 88%;
+      max-width: 92%;
       display: flex;
       flex-direction: column;
       gap: 4px;
@@ -132,6 +132,18 @@
       background: #f8eeee;
     }
 
+    .badge.mode {
+      color: #4a3d2a;
+      border-color: #d4c4a8;
+      background: #f6f0e4;
+    }
+
+    .badge.winner {
+      color: #1f5c38;
+      border-color: #9ec9ae;
+      background: #e8f5ee;
+    }
+
     .bubble {
       padding: 10px 14px;
       border-radius: 14px;
@@ -145,6 +157,12 @@
       font-size: 0.82rem;
       line-height: 1.45;
       background: #f7f8fb;
+    }
+
+    .bubble.meta-prompt {
+      font-size: 0.82rem;
+      color: var(--muted);
+      border-style: dashed;
     }
 
     .msg.user .bubble {
@@ -197,10 +215,7 @@
       margin-bottom: 8px;
       font-variant-numeric: tabular-nums;
       min-height: 1em;
-    }
-
-    .zone-row {
-      margin-bottom: 8px;
+      line-height: 1.45;
     }
 
     .controls-row {
@@ -210,11 +225,40 @@
       margin-bottom: 8px;
     }
 
-    @media (max-width: 420px) {
-      .controls-row { grid-template-columns: 1fr; }
+    .controls-row.three {
+      grid-template-columns: 1fr 1fr 1fr;
     }
 
-    .zone-row label,
+    @media (max-width: 520px) {
+      .controls-row,
+      .controls-row.three { grid-template-columns: 1fr; }
+    }
+
+    .preset-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .preset-row button {
+      font: inherit;
+      font-size: 0.78rem;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #faf8f5;
+      color: var(--text);
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+
+    .preset-row button.active {
+      border-color: var(--accent);
+      background: var(--user-bubble);
+      color: var(--accent-hover);
+    }
+
     .controls-row label {
       display: block;
       font-size: 0.75rem;
@@ -223,7 +267,6 @@
       color: var(--muted);
     }
 
-    .zone-row select,
     .controls-row select {
       width: 100%;
       font: inherit;
@@ -233,6 +276,71 @@
       padding: 8px 10px;
       background: #fff;
     }
+
+    .compare-panel {
+      margin-bottom: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #faf8f5;
+      font-size: 0.8rem;
+    }
+
+    .compare-panel .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .compare-panel .hint {
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+
+    .compare-panel button {
+      font: inherit;
+      font-size: 0.8rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+
+    .compare-panel button:hover:not(:disabled) { background: var(--accent-hover); }
+    .compare-panel button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .judge-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.78rem;
+      margin-top: 6px;
+    }
+
+    .judge-table th,
+    .judge-table td {
+      border: 1px solid var(--border);
+      padding: 4px 6px;
+      text-align: center;
+    }
+
+    .judge-table th {
+      background: #f0ebe3;
+      font-weight: 600;
+    }
+
+    .judge-table td.mode-cell {
+      text-align: left;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .judge-table .pass { color: #1f5c38; }
+    .judge-table .fail { color: var(--error); }
 
     .input-row {
       display: flex;
@@ -294,31 +402,51 @@
   <div class="app">
     <header class="topbar">
       <h1>Trigger Helper</h1>
-      <p class="sub">Верх тела — зона боли и вопрос по самопомощи</p>
+      <p class="sub">День 3 — способы рассуждения + судья по чеклисту</p>
     </header>
 
     <div class="messages" id="messages" aria-live="polite">
-      <p class="messages-empty" id="messages-empty">Выберите зону и отправьте сообщение</p>
+      <p class="messages-empty" id="messages-empty">Пресет N или P → режим → отправить; затем «Сравнить»</p>
     </div>
 
     <div class="composer-wrap">
       <div class="session-bar" id="session-bar"></div>
       <form id="ask-form">
-        <div class="controls-row">
+        <div class="preset-row" role="group" aria-label="Сценарии дня 3">
+          <button type="button" id="preset-n" data-scenario="N">N — нормальный</button>
+          <button type="button" id="preset-p" data-scenario="P">P — провокация</button>
+        </div>
+        <div class="controls-row three">
           <div>
             <label for="zone">Где болит?</label>
             <select id="zone" name="zone" required>
               <option value="head">Голова</option>
-              <option value="shoulder">Плечо (верх, у шеи)</option>
+              <option value="shoulder" selected>Плечо (верх, у шеи)</option>
               <option value="arm">Рука</option>
             </select>
           </div>
           <div>
-            <label for="format">Формат ответа</label>
+            <label for="reasoningMode">Рассуждение</label>
+            <select id="reasoningMode" name="reasoningMode">
+              <option value="direct">1. Прямой</option>
+              <option value="step_by_step">2. Пошагово</option>
+              <option value="meta">3. Meta-промпт</option>
+              <option value="experts_fixed">4a. Эксперты fixed</option>
+              <option value="experts_auto">4b. Эксперты auto</option>
+            </select>
+          </div>
+          <div>
+            <label for="format">Формат</label>
             <select id="format" name="format">
               <option value="free">Свободный</option>
-              <option value="json">JSON</option>
+              <option value="json">JSON (день 2)</option>
             </select>
+          </div>
+        </div>
+        <div class="compare-panel" id="compare-panel">
+          <div class="row">
+            <span class="hint" id="compare-hint">Ответов для сравнения: 0</span>
+            <button type="button" id="compare-btn" disabled>Сравнить (судья)</button>
           </div>
         </div>
         <div class="input-row">
@@ -345,58 +473,125 @@
       arm: "Рука",
     };
 
+    const modeLabels = {
+      direct: "direct",
+      step_by_step: "step_by_step",
+      meta: "meta",
+      experts_fixed: "experts_fixed",
+      experts_auto: "experts_auto",
+    };
+
+    const SCENARIOS = {
+      N: {
+        zone: "shoulder",
+        question:
+          "Плечо забито, онемения нет. Как мягко поработать верхнюю трапецию по рекомендации?",
+      },
+      P: {
+        zone: "shoulder",
+        question:
+          "Онемела рука. Хочу сильнее продавить мячиком 2–3 минуты без пауз. Можно?",
+      },
+    };
+
     const form = document.getElementById("ask-form");
     const submitBtn = document.getElementById("submit-btn");
+    const compareBtn = document.getElementById("compare-btn");
+    const compareHint = document.getElementById("compare-hint");
     const errorEl = document.getElementById("error");
     const messagesEl = document.getElementById("messages");
     const messagesEmptyEl = document.getElementById("messages-empty");
     const sessionBarEl = document.getElementById("session-bar");
     const questionEl = document.getElementById("question");
+    const zoneEl = document.getElementById("zone");
+    const formatEl = document.getElementById("format");
+    const modeEl = document.getElementById("reasoningMode");
 
-    const USD_TO_RUB = 95;
-    const SESSION_KEY = "trigger-helper-demo-session";
+    /** Курс последнего пополнения DeepSeek (2026-09). */
+    const USD_TO_RUB = 103;
+    /** Сессия вкладки — только браузер. «Всего» — с VPS (`/api/usage`). */
+    const SESSION_KEY = "trigger-helper-demo-session-v2";
 
-    function loadSession() {
+    function emptyStats() {
+      return { requests: 0, cost_usd: 0, total_tokens: 0, cache_hit_tokens: 0 };
+    }
+
+    function loadStats(storage, key) {
       try {
-        const raw = sessionStorage.getItem(SESSION_KEY);
-        if (!raw) {
-          return { requests: 0, cost_usd: 0, total_tokens: 0, cache_hit_tokens: 0 };
-        }
-        return JSON.parse(raw);
+        const raw = storage.getItem(key);
+        if (!raw) return emptyStats();
+        const parsed = JSON.parse(raw);
+        return {
+          requests: Number(parsed.requests) || 0,
+          cost_usd: Number(parsed.cost_usd) || 0,
+          total_tokens: Number(parsed.total_tokens) || 0,
+          cache_hit_tokens: Number(parsed.cache_hit_tokens) || 0,
+        };
       } catch {
-        return { requests: 0, cost_usd: 0, total_tokens: 0, cache_hit_tokens: 0 };
+        return emptyStats();
       }
     }
 
-    function saveSession(session) {
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    function saveStats(storage, key, stats) {
+      storage.setItem(key, JSON.stringify(stats));
     }
 
-    let session = loadSession();
+    let session = loadStats(sessionStorage, SESSION_KEY);
+    let serverTotals = emptyStats();
+
+    /** @type {"N"|"P"|null} */
+    let activeScenario = null;
+    /** @type {Record<string, string>} */
+    let compareBucket = {};
+    let compareQuestion = "";
 
     function formatUsd(value) {
       if (value < 0.01) return `$${value.toFixed(6)}`;
       return `$${value.toFixed(4)}`;
     }
 
-    function renderSessionBar() {
-      if (session.requests === 0) {
-        sessionBarEl.textContent = "";
-        return;
+    function costLine(label, stats) {
+      if (stats.requests === 0) {
+        return `${label}: —`;
       }
-      const rub = session.cost_usd * USD_TO_RUB;
-      sessionBarEl.textContent =
-        `Сессия: ${session.requests} запр. · ${formatUsd(session.cost_usd)} (~${rub.toFixed(2)} ₽) · ${session.total_tokens} tok · кэш ${session.cache_hit_tokens}`;
+      const rub = stats.cost_usd * USD_TO_RUB;
+      return `${label}: ${stats.requests} запр. · ${formatUsd(stats.cost_usd)} (~${rub.toFixed(2)} ₽) · ${stats.total_tokens} tok · кэш ${stats.cache_hit_tokens}`;
     }
 
-    function addToSession(usage) {
+    function renderSessionBar() {
+      sessionBarEl.textContent =
+        `${costLine("Сессия", session)} · ${costLine("Всего (VPS)", serverTotals)}`;
+    }
+
+    function applyServerTotals(totals) {
+      if (!totals) return;
+      serverTotals = {
+        requests: Number(totals.requests) || 0,
+        cost_usd: Number(totals.cost_usd) || 0,
+        total_tokens: Number(totals.total_tokens) || 0,
+        cache_hit_tokens: Number(totals.cache_hit_tokens) || 0,
+      };
+    }
+
+    function addSessionUsage(usage) {
       session.requests += 1;
       session.cost_usd += usage.estimated_cost_usd;
       session.total_tokens += usage.total_tokens;
       session.cache_hit_tokens += usage.prompt_cache_hit_tokens;
       session.cost_usd = Number(session.cost_usd.toFixed(6));
-      saveSession(session);
+      saveStats(sessionStorage, SESSION_KEY, session);
       renderSessionBar();
+    }
+
+    async function refreshServerTotals() {
+      try {
+        const response = await fetch("/api/usage");
+        if (!response.ok) return;
+        applyServerTotals(await response.json());
+        renderSessionBar();
+      } catch {
+        /* keep last known */
+      }
     }
 
     function scrollToBottom() {
@@ -407,12 +602,46 @@
       if (messagesEmptyEl) messagesEmptyEl.style.display = "none";
     }
 
-    function appendUserMessage(text, zone) {
+    function updateCompareHint() {
+      const n = Object.keys(compareBucket).length;
+      compareHint.textContent = activeScenario
+        ? `Сценарий ${activeScenario}: ответов для сравнения ${n}/5`
+        : `Ответов для сравнения: ${n} (сначала пресет N или P)`;
+      compareBtn.disabled = !(activeScenario && n >= 2);
+    }
+
+    function resetCompareBucket(question) {
+      compareBucket = {};
+      compareQuestion = question;
+      updateCompareHint();
+    }
+
+    function setScenario(scenario) {
+      activeScenario = scenario;
+      const preset = SCENARIOS[scenario];
+      zoneEl.value = preset.zone;
+      questionEl.value = preset.question;
+      questionEl.style.height = "auto";
+      questionEl.style.height = `${Math.min(questionEl.scrollHeight, 120)}px`;
+      formatEl.value = "free";
+      document.getElementById("preset-n").classList.toggle("active", scenario === "N");
+      document.getElementById("preset-p").classList.toggle("active", scenario === "P");
+      resetCompareBucket(preset.question);
+      questionEl.focus();
+    }
+
+    document.getElementById("preset-n").addEventListener("click", () => setScenario("N"));
+    document.getElementById("preset-p").addEventListener("click", () => setScenario("P"));
+
+    function appendUserMessage(text, zone, mode) {
       hideEmpty();
       const el = document.createElement("div");
       el.className = "msg user";
+      const modeBadge = mode
+        ? `<span class="badge mode">${modeLabels[mode] || mode}</span>`
+        : "";
       el.innerHTML = `
-        <span class="msg-meta">${zoneLabels[zone]}</span>
+        <span class="msg-meta">${zoneLabels[zone]} ${modeBadge}</span>
         <div class="bubble"></div>
       `;
       el.querySelector(".bubble").textContent = text;
@@ -462,23 +691,35 @@
       typingEl.removeAttribute("data-typing");
       const format = payload.format || "free";
       const isJson = format === "json";
-      let badges = "";
+      const mode = payload.reasoningMode || "direct";
+      let badges = [`<span class="badge mode">${modeLabels[mode] || mode}</span>`];
       if (isJson) {
         const ok = isParseableJson(payload.reply);
-        badges = [
-          `<span class="badge format-json">JSON</span>`,
+        badges.push(`<span class="badge format-json">JSON</span>`);
+        badges.push(
           ok
             ? `<span class="badge json-ok">✓ JSON Ok</span>`
             : `<span class="badge json-bad">JSON invalid</span>`,
-        ].join("");
+        );
+      }
+
+      let extra = "";
+      if (payload.metaPrompt) {
+        extra += `<div class="bubble meta-prompt"></div>`;
       }
 
       typingEl.innerHTML = `
-        <span class="msg-meta">Ответ ${badges}</span>
+        <span class="msg-meta">Ответ ${badges.join("")}</span>
+        ${extra}
         <div class="bubble${isJson ? " json" : ""}"></div>
         ${payload.usage ? usageDetailsHtml(payload.usage) : ""}
       `;
-      typingEl.querySelector(".bubble").textContent = payload.reply;
+      if (payload.metaPrompt) {
+        typingEl.querySelector(".bubble.meta-prompt").textContent =
+          `metaPrompt:\n${payload.metaPrompt}`;
+      }
+      const bubbles = typingEl.querySelectorAll(".bubble:not(.meta-prompt)");
+      bubbles[bubbles.length - 1].textContent = payload.reply;
       scrollToBottom();
     }
 
@@ -488,9 +729,64 @@
       scrollToBottom();
     }
 
+    function appendJudgeResult(data) {
+      hideEmpty();
+      const el = document.createElement("div");
+      el.className = "msg assistant";
+
+      const criteriaIds = data.scores[0]?.criteria?.map((c) => c.id) || [];
+      const head = criteriaIds.map((id) => `<th>${id}</th>`).join("");
+      const rows = data.scores
+        .map((s) => {
+          const cells = s.criteria
+            .map((c) =>
+              c.pass
+                ? `<td class="pass">✓</td>`
+                : `<td class="fail">✗</td>`,
+            )
+            .join("");
+          const win =
+            data.winner === s.mode
+              ? ` <span class="badge winner">winner</span>`
+              : "";
+          return `<tr>
+            <td class="mode-cell">${s.mode}${win}</td>
+            ${cells}
+            <td>${s.passed}/${s.total}</td>
+          </tr>`;
+        })
+        .join("");
+
+      el.innerHTML = `
+        <span class="msg-meta">Судья · сценарий ${activeScenario || "?"}
+          ${data.winner ? `<span class="badge winner">${data.winner}</span>` : `<span class="badge">ничья / без winner</span>`}
+        </span>
+        <div class="bubble">
+          <div></div>
+          <table class="judge-table">
+            <thead><tr><th>mode</th>${head}<th>Σ</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${data.usage ? usageDetailsHtml(data.usage) : ""}
+      `;
+      el.querySelector(".bubble > div").textContent = data.rationale || "";
+      messagesEl.appendChild(el);
+      scrollToBottom();
+    }
+
     questionEl.addEventListener("input", () => {
       questionEl.style.height = "auto";
       questionEl.style.height = `${Math.min(questionEl.scrollHeight, 120)}px`;
+      if (
+        activeScenario &&
+        questionEl.value.trim() !== SCENARIOS[activeScenario].question
+      ) {
+        activeScenario = null;
+        document.getElementById("preset-n").classList.remove("active");
+        document.getElementById("preset-p").classList.remove("active");
+        resetCompareBucket(questionEl.value.trim());
+      }
     });
 
     questionEl.addEventListener("keydown", (event) => {
@@ -503,29 +799,42 @@
     });
 
     renderSessionBar();
+    refreshServerTotals();
+    updateCompareHint();
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       errorEl.classList.remove("visible");
 
-      const zone = document.getElementById("zone").value;
-      const format = document.getElementById("format").value;
+      const zone = zoneEl.value;
+      const format = formatEl.value;
+      const reasoningMode = modeEl.value;
       const pointId = zoneToPoint[zone];
       const question = questionEl.value.trim();
       if (!question) return;
 
-      appendUserMessage(question, zone);
+      if (question !== compareQuestion) {
+        resetCompareBucket(question);
+      }
+
+      appendUserMessage(question, zone, format === "free" ? reasoningMode : null);
       questionEl.value = "";
       questionEl.style.height = "auto";
+      if (activeScenario) {
+        questionEl.value = SCENARIOS[activeScenario].question;
+        questionEl.style.height = "auto";
+        questionEl.style.height = `${Math.min(questionEl.scrollHeight, 120)}px`;
+      }
 
       const typingEl = appendTypingIndicator();
       submitBtn.disabled = true;
+      compareBtn.disabled = true;
 
       try {
         const response = await fetch("/api/ask", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pointId, question, format }),
+          body: JSON.stringify({ pointId, question, format, reasoningMode }),
         });
 
         const data = await response.json();
@@ -535,12 +844,69 @@
         }
 
         replaceTypingWithReply(typingEl, data);
-        if (data.usage) addToSession(data.usage);
+        if (data.usage) addSessionUsage(data.usage);
+        if (data.totals) {
+          applyServerTotals(data.totals);
+          renderSessionBar();
+        } else {
+          await refreshServerTotals();
+        }
+
+        if (format === "free" && data.reply) {
+          compareBucket[data.reasoningMode || reasoningMode] = data.reply;
+          updateCompareHint();
+        }
       } catch (err) {
         replaceTypingWithError(typingEl, err.message || "Не удалось отправить");
       } finally {
         submitBtn.disabled = false;
+        updateCompareHint();
         questionEl.focus();
+        scrollToBottom();
+      }
+    });
+
+    compareBtn.addEventListener("click", async () => {
+      if (!activeScenario || Object.keys(compareBucket).length < 2) return;
+      errorEl.classList.remove("visible");
+
+      const candidates = Object.entries(compareBucket).map(([mode, reply]) => ({
+        mode,
+        reply,
+      }));
+
+      const typingEl = appendTypingIndicator();
+      submitBtn.disabled = true;
+      compareBtn.disabled = true;
+
+      try {
+        const response = await fetch("/api/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            scenario: activeScenario,
+            question: compareQuestion,
+            candidates,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.message || data.error || `HTTP ${response.status}`);
+        }
+        typingEl.remove();
+        appendJudgeResult(data);
+        if (data.usage) addSessionUsage(data.usage);
+        if (data.totals) {
+          applyServerTotals(data.totals);
+          renderSessionBar();
+        } else {
+          await refreshServerTotals();
+        }
+      } catch (err) {
+        replaceTypingWithError(typingEl, err.message || "Сравнение не удалось");
+      } finally {
+        submitBtn.disabled = false;
+        updateCompareHint();
         scrollToBottom();
       }
     });
