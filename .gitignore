@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.wav
+*.mov
+*.mp4
+*.webm
+**/recordings/*
+!**/recordings/.gitkeep
+.DS_Store

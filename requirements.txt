@@ -1,0 +1,2 @@
+# Dependencies for Advent submission scripts (outbox requirements.txt)
+openai>=1.0.0
