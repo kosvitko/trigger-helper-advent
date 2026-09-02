@@ -1,26 +1,23 @@
 # Trigger Helper — AI Advent Challenge #9
 
-Учебный код сдачи заданий потока [AI Advent Challenge #9](https://docs.google.com/spreadsheets/d/1eFmeejRLXnT5fic3uxagtNgQBvv6uAKUG5McRlEo-eE/edit?usp=sharing).
+Мета сдачи потока [AI Advent Challenge #9](https://docs.google.com/spreadsheets/d/1eFmeejRLXnT5fic3uxagtNgQBvv6uAKUG5McRlEo-eE/edit?usp=sharing).
 
-Продукт **Trigger Helper** (MVP) — [trigger-helper](https://github.com/kosvitko/trigger-helper) (private).
+**Runtime-код** — в product-репе [trigger-helper](https://github.com/kosvitko/trigger-helper) (private), ссылки в таблицу — commit / tag.
+
+Здесь — `week0N/NOTES.md` и артефакты сдачи (без `.webm` в git).
 
 ## Структура
 
 ```
-week01/ … week07/    — ответы на задания по неделям
-requirements.txt     — зависимости Python-скриптов
-.env.example         — имена переменных без значений
+week01/ … week07/    — NOTES.md, скринкасты (локально, не в git)
 ```
 
-## Запуск (пример week01)
+## Week 01 day 01
 
-```powershell
-$env:DEEPSEEK_API_KEY = "sk-..."
-pip install -r requirements.txt
-python week01/day01_llm_request.py
-```
+- Код: https://github.com/kosvitko/trigger-helper/tree/week01-day01
+- Demo: http://91.188.212.10/
+- NOTES: [week01/NOTES.md](week01/NOTES.md)
 
 ## Как обновляется
 
-Код пишется в `C:\projects\trigger-helper\advent\`, перед сдачей копируется сюда (outbox).  
-Правила: [docs/advent/GITHUB.md](https://github.com/kosvitko/trigger-helper/blob/main/docs/advent/GITHUB.md) (после первого push product-репы).
+Из `C:\projects\trigger-helper\` скриптом `scripts/sync-advent-week.ps1` перед push в outbox.
