@@ -129,6 +129,78 @@ export function buildReasoningSystemPrompt(
   }
 }
 
+/** Lab / day05 open scope — no trigger-point card. */
+function openBase(): string[] {
+  return [
+    "Ты технический ассистент по продукту и UX.",
+    "Отвечай по делу на языке пользователя.",
+    "Не выдумывай карточку триггерной точки и не уходи в медсоветы Trigger Helper.",
+    "Соблюдай структуру из сообщения пользователя, если она задана.",
+    "Если просят раскрыть полно — не сокращай ради краткости; доведи ответ до конца в пределах лимита.",
+  ];
+}
+
+export function buildOpenSystemPrompt(): string {
+  return openBase().join("\n");
+}
+
+export function buildOpenStepByStepSystemPrompt(): string {
+  return [
+    ...openBase(),
+    "",
+    "Решай задачу пошагово: сначала цель и контекст, затем варианты, затем рекомендация.",
+    "Нумеруй шаги.",
+  ].join("\n");
+}
+
+export function buildOpenMetaPromptWriterSystem(): string {
+  return [
+    ...openBase(),
+    "",
+    "Сейчас не отвечай пользователю: составь полный system-промпт,",
+    "которым другая модель решит задачу пользователя качественно и компактно.",
+    "Верни только текст промпта, без предисловий.",
+  ].join("\n");
+}
+
+export function buildOpenExpertsFixedSystemPrompt(): string {
+  return [
+    ...openBase(),
+    "",
+    "Ответь как группа экспертов. Строго в таком порядке и с заголовками:",
+    "### Аналитик",
+    "### Практик",
+    "### Критик",
+    "### Лидер (итог)",
+    "Каждый эксперт — 2–5 предложений. Покажи все роли целиком.",
+  ].join("\n");
+}
+
+export function buildOpenExpertsAutoSystemPrompt(): string {
+  return [
+    ...openBase(),
+    "",
+    "Собери группу экспертов с релевантным опытом (3–4 роли).",
+    "Для каждой роли — ### Имя роли и короткий абзац.",
+    "В конце — ### Лидер (итог). Покажи все роли целиком.",
+  ].join("\n");
+}
+
+export function buildOpenReasoningSystemPrompt(mode: ReasoningMode): string {
+  switch (mode) {
+    case "direct":
+      return buildOpenSystemPrompt();
+    case "step_by_step":
+      return buildOpenStepByStepSystemPrompt();
+    case "experts_fixed":
+      return buildOpenExpertsFixedSystemPrompt();
+    case "experts_auto":
+      return buildOpenExpertsAutoSystemPrompt();
+    case "meta":
+      return buildOpenSystemPrompt();
+  }
+}
+
 export type JudgeCriterion = { id: string; description: string };
 
 export const JUDGE_CRITERIA: Record<CompareScenario, JudgeCriterion[]> = {

@@ -25,9 +25,14 @@ async function main(): Promise<void> {
   const usageLedger = createUsageLedgerService(env.USAGE_FILE);
 
   await registerHealthRoutes(app);
-  await registerUsageRoutes(app, usageLedger);
-  await registerAskRoutes(app, { pointsService, deepSeekService, usageLedger });
-  await registerCompareRoutes(app, { deepSeekService, usageLedger });
+  await registerUsageRoutes(app, usageLedger, env);
+  await registerAskRoutes(app, {
+    pointsService,
+    deepSeekService,
+    usageLedger,
+    env,
+  });
+  await registerCompareRoutes(app, { deepSeekService, usageLedger, env });
 
   await app.register(fastifyStatic, {
     root: path.join(serverRoot, "public"),

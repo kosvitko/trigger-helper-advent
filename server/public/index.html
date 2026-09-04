@@ -20,11 +20,7 @@
     }
 
     * { box-sizing: border-box; }
-
-    html, body {
-      height: 100%;
-      margin: 0;
-    }
+    html, body { height: 100%; margin: 0; }
 
     body {
       font-family: "Segoe UI", system-ui, sans-serif;
@@ -37,7 +33,7 @@
       display: flex;
       flex-direction: column;
       height: 100dvh;
-      max-width: 720px;
+      max-width: 820px;
       margin: 0 auto;
       background: var(--surface);
       border-left: 1px solid var(--border);
@@ -46,32 +42,31 @@
 
     .topbar {
       flex-shrink: 0;
-      padding: 12px 16px;
+      padding: 8px 14px;
       border-bottom: 1px solid var(--border);
-      background: var(--surface);
     }
 
     .topbar h1 {
-      font-size: 1.125rem;
+      font-size: 1.05rem;
       margin: 0;
       font-weight: 600;
     }
 
     .topbar .sub {
-      margin: 4px 0 0;
-      font-size: 0.8rem;
+      margin: 2px 0 0;
+      font-size: 0.75rem;
       color: var(--muted);
     }
 
     .messages {
-      flex: 1;
-      min-height: 0;
+      flex: 1 1 auto;
+      min-height: 52dvh;
       overflow-y: auto;
       overscroll-behavior: contain;
-      padding: 16px;
+      padding: 12px 14px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 10px;
       background: var(--bg);
     }
 
@@ -82,6 +77,59 @@
       font-size: 0.9rem;
       padding: 24px;
     }
+
+    .model-strip {
+      display: none;
+      flex-shrink: 0;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--bg);
+      padding-bottom: 4px;
+    }
+
+    .model-strip.visible { display: grid; }
+
+    @media (max-width: 640px) {
+      .model-strip.visible { grid-template-columns: 1fr; }
+    }
+
+    .model-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+      padding: 8px 10px;
+      font-size: 0.75rem;
+      max-height: 7.5rem;
+      overflow: hidden;
+    }
+
+    .model-card .tier {
+      font-weight: 700;
+      color: var(--accent-hover);
+      margin-bottom: 2px;
+    }
+
+    .model-card .meta {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      margin-bottom: 4px;
+    }
+
+    .model-card .preview {
+      color: var(--text);
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .model-card.pending { opacity: 0.65; }
+    .model-card.error { border-color: #e0b4b4; }
 
     .msg {
       max-width: 92%;
@@ -114,41 +162,14 @@
       background: #faf8f5;
     }
 
-    .badge.format-json {
-      color: #3a4a6b;
-      border-color: #c5cde0;
-      background: #eef1f8;
-    }
-
-    .badge.json-ok {
-      color: #1f5c38;
-      border-color: #9ec9ae;
-      background: #e8f5ee;
-    }
-
-    .badge.json-bad {
-      color: var(--error);
-      border-color: #e0b4b4;
-      background: #f8eeee;
-    }
-
-    .badge.mode {
-      color: #4a3d2a;
-      border-color: #d4c4a8;
-      background: #f6f0e4;
-    }
-
-    .badge.temp {
-      color: #3a4a6b;
-      border-color: #c5cde0;
-      background: #eef1f8;
-    }
-
-    .badge.winner {
-      color: #1f5c38;
-      border-color: #9ec9ae;
-      background: #e8f5ee;
-    }
+    .badge.format-json { color: #3a4a6b; border-color: #c5cde0; background: #eef1f8; }
+    .badge.json-ok { color: #1f5c38; border-color: #9ec9ae; background: #e8f5ee; }
+    .badge.json-bad { color: var(--error); border-color: #e0b4b4; background: #f8eeee; }
+    .badge.mode { color: #4a3d2a; border-color: #d4c4a8; background: #f6f0e4; }
+    .badge.temp { color: #3a4a6b; border-color: #c5cde0; background: #eef1f8; }
+    .badge.scope { color: #2f4a3a; border-color: #b7d0c4; background: #e8f3ee; }
+    .badge.model { color: #3a3a5c; border-color: #c8c8dc; background: #f0f0f8; }
+    .badge.winner { color: #1f5c38; border-color: #9ec9ae; background: #e8f5ee; }
 
     .bubble {
       padding: 10px 14px;
@@ -159,7 +180,7 @@
     }
 
     .bubble.json {
-      font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
       font-size: 0.82rem;
       line-height: 1.45;
       background: #f7f8fb;
@@ -183,8 +204,34 @@
     }
 
     .msg.assistant .bubble.typing {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
       color: var(--muted);
       font-style: italic;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .typing-stop {
+      font: inherit;
+      font-size: 0.72rem;
+      font-weight: 600;
+      font-style: normal;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #faf8f5;
+      color: var(--text);
+      padding: 3px 8px;
+      cursor: pointer;
+      line-height: 1.2;
+    }
+
+    .typing-stop:hover { border-color: var(--accent); color: var(--accent-hover); }
+
+    .typing-stop:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
     }
 
     .msg-usage {
@@ -193,10 +240,7 @@
       margin-top: 2px;
     }
 
-    .msg-usage summary {
-      cursor: pointer;
-      user-select: none;
-    }
+    .msg-usage summary { cursor: pointer; user-select: none; }
 
     .msg-usage dl {
       margin: 6px 0 0;
@@ -209,43 +253,191 @@
     .msg-usage dt, .msg-usage dd { margin: 0; }
 
     .composer-wrap {
-      flex-shrink: 0;
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      max-height: 34dvh;
       border-top: 1px solid var(--border);
       background: var(--surface);
-      padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+      padding: 0;
     }
 
-    .session-bar {
-      font-size: 0.72rem;
+    .composer-tools {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 6px 10px 4px;
+    }
+
+    .composer-send {
+      flex-shrink: 0;
+      padding: 4px 10px calc(6px + env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .cost-details {
+      margin-bottom: 4px;
+      font-size: 0.68rem;
       color: var(--muted);
-      margin-bottom: 8px;
       font-variant-numeric: tabular-nums;
-      min-height: 1em;
-      line-height: 1.45;
+    }
+
+    .cost-details > summary {
+      cursor: pointer;
+      list-style: none;
+      font-weight: 600;
+      padding: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cost-details > summary::-webkit-details-marker { display: none; }
+
+    .cost-details > summary::before {
+      content: "▸ ";
+      color: var(--accent);
+    }
+
+    .cost-details[open] > summary::before { content: "▾ "; }
+
+    .session-bar {
+      margin-top: 4px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      max-height: 5rem;
+      overflow-y: auto;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 4px;
+      align-items: center;
+    }
+
+    .toolbar button {
+      font: inherit;
+      font-size: 0.72rem;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #faf8f5;
+      color: var(--text);
+      padding: 4px 7px;
+      cursor: pointer;
+      line-height: 1.2;
+    }
+
+    .toolbar button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .toolbar .sep {
+      width: 1px;
+      height: 1rem;
+      background: var(--border);
+      margin: 0 2px;
+    }
+
+    label {
+      display: block;
+      font-size: 0.65rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 2px;
+    }
+
+    select {
+      width: 100%;
+      font: inherit;
+      font-size: 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 6px;
+      background: #fff;
     }
 
     .controls-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-bottom: 8px;
+      gap: 4px;
+      margin-bottom: 4px;
     }
 
-    .controls-row.three {
-      grid-template-columns: 1fr 1fr 1fr;
-    }
+    .controls-row.three { grid-template-columns: 1fr 1fr 1fr; }
 
     @media (max-width: 520px) {
       .controls-row,
       .controls-row.three { grid-template-columns: 1fr; }
     }
 
-    .temp-row {
-      margin-bottom: 8px;
-      padding: 8px 10px 10px;
+    .model-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px;
+      align-items: end;
+      margin-bottom: 2px;
+    }
+
+    .model-row .btns {
+      display: flex;
+      gap: 4px;
+    }
+
+    .model-row button {
+      font: inherit;
+      font-size: 0.72rem;
+      font-weight: 600;
       border: 1px solid var(--border);
-      border-radius: 10px;
+      border-radius: 6px;
       background: #faf8f5;
+      color: var(--text);
+      padding: 5px 8px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .model-row button:hover:not(:disabled) {
+      background: var(--user-bubble);
+      color: var(--accent-hover);
+    }
+
+    .model-row button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .models-hint {
+      display: none;
+    }
+
+    .lab-details {
+      margin-bottom: 0;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #faf8f5;
+      padding: 0 6px 4px;
+    }
+
+    .lab-details > summary {
+      cursor: pointer;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--muted);
+      padding: 4px 0;
+      list-style: none;
+    }
+
+    .lab-details > summary::-webkit-details-marker { display: none; }
+
+    .temp-row {
+      margin-bottom: 4px;
+      padding: 4px 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
     }
 
     .temp-row-head {
@@ -256,19 +448,13 @@
       margin-bottom: 6px;
     }
 
-    .temp-row-head label {
-      font-size: 0.75rem;
-      font-weight: 600;
-      color: var(--muted);
-      margin: 0;
-    }
+    .temp-row-head label { margin: 0; }
 
     .temp-value {
       font-size: 0.95rem;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
       color: var(--accent-hover);
-      letter-spacing: 0.02em;
     }
 
     .temp-slider-wrap {
@@ -289,12 +475,7 @@
     .temp-slider-wrap input[type="range"]::-webkit-slider-runnable-track {
       height: 6px;
       border-radius: 999px;
-      background: linear-gradient(
-        90deg,
-        #c5d6d3 0%,
-        var(--accent) 55%,
-        #b07060 100%
-      );
+      background: linear-gradient(90deg, #c5d6d3 0%, var(--accent) 55%, #b07060 100%);
     }
 
     .temp-slider-wrap input[type="range"]::-webkit-slider-thumb {
@@ -308,106 +489,38 @@
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
     }
 
-    .temp-slider-wrap input[type="range"]::-moz-range-track {
-      height: 6px;
-      border-radius: 999px;
-      background: linear-gradient(
-        90deg,
-        #c5d6d3 0%,
-        var(--accent) 55%,
-        #b07060 100%
-      );
-    }
-
-    .temp-slider-wrap input[type="range"]::-moz-range-thumb {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      border: 2px solid #fff;
-      background: var(--accent-hover);
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-    }
-
     .temp-ticks {
       position: absolute;
       left: 2px;
       right: 2px;
       bottom: 0;
       height: 16px;
-      pointer-events: none;
     }
 
     .temp-ticks button {
-      pointer-events: auto;
       position: absolute;
       transform: translateX(-50%);
       font: inherit;
       font-size: 0.65rem;
       font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      padding: 0;
       border: none;
-      background: none;
+      background: transparent;
       color: var(--muted);
       cursor: pointer;
-      line-height: 1;
+      padding: 0;
     }
 
-    .temp-ticks button:hover,
-    .temp-ticks button.active {
-      color: var(--accent-hover);
-    }
+    .temp-ticks button.active { color: var(--accent-hover); }
 
-    .preset-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-bottom: 8px;
-    }
-
-    .preset-row button {
-      font: inherit;
-      font-size: 0.78rem;
-      font-weight: 600;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: #faf8f5;
-      color: var(--text);
-      padding: 6px 10px;
-      cursor: pointer;
-    }
-
-    .preset-row button.active {
-      border-color: var(--accent);
-      background: var(--user-bubble);
-      color: var(--accent-hover);
-    }
-
-    .controls-row label {
-      display: block;
-      font-size: 0.75rem;
-      font-weight: 600;
-      margin-bottom: 4px;
-      color: var(--muted);
-    }
-
-    .controls-row select {
-      width: 100%;
-      font: inherit;
-      font-size: 0.9rem;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 10px;
-      background: #fff;
-    }
+    .actions-row { display: none; }
 
     .compare-panel {
-      margin-bottom: 8px;
-      padding: 8px 10px;
+      margin-bottom: 6px;
+      padding: 6px 8px;
       border: 1px solid var(--border);
-      border-radius: 10px;
-      background: #faf8f5;
-      font-size: 0.8rem;
+      border-radius: 8px;
+      background: #fff;
+      font-size: 0.78rem;
     }
 
     .compare-panel .row {
@@ -418,34 +531,19 @@
       justify-content: space-between;
     }
 
-    .compare-panel .hint {
-      color: var(--muted);
-      font-size: 0.75rem;
-    }
-
     .compare-panel button {
       font: inherit;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       font-weight: 600;
       border: none;
       border-radius: 8px;
       background: var(--accent);
       color: #fff;
-      padding: 8px 12px;
+      padding: 6px 10px;
       cursor: pointer;
     }
 
-    .compare-panel button:hover:not(:disabled) { background: var(--accent-hover); }
     .compare-panel button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .compare-panel button.secondary {
-      background: #faf8f5;
-      color: var(--text);
-      border: 1px solid var(--border);
-    }
-    .compare-panel button.secondary:hover:not(:disabled) {
-      background: var(--user-bubble);
-      color: var(--accent-hover);
-    }
 
     .judge-table {
       width: 100%;
@@ -461,50 +559,49 @@
       text-align: center;
     }
 
-    .judge-table th {
-      background: #f0ebe3;
-      font-weight: 600;
-    }
-
-    .judge-table td.mode-cell {
-      text-align: left;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-
+    .judge-table th { background: #f0ebe3; font-weight: 600; }
+    .judge-table td.mode-cell { text-align: left; font-weight: 600; white-space: nowrap; }
     .judge-table .pass { color: #1f5c38; }
     .judge-table .fail { color: var(--error); }
 
     .input-row {
       display: flex;
-      gap: 8px;
+      gap: 6px;
       align-items: flex-end;
     }
 
     .input-row textarea {
       flex: 1;
       font: inherit;
-      font-size: 0.95rem;
+      font-size: 0.85rem;
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 10px 12px;
-      min-height: 44px;
-      max-height: 120px;
+      border-radius: 8px;
+      padding: 6px 8px;
+      min-height: 36px;
+      max-height: 3.6rem;
       resize: none;
-      line-height: 1.4;
+      line-height: 1.3;
+      overflow-y: auto;
+    }
+
+    .input-row textarea[readonly] {
+      background: #f3f1ec;
+      color: var(--muted);
+      cursor: default;
     }
 
     .input-row button {
       flex-shrink: 0;
-      min-width: 44px;
-      min-height: 44px;
+      min-width: 40px;
+      min-height: 36px;
       border: none;
-      border-radius: 12px;
+      border-radius: 8px;
       background: var(--accent);
       color: #fff;
       font: inherit;
+      font-size: 0.85rem;
       font-weight: 600;
-      padding: 0 16px;
+      padding: 0 12px;
       cursor: pointer;
     }
 
@@ -513,8 +610,8 @@
 
     .error {
       color: var(--error);
-      font-size: 0.85rem;
-      margin-top: 8px;
+      font-size: 0.75rem;
+      margin-top: 4px;
       display: none;
     }
 
@@ -522,97 +619,123 @@
 
     .disclaimer {
       flex-shrink: 0;
-      font-size: 0.68rem;
+      font-size: 0.6rem;
       color: var(--muted);
       text-align: center;
-      padding: 6px 12px 8px;
-      background: var(--surface);
+      padding: 3px 10px 4px;
       border-top: 1px solid var(--border);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
+
+    .grounded-only.hidden,
+    .open-only.hidden { display: none !important; }
   </style>
 </head>
 <body>
   <div class="app">
     <header class="topbar">
       <h1>Trigger Helper</h1>
-      <p class="sub">День 4 — temperature 0 / 0.7 / 1.2</p>
+      <p class="sub">День 5 — модели · grounded / задача L</p>
     </header>
 
     <div class="messages" id="messages" aria-live="polite">
-      <p class="messages-empty" id="messages-empty">Пресет N → «×3 температуры» (или один T и Отправить)</p>
+      <p class="messages-empty" id="messages-empty">Задача → L → «×3 модели» (или Карточка → N/P)</p>
+      <div class="model-strip" id="model-strip" aria-label="Сравнение моделей"></div>
     </div>
 
     <div class="composer-wrap">
-      <div class="session-bar" id="session-bar"></div>
-      <form id="ask-form">
-        <div class="preset-row" role="group" aria-label="Сценарии">
-          <button type="button" id="preset-n" data-scenario="N">N — нормальный</button>
-          <button type="button" id="preset-p" data-scenario="P">P — провокация</button>
-        </div>
-        <div class="controls-row three">
-          <div>
-            <label for="zone">Где болит?</label>
-            <select id="zone" name="zone" required>
-              <option value="head">Голова</option>
-              <option value="shoulder" selected>Плечо (верх, у шеи)</option>
-              <option value="arm">Рука</option>
-            </select>
+      <div class="composer-tools">
+        <details class="cost-details" id="cost-details">
+          <summary id="cost-summary">Стоимость · сессия / VPS</summary>
+          <div class="session-bar" id="session-bar"></div>
+        </details>
+        <form id="ask-form">
+          <div class="toolbar" role="group" aria-label="Режим и пресеты">
+            <button type="button" id="scope-grounded" data-scope="grounded" class="active">Карточка</button>
+            <button type="button" id="scope-open" data-scope="open">Задача</button>
+            <span class="sep" aria-hidden="true"></span>
+            <button type="button" id="preset-n" class="grounded-only" data-scenario="N">N</button>
+            <button type="button" id="preset-p" class="grounded-only" data-scenario="P">P</button>
+            <button type="button" id="preset-l" class="open-only hidden" data-scenario="L">L</button>
           </div>
-          <div>
-            <label for="reasoningMode">Рассуждение</label>
-            <select id="reasoningMode" name="reasoningMode">
-              <option value="direct" selected>1. Прямой</option>
-              <option value="step_by_step">2. Пошагово</option>
-              <option value="meta">3. Meta-промпт</option>
-              <option value="experts_fixed">4a. Эксперты fixed</option>
-              <option value="experts_auto">4b. Эксперты auto</option>
-            </select>
+
+          <div class="model-row">
+            <div>
+              <label for="modelSelect">Модель</label>
+              <select id="modelSelect" name="modelSelect">
+                <option value="">DeepSeek (default)</option>
+              </select>
+            </div>
+            <div class="btns">
+              <button type="button" id="temp-sweep-btn" class="grounded-only" title="×3 температуры">×3 T</button>
+              <button type="button" id="model-sweep-btn" title="×3 модели">×3</button>
+            </div>
           </div>
-          <div>
-            <label for="format">Формат</label>
-            <select id="format" name="format">
-              <option value="free" selected>Свободный</option>
-              <option value="json">JSON (день 2)</option>
-            </select>
-          </div>
-        </div>
-        <div class="temp-row">
-          <div class="temp-row-head">
-            <label for="temperature">Temperature (0–2)</label>
-            <span class="temp-value" id="temp-value" aria-live="polite">0.0</span>
-          </div>
-          <div class="temp-slider-wrap">
-            <input
-              type="range"
-              id="temperature"
-              name="temperature"
-              min="0"
-              max="2"
-              step="0.1"
-              value="0"
-              aria-valuemin="0"
-              aria-valuemax="2"
-              aria-valuenow="0"
-            />
-            <div class="temp-ticks" id="temp-ticks" role="group" aria-label="Маркеры задания"></div>
-          </div>
-        </div>
-        <div class="compare-panel" id="compare-panel">
-          <div class="row">
-            <span class="hint" id="compare-hint">Ответов для сравнения: 0</span>
-            <button type="button" id="temp-sweep-btn" class="secondary">×3 температуры</button>
-            <button type="button" id="compare-btn" disabled>Сравнить (судья)</button>
-          </div>
-        </div>
+          <span id="models-hint" class="models-hint" hidden></span>
+
+          <details class="lab-details" id="lab-details">
+            <summary>Ещё: зона, формат, T, судья</summary>
+            <div class="controls-row grounded-only">
+              <div>
+                <label for="zone">Зона</label>
+                <select id="zone" name="zone">
+                  <option value="head">Голова</option>
+                  <option value="shoulder" selected>Плечо</option>
+                  <option value="arm">Рука</option>
+                </select>
+              </div>
+              <div>
+                <label for="format">Формат</label>
+                <select id="format" name="format">
+                  <option value="free" selected>Свободный</option>
+                  <option value="json">JSON</option>
+                </select>
+              </div>
+            </div>
+            <div class="controls-row">
+              <div>
+                <label for="reasoningMode">Рассуждение</label>
+                <select id="reasoningMode" name="reasoningMode">
+                  <option value="direct" selected>direct</option>
+                  <option value="step_by_step">step_by_step</option>
+                  <option value="meta">meta</option>
+                  <option value="experts_fixed">experts_fixed</option>
+                  <option value="experts_auto">experts_auto</option>
+                </select>
+              </div>
+            </div>
+            <div class="temp-row">
+              <div class="temp-row-head">
+                <label for="temperature">T</label>
+                <span class="temp-value" id="temp-value" aria-live="polite">0.3</span>
+              </div>
+              <div class="temp-slider-wrap">
+                <input type="range" id="temperature" name="temperature" min="0" max="2" step="0.1" value="0.3"
+                  aria-valuemin="0" aria-valuemax="2" aria-valuenow="0.3" />
+                <div class="temp-ticks" id="temp-ticks" role="group" aria-label="Маркеры"></div>
+              </div>
+            </div>
+            <div class="compare-panel grounded-only" id="compare-panel">
+              <div class="row">
+                <span class="hint" id="compare-hint">Сравнение: 0</span>
+                <button type="button" id="compare-btn" disabled>Судья</button>
+              </div>
+            </div>
+          </details>
+        </form>
+      </div>
+      <div class="composer-send">
         <div class="input-row">
-          <textarea id="question" name="question" rows="1" required placeholder="Сообщение…"></textarea>
-          <button type="submit" id="submit-btn" aria-label="Отправить">Отправить</button>
+          <textarea id="question" name="question" form="ask-form" rows="2" required placeholder="Сообщение…"></textarea>
+          <button type="submit" form="ask-form" id="submit-btn" aria-label="Отправить">➤</button>
         </div>
         <p class="error" id="error" role="alert"></p>
-      </form>
+      </div>
     </div>
 
-    <p class="disclaimer">Образовательный self-care, не меддиагностика. Не замена врача или массажиста.</p>
+    <p class="disclaimer">Образовательный self-care, не меддиагностика. Не замена врача или массажиста. Режим «Задача» — lab без карточки.</p>
   </div>
 
   <script>
@@ -647,29 +770,96 @@
         question:
           "Онемела рука. Хочу сильнее продавить мячиком 2–3 минуты без пауз. Можно?",
       },
+      L: {
+        question:
+          "Пользователь впервые открыл приложение самопомощи и написал: «болит шея». Спроектируй один первый экран: что спросить / что показать (1–2 точки или зоны) / нужна ли графика или анимация / 3 шага самопомощи / дисклеймер.\nСтруктура: цель → сценарий 3–5 шагов → содержимое экрана → 2 риска → MVP. Без кода. Коротко и по делу.",
+      },
     };
 
     const form = document.getElementById("ask-form");
     const submitBtn = document.getElementById("submit-btn");
     const compareBtn = document.getElementById("compare-btn");
     const tempSweepBtn = document.getElementById("temp-sweep-btn");
+    const modelSweepBtn = document.getElementById("model-sweep-btn");
     const compareHint = document.getElementById("compare-hint");
+    const modelsHint = document.getElementById("models-hint");
     const errorEl = document.getElementById("error");
     const messagesEl = document.getElementById("messages");
     const messagesEmptyEl = document.getElementById("messages-empty");
+    const modelStripEl = document.getElementById("model-strip");
     const sessionBarEl = document.getElementById("session-bar");
+    const costSummaryEl = document.getElementById("cost-summary");
     const questionEl = document.getElementById("question");
+    const QUESTION_MAX_PX = 58;
+
+    function fitQuestionHeight() {
+      questionEl.style.height = "auto";
+      questionEl.style.height = `${Math.min(questionEl.scrollHeight, QUESTION_MAX_PX)}px`;
+    }
     const zoneEl = document.getElementById("zone");
     const formatEl = document.getElementById("format");
     const modeEl = document.getElementById("reasoningMode");
+    const modelSelectEl = document.getElementById("modelSelect");
     const tempEl = document.getElementById("temperature");
     const tempValueEl = document.getElementById("temp-value");
     const tempTicksEl = document.getElementById("temp-ticks");
 
-    /** Assignment markers + ×3 sweep (0 / 0.7 / 1.2). Slider still 0–2 for manual tries. */
     const TEMPERATURES = [0, 0.7, 1.2];
     const TEMP_MIN = 0;
     const TEMP_MAX = 2;
+    /** Только DeepSeek top-up → ₽. ProxyAPI уже в рублях, курс 103 не применять. */
+    const DEEPSEEK_FX_RUB_PER_USD = 103;
+    const SESSION_KEY = "trigger-helper-demo-session-v4";
+    /** Timing/cost runs for day05 report (session tab). */
+    const RUNS_KEY = "trigger-helper-demo-runs-v1";
+
+    /** @type {"grounded"|"open"} */
+    let scope = "grounded";
+    /** @type {"N"|"P"|"L"|null} */
+    let activeScenario = null;
+    /** @type {Array<{tier:string,label:string,model:string,via:string}>} */
+    let demoModels = [];
+    /** Advent public L = locked; private lab = editable. From /api/models. */
+    let openTaskLocked = false;
+    /** @type {Record<string, string>} */
+    let compareBucket = {};
+    let compareQuestion = "";
+
+    function emptyStats() {
+      return {
+        requests: 0,
+        cost_usd: 0,
+        cost_rub: 0,
+        total_tokens: 0,
+        cache_hit_tokens: 0,
+        by_model: {},
+      };
+    }
+
+    function loadStats(storage, key) {
+      try {
+        const raw = storage.getItem(key);
+        if (!raw) return emptyStats();
+        const parsed = JSON.parse(raw);
+        return {
+          requests: Number(parsed.requests) || 0,
+          cost_usd: Number(parsed.cost_usd) || 0,
+          cost_rub: Number(parsed.cost_rub) || 0,
+          total_tokens: Number(parsed.total_tokens) || 0,
+          cache_hit_tokens: Number(parsed.cache_hit_tokens) || 0,
+          by_model: parsed.by_model && typeof parsed.by_model === "object" ? parsed.by_model : {},
+        };
+      } catch {
+        return emptyStats();
+      }
+    }
+
+    function saveStats(storage, key, stats) {
+      storage.setItem(key, JSON.stringify(stats));
+    }
+
+    let session = loadStats(sessionStorage, SESSION_KEY);
+    let serverTotals = emptyStats();
 
     function roundTemp(value) {
       return Math.round(Number(value) * 10) / 10;
@@ -714,60 +904,61 @@
     tempEl.addEventListener("input", () => setTemperature(tempEl.value));
     initTempTicks();
 
-    /** Курс последнего пополнения DeepSeek (2026-09). */
-    const USD_TO_RUB = 103;
-    /** Сессия вкладки — только браузер. «Всего» — с VPS (`/api/usage`). */
-    const SESSION_KEY = "trigger-helper-demo-session-v2";
-
-    function emptyStats() {
-      return { requests: 0, cost_usd: 0, total_tokens: 0, cache_hit_tokens: 0 };
-    }
-
-    function loadStats(storage, key) {
-      try {
-        const raw = storage.getItem(key);
-        if (!raw) return emptyStats();
-        const parsed = JSON.parse(raw);
-        return {
-          requests: Number(parsed.requests) || 0,
-          cost_usd: Number(parsed.cost_usd) || 0,
-          total_tokens: Number(parsed.total_tokens) || 0,
-          cache_hit_tokens: Number(parsed.cache_hit_tokens) || 0,
-        };
-      } catch {
-        return emptyStats();
-      }
-    }
-
-    function saveStats(storage, key, stats) {
-      storage.setItem(key, JSON.stringify(stats));
-    }
-
-    let session = loadStats(sessionStorage, SESSION_KEY);
-    let serverTotals = emptyStats();
-
-    /** @type {"N"|"P"|null} */
-    let activeScenario = null;
-    /** @type {Record<string, string>} */
-    let compareBucket = {};
-    let compareQuestion = "";
-
     function formatUsd(value) {
       if (value < 0.01) return `$${value.toFixed(6)}`;
       return `$${value.toFixed(4)}`;
     }
 
-    function costLine(label, stats) {
-      if (stats.requests === 0) {
-        return `${label}: —`;
+    function formatMoney(statsOrUsage) {
+      const usd = Number(statsOrUsage.cost_usd ?? statsOrUsage.estimated_cost_usd) || 0;
+      const rub = Number(statsOrUsage.cost_rub ?? statsOrUsage.estimated_cost_rub) || 0;
+      const parts = [];
+      if (usd > 0) {
+        const deepseekRub = usd * DEEPSEEK_FX_RUB_PER_USD;
+        parts.push(`${formatUsd(usd)} (~${deepseekRub.toFixed(2)} ₽ DS)`);
       }
-      const rub = stats.cost_usd * USD_TO_RUB;
-      return `${label}: ${stats.requests} запр. · ${formatUsd(stats.cost_usd)} (~${rub.toFixed(2)} ₽) · ${stats.total_tokens} tok · кэш ${stats.cache_hit_tokens}`;
+      if (rub > 0) {
+        parts.push(`${rub.toFixed(4)} ₽`);
+      }
+      return parts.length ? parts.join(" + ") : "—";
+    }
+
+    function shortModel(id) {
+      if (!id) return "?";
+      const parts = id.split("/");
+      return parts[parts.length - 1];
+    }
+
+    function costLine(label, stats) {
+      if (stats.requests === 0) return `${label}: —`;
+      return `${label}: ${stats.requests} · ${formatMoney(stats)} · ${stats.total_tokens} tok`;
+    }
+
+    function byModelLines(prefix, stats) {
+      const entries = Object.entries(stats.by_model || {});
+      if (!entries.length) return "";
+      return entries
+        .map(([model, b]) => {
+          return `${prefix}${shortModel(model)}: ${b.requests} · ${formatMoney(b)} · ${b.total_tokens} tok`;
+        })
+        .join("\n");
     }
 
     function renderSessionBar() {
-      sessionBarEl.textContent =
-        `${costLine("Сессия", session)} · ${costLine("Всего (VPS)", serverTotals)}`;
+      const lines = [
+        costLine("Сессия", session),
+        byModelLines("  · сессия ", session),
+        costLine("Всего (VPS)", serverTotals),
+        byModelLines("  · всего ", serverTotals),
+      ].filter(Boolean);
+      sessionBarEl.textContent = lines.join("\n");
+      const sMoney = formatMoney(session);
+      const tMoney = formatMoney(serverTotals);
+      const limitPart =
+        askLimit > 0
+          ? ` · дорогие сегодня ${askLimit - (askRemaining ?? 0)}/${askLimit}`
+          : "";
+      costSummaryEl.textContent = `Стоимость · сессия ${session.requests ? sMoney : "—"} · всего ${serverTotals.requests ? tMoney : "—"}${limitPart}`;
     }
 
     function applyServerTotals(totals) {
@@ -775,17 +966,46 @@
       serverTotals = {
         requests: Number(totals.requests) || 0,
         cost_usd: Number(totals.cost_usd) || 0,
+        cost_rub: Number(totals.cost_rub) || 0,
         total_tokens: Number(totals.total_tokens) || 0,
         cache_hit_tokens: Number(totals.cache_hit_tokens) || 0,
+        by_model: totals.by_model && typeof totals.by_model === "object" ? totals.by_model : {},
       };
+      if (totals.asks_limit !== undefined && totals.asks_limit !== null) {
+        askLimit = Number(totals.asks_limit) || 0;
+      }
+      if (totals.asks_remaining !== undefined && totals.asks_remaining !== null) {
+        askRemaining = totals.asks_remaining;
+      } else if (askLimit > 0) {
+        const used = Number(totals.expensive_asks_today) || 0;
+        askRemaining = Math.max(0, askLimit - used);
+      }
     }
 
     function addSessionUsage(usage) {
+      const rub = Number(usage.estimated_cost_rub) || 0;
       session.requests += 1;
-      session.cost_usd += usage.estimated_cost_usd;
+      session.cost_usd += usage.estimated_cost_usd || 0;
+      session.cost_rub += rub;
       session.total_tokens += usage.total_tokens;
       session.cache_hit_tokens += usage.prompt_cache_hit_tokens;
       session.cost_usd = Number(session.cost_usd.toFixed(6));
+      session.cost_rub = Number(session.cost_rub.toFixed(4));
+      const key = usage.model || "unknown";
+      const prev = session.by_model[key] || {
+        requests: 0,
+        cost_usd: 0,
+        cost_rub: 0,
+        total_tokens: 0,
+        cache_hit_tokens: 0,
+      };
+      session.by_model[key] = {
+        requests: prev.requests + 1,
+        cost_usd: Number((prev.cost_usd + (usage.estimated_cost_usd || 0)).toFixed(6)),
+        cost_rub: Number((prev.cost_rub + rub).toFixed(4)),
+        total_tokens: prev.total_tokens + usage.total_tokens,
+        cache_hit_tokens: prev.cache_hit_tokens + usage.prompt_cache_hit_tokens,
+      };
       saveStats(sessionStorage, SESSION_KEY, session);
       renderSessionBar();
     }
@@ -801,6 +1021,47 @@
       }
     }
 
+    async function loadDemoModels() {
+      try {
+        const response = await fetch("/api/models");
+        if (!response.ok) throw new Error("models");
+        const data = await response.json();
+        demoModels = data.models || [];
+        openTaskLocked = Boolean(data.open_task_locked);
+        if (typeof data.open_preset_l === "string" && data.open_preset_l.trim()) {
+          SCENARIOS.L.question = data.open_preset_l;
+        }
+        const via = data.proxyapi ? "ProxyAPI" : "DeepSeek";
+        const lockHint = openTaskLocked ? " · L lock" : " · L edit";
+        modelsHint.textContent = `×3: ${demoModels.map((m) => shortModel(m.model)).join(" · ")} (${via})${lockHint}`;
+        modelSweepBtn.title = modelsHint.textContent;
+
+        const prev = modelSelectEl.value;
+        modelSelectEl.innerHTML = "";
+        const optDefault = document.createElement("option");
+        optDefault.value = "";
+        optDefault.textContent = "DeepSeek (default env)";
+        modelSelectEl.appendChild(optDefault);
+        demoModels.forEach((m) => {
+          const opt = document.createElement("option");
+          opt.value = m.model;
+          opt.textContent = `${m.label}: ${m.model}`;
+          modelSelectEl.appendChild(opt);
+        });
+        if (prev && [...modelSelectEl.options].some((o) => o.value === prev)) {
+          modelSelectEl.value = prev;
+        }
+        syncQuestionLock();
+      } catch {
+        modelsHint.textContent = "модели: не загрузились";
+      }
+    }
+
+    function getSelectedModel() {
+      const v = modelSelectEl.value.trim();
+      return v || undefined;
+    }
+
     function scrollToBottom() {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
@@ -811,10 +1072,13 @@
 
     function updateCompareHint() {
       const n = Object.keys(compareBucket).length;
-      compareHint.textContent = activeScenario
-        ? `Сценарий ${activeScenario}: ответов для сравнения ${n}/5`
-        : `Ответов для сравнения: ${n} (сначала пресет N или P)`;
-      compareBtn.disabled = !(activeScenario && n >= 2);
+      compareHint.textContent = activeScenario === "N" || activeScenario === "P"
+        ? `Сценарий ${activeScenario}: ответов ${n}/5`
+        : `Ответов для судьи: ${n} (нужен пресет N или P)`;
+      compareBtn.disabled = !(
+        (activeScenario === "N" || activeScenario === "P") &&
+        n >= 2
+      );
     }
 
     function resetCompareBucket(question) {
@@ -823,38 +1087,95 @@
       updateCompareHint();
     }
 
+    let askLimit = 20;
+    let askRemaining = null;
+
+    function syncQuestionLock() {
+      if (scope === "open") {
+        if (openTaskLocked) {
+          questionEl.value = SCENARIOS.L.question;
+          questionEl.readOnly = true;
+          questionEl.title =
+            "Режим «Задача» (public): только пресет L, редактирование выключено";
+        } else {
+          questionEl.readOnly = false;
+          questionEl.title =
+            "Режим «Задача» (private): текст можно править";
+          if (!questionEl.value.trim()) {
+            questionEl.value = SCENARIOS.L.question;
+          }
+        }
+        fitQuestionHeight();
+      } else {
+        questionEl.readOnly = false;
+        questionEl.title = "";
+      }
+    }
+
+    function setScope(next) {
+      scope = next;
+      document.getElementById("scope-grounded").classList.toggle("active", next === "grounded");
+      document.getElementById("scope-open").classList.toggle("active", next === "open");
+      document.querySelectorAll(".grounded-only").forEach((el) => {
+        el.classList.toggle("hidden", next !== "grounded");
+      });
+      document.querySelectorAll(".open-only").forEach((el) => {
+        el.classList.toggle("hidden", next !== "open");
+      });
+      if (next === "open") {
+        setScenario("L");
+        formatEl.value = "free";
+        modeEl.value = "direct";
+        setTemperature(0.3);
+      } else if (activeScenario === "L") {
+        setScenario("N");
+      }
+      syncQuestionLock();
+      updateCompareHint();
+    }
+
     function setScenario(scenario) {
       activeScenario = scenario;
       const preset = SCENARIOS[scenario];
-      zoneEl.value = preset.zone;
+      if (preset.zone) zoneEl.value = preset.zone;
       questionEl.value = preset.question;
-      questionEl.style.height = "auto";
-      questionEl.style.height = `${Math.min(questionEl.scrollHeight, 120)}px`;
-      formatEl.value = "free";
-      modeEl.value = "direct";
-      setTemperature(0);
-      document.getElementById("preset-n").classList.toggle("active", scenario === "N");
-      document.getElementById("preset-p").classList.toggle("active", scenario === "P");
+      fitQuestionHeight();
+      if (scenario === "N" || scenario === "P") {
+        formatEl.value = "free";
+        modeEl.value = "direct";
+        setTemperature(0);
+      }
+      document.getElementById("preset-n")?.classList.toggle("active", scenario === "N");
+      document.getElementById("preset-p")?.classList.toggle("active", scenario === "P");
+      document.getElementById("preset-l")?.classList.toggle("active", scenario === "L");
       resetCompareBucket(preset.question);
-      questionEl.focus();
+      syncQuestionLock();
+      if (!questionEl.readOnly) questionEl.focus();
     }
 
+    document.getElementById("scope-grounded").addEventListener("click", () => setScope("grounded"));
+    document.getElementById("scope-open").addEventListener("click", () => setScope("open"));
     document.getElementById("preset-n").addEventListener("click", () => setScenario("N"));
     document.getElementById("preset-p").addEventListener("click", () => setScenario("P"));
+    document.getElementById("preset-l").addEventListener("click", () => {
+      setScope("open");
+      setScenario("L");
+    });
 
-    function appendUserMessage(text, zone, mode, temperature) {
+    function appendUserMessage(text, meta) {
       hideEmpty();
       const el = document.createElement("div");
       el.className = "msg user";
-      const modeBadge = mode
-        ? `<span class="badge mode">${modeLabels[mode] || mode}</span>`
-        : "";
-      const tempBadge =
-        temperature !== undefined && temperature !== null
-          ? `<span class="badge temp">T=${temperature}</span>`
-          : "";
+      const badges = [];
+      if (meta.scope) badges.push(`<span class="badge scope">${meta.scope}</span>`);
+      if (meta.zone) badges.push(`<span class="badge">${zoneLabels[meta.zone] || meta.zone}</span>`);
+      if (meta.mode) badges.push(`<span class="badge mode">${modeLabels[meta.mode] || meta.mode}</span>`);
+      if (meta.temperature !== undefined && meta.temperature !== null) {
+        badges.push(`<span class="badge temp">T=${meta.temperature}</span>`);
+      }
+      if (meta.model) badges.push(`<span class="badge model">${shortModel(meta.model)}</span>`);
       el.innerHTML = `
-        <span class="msg-meta">${zoneLabels[zone]} ${modeBadge} ${tempBadge}</span>
+        <span class="msg-meta">${badges.join("")}</span>
         <div class="bubble"></div>
       `;
       el.querySelector(".bubble").textContent = text;
@@ -863,29 +1184,98 @@
       return el;
     }
 
+    function formatElapsed(sec) {
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return `${m}:${String(s).padStart(2, "0")}`;
+    }
+
+    function stopTypingTimer(el) {
+      if (!el) return;
+      const id = el._typingTimerId;
+      if (id) {
+        clearInterval(id);
+        el._typingTimerId = null;
+      }
+    }
+
+    let activeAbort = null;
+
+    function beginRequest() {
+      if (activeAbort) activeAbort.abort();
+      activeAbort = new AbortController();
+      return activeAbort.signal;
+    }
+
+    function stopActiveRequest() {
+      if (activeAbort) activeAbort.abort();
+    }
+
+    function endRequest() {
+      activeAbort = null;
+    }
+
+    function isAbortError(err) {
+      return (
+        err?.name === "AbortError" ||
+        (typeof DOMException !== "undefined" &&
+          err instanceof DOMException &&
+          err.name === "AbortError")
+      );
+    }
+
     function appendTypingIndicator() {
       hideEmpty();
       const el = document.createElement("div");
       el.className = "msg assistant";
       el.dataset.typing = "1";
-      el.innerHTML = `<div class="bubble typing">Печатает…</div>`;
+      el.innerHTML = `
+        <div class="bubble typing">
+          <span>Печатает… <span class="typing-timer">0:00</span></span>
+          <button type="button" class="typing-stop">Остановить</button>
+        </div>`;
+      const timerEl = el.querySelector(".typing-timer");
+      const stopBtn = el.querySelector(".typing-stop");
+      const started = Date.now();
+      el._typingTimerId = setInterval(() => {
+        const sec = Math.floor((Date.now() - started) / 1000);
+        if (timerEl) timerEl.textContent = formatElapsed(sec);
+      }, 250);
+      stopBtn.addEventListener("click", () => {
+        stopBtn.disabled = true;
+        stopBtn.textContent = "Стоп…";
+        stopActiveRequest();
+      });
       messagesEl.appendChild(el);
       scrollToBottom();
       return el;
     }
 
-    function usageDetailsHtml(usage) {
-      const rub = usage.estimated_cost_usd * USD_TO_RUB;
+    function replaceTypingWithStopped(typingEl) {
+      stopTypingTimer(typingEl);
+      typingEl.removeAttribute("data-typing");
+      typingEl.innerHTML = `<div class="bubble typing" style="font-style: normal;">Остановлено</div>`;
+      scrollToBottom();
+    }
+
+    function usageDetailsHtml(usage, latencyMs) {
+      const latency =
+        latencyMs !== undefined && latencyMs !== null
+          ? `<dt>Latency</dt><dd>${latencyMs} ms</dd>`
+          : "";
       return `
         <details class="msg-usage">
-          <summary>${formatUsd(usage.estimated_cost_usd)} · ${usage.total_tokens} tok · кэш ${usage.prompt_cache_hit_tokens}</summary>
+          <summary>${formatMoney(usage)} · ${usage.total_tokens} tok${
+            latencyMs != null ? ` · ${latencyMs} ms` : ""
+          }</summary>
           <dl>
             <dt>Модель</dt><dd>${usage.model}</dd>
+            ${latency}
             <dt>Кэш hit</dt><dd>${usage.prompt_cache_hit_tokens}</dd>
             <dt>Кэш miss</dt><dd>${usage.prompt_cache_miss_tokens}</dd>
             <dt>Prompt</dt><dd>${usage.prompt_tokens}</dd>
             <dt>Completion</dt><dd>${usage.completion_tokens}</dd>
-            <dt>Оценка</dt><dd>${formatUsd(usage.estimated_cost_usd)} (~${rub.toFixed(2)} ₽)</dd>
+            <dt>Оценка</dt><dd>${formatMoney(usage)}</dd>
           </dl>
         </details>
       `;
@@ -901,15 +1291,27 @@
     }
 
     function replaceTypingWithReply(typingEl, payload) {
+      stopTypingTimer(typingEl);
       typingEl.removeAttribute("data-typing");
       const format = payload.format || "free";
       const isJson = format === "json";
       const mode = payload.reasoningMode || "direct";
       const temperature =
         payload.temperature !== undefined ? payload.temperature : null;
-      let badges = [`<span class="badge mode">${modeLabels[mode] || mode}</span>`];
+      const badges = [
+        `<span class="badge scope">${payload.scope || scope}</span>`,
+        `<span class="badge mode">${modeLabels[mode] || mode}</span>`,
+      ];
+      if (payload.model || payload.usage?.model) {
+        badges.push(
+          `<span class="badge model">${shortModel(payload.model || payload.usage.model)}</span>`,
+        );
+      }
       if (temperature !== null && temperature !== undefined) {
         badges.push(`<span class="badge temp">T=${temperature}</span>`);
+      }
+      if (payload.latency_ms != null) {
+        badges.push(`<span class="badge">${payload.latency_ms} ms</span>`);
       }
       if (isJson) {
         const ok = isParseableJson(payload.reply);
@@ -930,7 +1332,7 @@
         <span class="msg-meta">Ответ ${badges.join("")}</span>
         ${extra}
         <div class="bubble${isJson ? " json" : ""}"></div>
-        ${payload.usage ? usageDetailsHtml(payload.usage) : ""}
+        ${payload.usage ? usageDetailsHtml(payload.usage, payload.latency_ms) : ""}
       `;
       if (payload.metaPrompt) {
         typingEl.querySelector(".bubble.meta-prompt").textContent =
@@ -942,25 +1344,48 @@
     }
 
     function replaceTypingWithError(typingEl, message) {
+      stopTypingTimer(typingEl);
       typingEl.innerHTML = `<div class="bubble" style="border-color: var(--error); color: var(--error);"></div>`;
       typingEl.querySelector(".bubble").textContent = message;
       scrollToBottom();
+    }
+
+    function ensureModelStrip() {
+      hideEmpty();
+      modelStripEl.classList.add("visible");
+      modelStripEl.innerHTML = "";
+      return modelStripEl;
+    }
+
+    function renderModelCard(tier, state) {
+      let card = modelStripEl.querySelector(`[data-tier="${tier}"]`);
+      if (!card) {
+        card = document.createElement("div");
+        card.className = "model-card pending";
+        card.dataset.tier = tier;
+        modelStripEl.appendChild(card);
+      }
+      card.className = `model-card${state.error ? " error" : ""}${state.pending ? " pending" : ""}`;
+      const preview = state.preview || (state.pending ? "…" : state.error || "");
+      card.innerHTML = `
+        <div class="tier">${state.label || tier}</div>
+        <div class="meta">${state.meta || ""}</div>
+        <div class="preview"></div>
+      `;
+      card.querySelector(".preview").textContent = preview;
     }
 
     function appendJudgeResult(data) {
       hideEmpty();
       const el = document.createElement("div");
       el.className = "msg assistant";
-
       const criteriaIds = data.scores[0]?.criteria?.map((c) => c.id) || [];
       const head = criteriaIds.map((id) => `<th>${id}</th>`).join("");
       const rows = data.scores
         .map((s) => {
           const cells = s.criteria
             .map((c) =>
-              c.pass
-                ? `<td class="pass">✓</td>`
-                : `<td class="fail">✗</td>`,
+              c.pass ? `<td class="pass">✓</td>` : `<td class="fail">✗</td>`,
             )
             .join("");
           const win =
@@ -994,15 +1419,20 @@
     }
 
     questionEl.addEventListener("input", () => {
-      questionEl.style.height = "auto";
-      questionEl.style.height = `${Math.min(questionEl.scrollHeight, 120)}px`;
+      if (scope === "open" && openTaskLocked) {
+        questionEl.value = SCENARIOS.L.question;
+        fitQuestionHeight();
+        return;
+      }
+      fitQuestionHeight();
       if (
         activeScenario &&
         questionEl.value.trim() !== SCENARIOS[activeScenario].question
       ) {
         activeScenario = null;
-        document.getElementById("preset-n").classList.remove("active");
-        document.getElementById("preset-p").classList.remove("active");
+        document.getElementById("preset-n")?.classList.remove("active");
+        document.getElementById("preset-p")?.classList.remove("active");
+        document.getElementById("preset-l")?.classList.remove("active");
         resetCompareBucket(questionEl.value.trim());
       }
     });
@@ -1010,33 +1440,24 @@
     questionEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (!submitBtn.disabled) {
-          form.requestSubmit();
-        }
+        if (!submitBtn.disabled) form.requestSubmit();
       }
     });
 
     function setBusy(busy) {
       submitBtn.disabled = busy;
       tempSweepBtn.disabled = busy;
-      if (busy) {
-        compareBtn.disabled = true;
-      } else {
-        updateCompareHint();
-      }
+      modelSweepBtn.disabled = busy;
+      if (busy) compareBtn.disabled = true;
+      else updateCompareHint();
     }
 
-    async function postAsk({ pointId, question, format, reasoningMode, temperature }) {
+    async function postAsk(body, signal) {
       const response = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pointId,
-          question,
-          format,
-          reasoningMode,
-          temperature,
-        }),
+        body: JSON.stringify(body),
+        signal,
       });
       const data = await response.json();
       if (!response.ok) {
@@ -1045,74 +1466,128 @@
       return data;
     }
 
-    function applyAskResult(data, format, reasoningMode) {
+    function loadRuns() {
+      try {
+        const raw = sessionStorage.getItem(RUNS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function recordRun(entry) {
+      const runs = loadRuns();
+      runs.push({
+        at: new Date().toISOString(),
+        scope,
+        ...entry,
+      });
+      sessionStorage.setItem(RUNS_KEY, JSON.stringify(runs));
+    }
+
+    function applyAskResult(data, format, reasoningMode, meta = {}) {
       if (data.usage) addSessionUsage(data.usage);
       if (data.totals) {
         applyServerTotals(data.totals);
         renderSessionBar();
       }
-      if (format === "free" && data.reply) {
+      if (
+        scope === "grounded" &&
+        format === "free" &&
+        data.reply &&
+        (activeScenario === "N" || activeScenario === "P")
+      ) {
         compareBucket[data.reasoningMode || reasoningMode] = data.reply;
         updateCompareHint();
       }
+      recordRun({
+        kind: meta.kind || "ask",
+        tier: meta.tier || null,
+        model: data.model || data.usage?.model || null,
+        latency_ms:
+          data.latency_ms !== undefined && data.latency_ms !== null
+            ? data.latency_ms
+            : null,
+        total_tokens: data.usage?.total_tokens ?? null,
+        cost_usd: data.usage?.estimated_cost_usd ?? null,
+        cost_rub: data.usage?.estimated_cost_rub ?? null,
+        temperature: data.temperature ?? null,
+        reasoningMode: data.reasoningMode || reasoningMode || null,
+        format: data.format || format || null,
+      });
     }
 
     function restoreQuestionAfterSend(question) {
-      questionEl.value = "";
-      questionEl.style.height = "auto";
-      const keep = activeScenario
-        ? SCENARIOS[activeScenario].question
-        : question;
+      const keep = activeScenario ? SCENARIOS[activeScenario].question : question;
       questionEl.value = keep;
-      questionEl.style.height = "auto";
-      questionEl.style.height = `${Math.min(questionEl.scrollHeight, 120)}px`;
+      fitQuestionHeight();
+    }
+
+    function buildAskBody({ question, format, reasoningMode, temperature, model }) {
+      const body = {
+        scope,
+        question:
+          scope === "open" && openTaskLocked
+            ? SCENARIOS.L.question
+            : question,
+        format: scope === "open" ? "free" : format,
+        reasoningMode,
+        temperature,
+      };
+      if (scope === "grounded") {
+        body.pointId = zoneToPoint[zoneEl.value];
+      }
+      const chosen = model !== undefined ? model : getSelectedModel();
+      if (chosen) body.model = chosen;
+      return body;
     }
 
     renderSessionBar();
     refreshServerTotals();
     updateCompareHint();
+    loadDemoModels();
+    syncQuestionLock();
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       errorEl.classList.remove("visible");
 
-      const zone = zoneEl.value;
       const format = formatEl.value;
       const reasoningMode = modeEl.value;
       const temperature = getTemperature();
-      const pointId = zoneToPoint[zone];
       const question = questionEl.value.trim();
       if (!question) return;
 
-      if (question !== compareQuestion) {
-        resetCompareBucket(question);
-      }
+      if (question !== compareQuestion) resetCompareBucket(question);
 
-      appendUserMessage(
-        question,
-        zone,
-        format === "free" ? reasoningMode : null,
-        formatTemp(temperature),
-      );
+      appendUserMessage(question, {
+        scope,
+        zone: scope === "grounded" ? zoneEl.value : null,
+        mode: format === "free" || scope === "open" ? reasoningMode : null,
+        temperature: formatTemp(temperature),
+        model: getSelectedModel() || "DeepSeek",
+      });
       restoreQuestionAfterSend(question);
 
+      const signal = beginRequest();
       const typingEl = appendTypingIndicator();
       setBusy(true);
 
       try {
-        const data = await postAsk({
-          pointId,
-          question,
-          format,
-          reasoningMode,
-          temperature,
-        });
+        const data = await postAsk(
+          buildAskBody({ question, format, reasoningMode, temperature }),
+          signal,
+        );
         replaceTypingWithReply(typingEl, data);
         applyAskResult(data, format, reasoningMode);
         if (!data.totals) await refreshServerTotals();
       } catch (err) {
-        replaceTypingWithError(typingEl, err.message || "Не удалось отправить");
+        if (isAbortError(err)) replaceTypingWithStopped(typingEl);
+        else replaceTypingWithError(typingEl, err.message || "Не удалось отправить");
       } finally {
+        endRequest();
         setBusy(false);
         questionEl.focus();
         scrollToBottom();
@@ -1121,47 +1596,54 @@
 
     tempSweepBtn.addEventListener("click", async () => {
       errorEl.classList.remove("visible");
-
-      const zone = zoneEl.value;
-      const format = formatEl.value;
-      const reasoningMode = modeEl.value;
-      const pointId = zoneToPoint[zone];
-      const question = questionEl.value.trim();
-      if (!question) {
-        errorEl.textContent = "Сначала вопрос (пресет N).";
+      if (scope !== "grounded") {
+        errorEl.textContent = "×3 температуры — в режиме Карточка.";
         errorEl.classList.add("visible");
         return;
       }
 
-      if (question !== compareQuestion) {
-        resetCompareBucket(question);
+      const format = formatEl.value;
+      const reasoningMode = modeEl.value;
+      const question = questionEl.value.trim();
+      if (!question) {
+        errorEl.textContent = "Сначала вопрос (пресет N/P).";
+        errorEl.classList.add("visible");
+        return;
       }
 
-      appendUserMessage(
-        question,
-        zone,
-        format === "free" ? reasoningMode : null,
-        "0→1.2",
-      );
+      if (question !== compareQuestion) resetCompareBucket(question);
+
+      appendUserMessage(question, {
+        scope,
+        zone: zoneEl.value,
+        mode: format === "free" ? reasoningMode : null,
+        temperature: "0→1.2",
+      });
       restoreQuestionAfterSend(question);
+      const signal = beginRequest();
       setBusy(true);
 
       try {
         for (const temperature of TEMPERATURES) {
+          if (signal.aborted) break;
           setTemperature(temperature);
           const typingEl = appendTypingIndicator();
           try {
-            const data = await postAsk({
-              pointId,
-              question,
-              format,
-              reasoningMode,
-              temperature,
-            });
+            const data = await postAsk(
+              buildAskBody({ question, format, reasoningMode, temperature }),
+              signal,
+            );
             replaceTypingWithReply(typingEl, data);
-            applyAskResult(data, format, reasoningMode);
+            applyAskResult(data, format, reasoningMode, {
+              kind: "temp_sweep",
+              tier: `T=${formatTemp(temperature)}`,
+            });
             if (!data.totals) await refreshServerTotals();
           } catch (err) {
+            if (isAbortError(err)) {
+              replaceTypingWithStopped(typingEl);
+              break;
+            }
             replaceTypingWithError(
               typingEl,
               `T=${formatTemp(temperature)}: ${err.message || "ошибка"}`,
@@ -1169,6 +1651,107 @@
           }
         }
       } finally {
+        endRequest();
+        setBusy(false);
+        questionEl.focus();
+        scrollToBottom();
+      }
+    });
+
+    modelSweepBtn.addEventListener("click", async () => {
+      errorEl.classList.remove("visible");
+      if (!demoModels.length) {
+        await loadDemoModels();
+      }
+      if (!demoModels.length) {
+        errorEl.textContent = "Нет списка моделей — перезапусти server после сборки.";
+        errorEl.classList.add("visible");
+        return;
+      }
+
+      const format = scope === "open" ? "free" : formatEl.value;
+      const reasoningMode = modeEl.value;
+      const temperature = getTemperature();
+      const question = questionEl.value.trim();
+      if (!question) {
+        errorEl.textContent = scope === "open" ? "Сначала пресет L." : "Сначала вопрос.";
+        errorEl.classList.add("visible");
+        return;
+      }
+
+      appendUserMessage(question, {
+        scope,
+        zone: scope === "grounded" ? zoneEl.value : null,
+        mode: reasoningMode,
+        temperature: formatTemp(temperature),
+        model: "×3",
+      });
+      restoreQuestionAfterSend(question);
+
+      ensureModelStrip();
+      const signal = beginRequest();
+      setBusy(true);
+
+      try {
+        for (const m of demoModels) {
+          if (signal.aborted) break;
+          renderModelCard(m.tier, {
+            label: `${m.label} · ${shortModel(m.model)}`,
+            meta: "запрос…",
+            pending: true,
+          });
+          const typingEl = appendTypingIndicator();
+          try {
+            const data = await postAsk(
+              buildAskBody({
+                question,
+                format,
+                reasoningMode,
+                temperature,
+                model: m.model,
+              }),
+              signal,
+            );
+            replaceTypingWithReply(typingEl, data);
+            applyAskResult(data, format, reasoningMode, {
+              kind: "model_sweep",
+              tier: m.tier,
+            });
+            if (!data.totals) await refreshServerTotals();
+            const money = formatMoney(data.usage || {});
+            const ms =
+              data.latency_ms != null ? `${data.latency_ms} ms` : "? ms";
+            renderModelCard(m.tier, {
+              label: `${m.label} · ${shortModel(data.usage?.model || m.model)}`,
+              meta: `${ms} · ${data.usage?.total_tokens ?? "?"} tok · ${money}`,
+              preview: data.reply,
+              pending: false,
+            });
+          } catch (err) {
+            if (isAbortError(err)) {
+              replaceTypingWithStopped(typingEl);
+              renderModelCard(m.tier, {
+                label: `${m.label} · ${shortModel(m.model)}`,
+                meta: "остановлено",
+                error: "Остановлено",
+                pending: false,
+              });
+              break;
+            }
+            replaceTypingWithError(
+              typingEl,
+              `${m.label}: ${err.message || "ошибка"}`,
+            );
+            renderModelCard(m.tier, {
+              label: `${m.label} · ${shortModel(m.model)}`,
+              meta: "ошибка",
+              error: err.message || "ошибка",
+              pending: false,
+            });
+          }
+        }
+      } finally {
+        endRequest();
         setBusy(false);
         questionEl.focus();
         scrollToBottom();
@@ -1176,7 +1759,12 @@
     });
 
     compareBtn.addEventListener("click", async () => {
-      if (!activeScenario || Object.keys(compareBucket).length < 2) return;
+      if (
+        !(activeScenario === "N" || activeScenario === "P") ||
+        Object.keys(compareBucket).length < 2
+      ) {
+        return;
+      }
       errorEl.classList.remove("visible");
 
       const candidates = Object.entries(compareBucket).map(([mode, reply]) => ({
@@ -1184,6 +1772,7 @@
         reply,
       }));
 
+      const signal = beginRequest();
       const typingEl = appendTypingIndicator();
       setBusy(true);
 
@@ -1196,14 +1785,28 @@
             question: compareQuestion,
             candidates,
           }),
+          signal,
         });
         const data = await response.json();
         if (!response.ok) {
           throw new Error(data.message || data.error || `HTTP ${response.status}`);
         }
+        stopTypingTimer(typingEl);
         typingEl.remove();
         appendJudgeResult(data);
         if (data.usage) addSessionUsage(data.usage);
+        recordRun({
+          kind: "compare",
+          tier: activeScenario,
+          model: data.usage?.model || null,
+          latency_ms: data.latency_ms ?? null,
+          total_tokens: data.usage?.total_tokens ?? null,
+          cost_usd: data.usage?.estimated_cost_usd ?? null,
+          cost_rub: data.usage?.estimated_cost_rub ?? null,
+          temperature: null,
+          reasoningMode: "judge",
+          format: "json",
+        });
         if (data.totals) {
           applyServerTotals(data.totals);
           renderSessionBar();
@@ -1211,8 +1814,10 @@
           await refreshServerTotals();
         }
       } catch (err) {
-        replaceTypingWithError(typingEl, err.message || "Сравнение не удалось");
+        if (isAbortError(err)) replaceTypingWithStopped(typingEl);
+        else replaceTypingWithError(typingEl, err.message || "Сравнение не удалось");
       } finally {
+        endRequest();
         setBusy(false);
         scrollToBottom();
       }

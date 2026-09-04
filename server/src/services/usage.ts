@@ -16,6 +16,7 @@ export function mergeUsage(parts: LlmUsage[]): LlmUsage {
   let prompt_cache_hit_tokens = 0;
   let prompt_cache_miss_tokens = 0;
   let estimated_cost_usd = 0;
+  let estimated_cost_rub = 0;
 
   for (const u of parts) {
     prompt_tokens += u.prompt_tokens;
@@ -24,6 +25,7 @@ export function mergeUsage(parts: LlmUsage[]): LlmUsage {
     prompt_cache_hit_tokens += u.prompt_cache_hit_tokens;
     prompt_cache_miss_tokens += u.prompt_cache_miss_tokens;
     estimated_cost_usd += u.estimated_cost_usd;
+    estimated_cost_rub += u.estimated_cost_rub ?? 0;
   }
 
   return {
@@ -34,5 +36,6 @@ export function mergeUsage(parts: LlmUsage[]): LlmUsage {
     prompt_cache_hit_tokens,
     prompt_cache_miss_tokens,
     estimated_cost_usd: Number(estimated_cost_usd.toFixed(6)),
+    estimated_cost_rub: Number(estimated_cost_rub.toFixed(4)),
   };
 }
