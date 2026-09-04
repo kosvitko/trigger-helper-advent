@@ -14,6 +14,9 @@ export type ChatOptions = {
   temperature?: number;
 };
 
+/** Per-request ceiling so a stuck DeepSeek call does not hang the UI forever. */
+const DEEPSEEK_FETCH_TIMEOUT_MS = 90_000;
+
 type DeepSeekUsage = {
   prompt_tokens?: number;
   completion_tokens?: number;
@@ -118,6 +121,7 @@ export class DeepSeekService {
         Authorization: `Bearer ${this.env.DEEPSEEK_API_KEY}`,
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(DEEPSEEK_FETCH_TIMEOUT_MS),
     });
 
     const payload = (await response.json()) as DeepSeekResponse;

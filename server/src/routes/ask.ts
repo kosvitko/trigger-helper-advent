@@ -2,6 +2,7 @@ import {
   AskRequestSchema,
   type AskFormat,
   type AskResponse,
+  type AskTemperature,
   type ReasoningMode,
 } from "@trigger-helper/shared";
 import type { FastifyInstance } from "fastify";
@@ -24,21 +25,31 @@ type AskRouteDeps = {
 /** Length control for format=json (Advent day02) — enough for one complete object. */
 const JSON_MAX_TOKENS = 700;
 
-/** Experts / step answers can be longer than a short tip. */
-const REASONING_MAX_TOKENS = 1600;
+/** Free/direct tip — keep answers short for demo cost and readability. */
+const FREE_MAX_TOKENS = 450;
+
+/** Step / experts / meta answer — roles need room, not an essay. */
+const REASONING_MAX_TOKENS = 700;
+
+/** Meta: model writes a prompt first — keep that short too. */
+const META_WRITER_MAX_TOKENS = 280;
 
 async function runMetaAsk(
   deepSeek: DeepSeekService,
   point: Parameters<typeof buildMetaPromptWriterSystem>[0],
   question: string,
+  temperature: AskTemperature,
 ): Promise<{ reply: string; metaPrompt: string; usage: AskResponse["usage"] }> {
-  const writer = await deepSeek.chat([
-    { role: "system", content: buildMetaPromptWriterSystem(point) },
-    {
-      role: "user",
-      content: `Составь промпт для ответа на вопрос:\n${question}`,
-    },
-  ]);
+  const writer = await deepSeek.chat(
+    [
+      { role: "system", content: buildMetaPromptWriterSystem(point) },
+      {
+        role: "user",
+        content: `Составь промпт для ответа на вопрос:\n${question}`,
+      },
+    ],
+    { maxTokens: META_WRITER_MAX_TOKENS, temperature },
+  );
 
   const metaPrompt = writer.reply.trim();
   const answer = await deepSeek.chat(
@@ -46,7 +57,7 @@ async function runMetaAsk(
       { role: "system", content: metaPrompt },
       { role: "user", content: question },
     ],
-    { maxTokens: REASONING_MAX_TOKENS },
+    { maxTokens: REASONING_MAX_TOKENS, temperature },
   );
 
   return {
@@ -61,9 +72,10 @@ async function runReasoningAsk(
   point: Parameters<typeof buildReasoningSystemPrompt>[0],
   question: string,
   mode: ReasoningMode,
+  temperature: AskTemperature,
 ): Promise<{ reply: string; metaPrompt?: string; usage: AskResponse["usage"] }> {
   if (mode === "meta") {
-    return runMetaAsk(deepSeek, point, question);
+    return runMetaAsk(deepSeek, point, question, temperature);
   }
 
   const result = await deepSeek.chat(
@@ -71,7 +83,10 @@ async function runReasoningAsk(
       { role: "system", content: buildReasoningSystemPrompt(point, mode) },
       { role: "user", content: question },
     ],
-    mode === "direct" ? {} : { maxTokens: REASONING_MAX_TOKENS },
+    {
+      maxTokens: mode === "direct" ? FREE_MAX_TOKENS : REASONING_MAX_TOKENS,
+      temperature,
+    },
   );
 
   return { reply: result.reply, usage: result.usage };
@@ -90,7 +105,8 @@ export async function registerAskRoutes(
       });
     }
 
-    const { pointId, question, format, reasoningMode } = parsed.data;
+    const { pointId, question, format, reasoningMode, temperature } =
+      parsed.data;
     const point = await deps.pointsService.findById(pointId);
     if (!point) {
       return reply.status(400).send({
@@ -110,6 +126,7 @@ export async function registerAskRoutes(
           {
             jsonMode: true,
             maxTokens: JSON_MAX_TOKENS,
+            temperature,
           },
         );
 
@@ -118,6 +135,7 @@ export async function registerAskRoutes(
           usage: result.usage,
           format: "json",
           reasoningMode: "direct",
+          temperature,
           totals: await deps.usageLedger.record(result.usage),
         };
         return body;
@@ -128,6 +146,7 @@ export async function registerAskRoutes(
         point,
         question,
         reasoningMode,
+        temperature,
       );
 
       const body: AskResponse = {
@@ -135,6 +154,7 @@ export async function registerAskRoutes(
         usage: result.usage,
         format: "free" satisfies AskFormat,
         reasoningMode,
+        temperature,
         ...(result.metaPrompt ? { metaPrompt: result.metaPrompt } : {}),
         totals: await deps.usageLedger.record(result.usage),
       };

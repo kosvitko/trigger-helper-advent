@@ -42,12 +42,29 @@ export const ReasoningModeSchema = z.enum([
 
 export type ReasoningMode = z.infer<typeof ReasoningModeSchema>;
 
+/**
+ * DeepSeek chat temperature range [0, 2]. Product default: 0.
+ * Demo sweep markers: ASK_TEMPERATURES (assignment 0 / 0.7 / 1.2).
+ * 1.9 removed from presets — above ~1.2 DeepSeek often loses coherent RU (author experiments).
+ */
+export const AskTemperatureSchema = z.coerce
+  .number()
+  .min(0)
+  .max(2)
+  .transform((n) => Math.round(n * 10) / 10);
+
+export type AskTemperature = z.infer<typeof AskTemperatureSchema>;
+
+/** Demo sweep / UI markers (organizer assignment). */
+export const ASK_TEMPERATURES = [0, 0.7, 1.2] as const satisfies readonly AskTemperature[];
+
 export const AskRequestSchema = z.object({
   pointId: z.string().min(1),
   question: z.string().min(1),
   format: AskFormatSchema.optional().default("free"),
   controls: AskControlsSchema.optional(),
   reasoningMode: ReasoningModeSchema.optional().default("direct"),
+  temperature: AskTemperatureSchema.optional().default(0),
 });
 
 export type AskRequest = z.infer<typeof AskRequestSchema>;
@@ -57,6 +74,7 @@ export const AskResponseSchema = z.object({
   usage: LlmUsageSchema,
   format: AskFormatSchema,
   reasoningMode: ReasoningModeSchema.optional(),
+  temperature: AskTemperatureSchema.optional(),
   /** Present when reasoningMode=meta: prompt written by the model before answering. */
   metaPrompt: z.string().optional(),
   /** Server-wide totals after this request (VPS persistence). */

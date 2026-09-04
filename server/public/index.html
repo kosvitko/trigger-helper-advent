@@ -138,6 +138,12 @@
       background: #f6f0e4;
     }
 
+    .badge.temp {
+      color: #3a4a6b;
+      border-color: #c5cde0;
+      background: #eef1f8;
+    }
+
     .badge.winner {
       color: #1f5c38;
       border-color: #9ec9ae;
@@ -234,6 +240,124 @@
       .controls-row.three { grid-template-columns: 1fr; }
     }
 
+    .temp-row {
+      margin-bottom: 8px;
+      padding: 8px 10px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #faf8f5;
+    }
+
+    .temp-row-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .temp-row-head label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .temp-value {
+      font-size: 0.95rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--accent-hover);
+      letter-spacing: 0.02em;
+    }
+
+    .temp-slider-wrap {
+      position: relative;
+      padding: 0 2px 18px;
+    }
+
+    .temp-slider-wrap input[type="range"] {
+      display: block;
+      width: 100%;
+      margin: 0;
+      appearance: none;
+      height: 28px;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .temp-slider-wrap input[type="range"]::-webkit-slider-runnable-track {
+      height: 6px;
+      border-radius: 999px;
+      background: linear-gradient(
+        90deg,
+        #c5d6d3 0%,
+        var(--accent) 55%,
+        #b07060 100%
+      );
+    }
+
+    .temp-slider-wrap input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      margin-top: -6px;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      background: var(--accent-hover);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    .temp-slider-wrap input[type="range"]::-moz-range-track {
+      height: 6px;
+      border-radius: 999px;
+      background: linear-gradient(
+        90deg,
+        #c5d6d3 0%,
+        var(--accent) 55%,
+        #b07060 100%
+      );
+    }
+
+    .temp-slider-wrap input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      background: var(--accent-hover);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    .temp-ticks {
+      position: absolute;
+      left: 2px;
+      right: 2px;
+      bottom: 0;
+      height: 16px;
+      pointer-events: none;
+    }
+
+    .temp-ticks button {
+      pointer-events: auto;
+      position: absolute;
+      transform: translateX(-50%);
+      font: inherit;
+      font-size: 0.65rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      padding: 0;
+      border: none;
+      background: none;
+      color: var(--muted);
+      cursor: pointer;
+      line-height: 1;
+    }
+
+    .temp-ticks button:hover,
+    .temp-ticks button.active {
+      color: var(--accent-hover);
+    }
+
     .preset-row {
       display: flex;
       flex-wrap: wrap;
@@ -313,6 +437,15 @@
 
     .compare-panel button:hover:not(:disabled) { background: var(--accent-hover); }
     .compare-panel button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .compare-panel button.secondary {
+      background: #faf8f5;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .compare-panel button.secondary:hover:not(:disabled) {
+      background: var(--user-bubble);
+      color: var(--accent-hover);
+    }
 
     .judge-table {
       width: 100%;
@@ -402,17 +535,17 @@
   <div class="app">
     <header class="topbar">
       <h1>Trigger Helper</h1>
-      <p class="sub">День 3 — способы рассуждения + судья по чеклисту</p>
+      <p class="sub">День 4 — temperature 0 / 0.7 / 1.2</p>
     </header>
 
     <div class="messages" id="messages" aria-live="polite">
-      <p class="messages-empty" id="messages-empty">Пресет N или P → режим → отправить; затем «Сравнить»</p>
+      <p class="messages-empty" id="messages-empty">Пресет N → «×3 температуры» (или один T и Отправить)</p>
     </div>
 
     <div class="composer-wrap">
       <div class="session-bar" id="session-bar"></div>
       <form id="ask-form">
-        <div class="preset-row" role="group" aria-label="Сценарии дня 3">
+        <div class="preset-row" role="group" aria-label="Сценарии">
           <button type="button" id="preset-n" data-scenario="N">N — нормальный</button>
           <button type="button" id="preset-p" data-scenario="P">P — провокация</button>
         </div>
@@ -428,7 +561,7 @@
           <div>
             <label for="reasoningMode">Рассуждение</label>
             <select id="reasoningMode" name="reasoningMode">
-              <option value="direct">1. Прямой</option>
+              <option value="direct" selected>1. Прямой</option>
               <option value="step_by_step">2. Пошагово</option>
               <option value="meta">3. Meta-промпт</option>
               <option value="experts_fixed">4a. Эксперты fixed</option>
@@ -438,14 +571,36 @@
           <div>
             <label for="format">Формат</label>
             <select id="format" name="format">
-              <option value="free">Свободный</option>
+              <option value="free" selected>Свободный</option>
               <option value="json">JSON (день 2)</option>
             </select>
+          </div>
+        </div>
+        <div class="temp-row">
+          <div class="temp-row-head">
+            <label for="temperature">Temperature (0–2)</label>
+            <span class="temp-value" id="temp-value" aria-live="polite">0.0</span>
+          </div>
+          <div class="temp-slider-wrap">
+            <input
+              type="range"
+              id="temperature"
+              name="temperature"
+              min="0"
+              max="2"
+              step="0.1"
+              value="0"
+              aria-valuemin="0"
+              aria-valuemax="2"
+              aria-valuenow="0"
+            />
+            <div class="temp-ticks" id="temp-ticks" role="group" aria-label="Маркеры задания"></div>
           </div>
         </div>
         <div class="compare-panel" id="compare-panel">
           <div class="row">
             <span class="hint" id="compare-hint">Ответов для сравнения: 0</span>
+            <button type="button" id="temp-sweep-btn" class="secondary">×3 температуры</button>
             <button type="button" id="compare-btn" disabled>Сравнить (судья)</button>
           </div>
         </div>
@@ -497,6 +652,7 @@
     const form = document.getElementById("ask-form");
     const submitBtn = document.getElementById("submit-btn");
     const compareBtn = document.getElementById("compare-btn");
+    const tempSweepBtn = document.getElementById("temp-sweep-btn");
     const compareHint = document.getElementById("compare-hint");
     const errorEl = document.getElementById("error");
     const messagesEl = document.getElementById("messages");
@@ -506,6 +662,57 @@
     const zoneEl = document.getElementById("zone");
     const formatEl = document.getElementById("format");
     const modeEl = document.getElementById("reasoningMode");
+    const tempEl = document.getElementById("temperature");
+    const tempValueEl = document.getElementById("temp-value");
+    const tempTicksEl = document.getElementById("temp-ticks");
+
+    /** Assignment markers + ×3 sweep (0 / 0.7 / 1.2). Slider still 0–2 for manual tries. */
+    const TEMPERATURES = [0, 0.7, 1.2];
+    const TEMP_MIN = 0;
+    const TEMP_MAX = 2;
+
+    function roundTemp(value) {
+      return Math.round(Number(value) * 10) / 10;
+    }
+
+    function formatTemp(value) {
+      return roundTemp(value).toFixed(1);
+    }
+
+    function getTemperature() {
+      return roundTemp(tempEl.value);
+    }
+
+    function setTemperature(value, { syncTicks = true } = {}) {
+      const t = Math.min(TEMP_MAX, Math.max(TEMP_MIN, roundTemp(value)));
+      tempEl.value = String(t);
+      tempEl.setAttribute("aria-valuenow", String(t));
+      tempValueEl.textContent = formatTemp(t);
+      if (syncTicks) {
+        tempTicksEl.querySelectorAll("button").forEach((btn) => {
+          btn.classList.toggle("active", roundTemp(btn.dataset.t) === t);
+        });
+      }
+      return t;
+    }
+
+    function initTempTicks() {
+      tempTicksEl.innerHTML = "";
+      TEMPERATURES.forEach((t) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.dataset.t = String(t);
+        btn.textContent = formatTemp(t);
+        btn.style.left = `${(t / TEMP_MAX) * 100}%`;
+        btn.title = `T=${formatTemp(t)}`;
+        btn.addEventListener("click", () => setTemperature(t));
+        tempTicksEl.appendChild(btn);
+      });
+      setTemperature(tempEl.value);
+    }
+
+    tempEl.addEventListener("input", () => setTemperature(tempEl.value));
+    initTempTicks();
 
     /** Курс последнего пополнения DeepSeek (2026-09). */
     const USD_TO_RUB = 103;
@@ -624,6 +831,8 @@
       questionEl.style.height = "auto";
       questionEl.style.height = `${Math.min(questionEl.scrollHeight, 120)}px`;
       formatEl.value = "free";
+      modeEl.value = "direct";
+      setTemperature(0);
       document.getElementById("preset-n").classList.toggle("active", scenario === "N");
       document.getElementById("preset-p").classList.toggle("active", scenario === "P");
       resetCompareBucket(preset.question);
@@ -633,15 +842,19 @@
     document.getElementById("preset-n").addEventListener("click", () => setScenario("N"));
     document.getElementById("preset-p").addEventListener("click", () => setScenario("P"));
 
-    function appendUserMessage(text, zone, mode) {
+    function appendUserMessage(text, zone, mode, temperature) {
       hideEmpty();
       const el = document.createElement("div");
       el.className = "msg user";
       const modeBadge = mode
         ? `<span class="badge mode">${modeLabels[mode] || mode}</span>`
         : "";
+      const tempBadge =
+        temperature !== undefined && temperature !== null
+          ? `<span class="badge temp">T=${temperature}</span>`
+          : "";
       el.innerHTML = `
-        <span class="msg-meta">${zoneLabels[zone]} ${modeBadge}</span>
+        <span class="msg-meta">${zoneLabels[zone]} ${modeBadge} ${tempBadge}</span>
         <div class="bubble"></div>
       `;
       el.querySelector(".bubble").textContent = text;
@@ -692,7 +905,12 @@
       const format = payload.format || "free";
       const isJson = format === "json";
       const mode = payload.reasoningMode || "direct";
+      const temperature =
+        payload.temperature !== undefined ? payload.temperature : null;
       let badges = [`<span class="badge mode">${modeLabels[mode] || mode}</span>`];
+      if (temperature !== null && temperature !== undefined) {
+        badges.push(`<span class="badge temp">T=${temperature}</span>`);
+      }
       if (isJson) {
         const ok = isParseableJson(payload.reply);
         badges.push(`<span class="badge format-json">JSON</span>`);
@@ -798,6 +1016,58 @@
       }
     });
 
+    function setBusy(busy) {
+      submitBtn.disabled = busy;
+      tempSweepBtn.disabled = busy;
+      if (busy) {
+        compareBtn.disabled = true;
+      } else {
+        updateCompareHint();
+      }
+    }
+
+    async function postAsk({ pointId, question, format, reasoningMode, temperature }) {
+      const response = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pointId,
+          question,
+          format,
+          reasoningMode,
+          temperature,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.error || `HTTP ${response.status}`);
+      }
+      return data;
+    }
+
+    function applyAskResult(data, format, reasoningMode) {
+      if (data.usage) addSessionUsage(data.usage);
+      if (data.totals) {
+        applyServerTotals(data.totals);
+        renderSessionBar();
+      }
+      if (format === "free" && data.reply) {
+        compareBucket[data.reasoningMode || reasoningMode] = data.reply;
+        updateCompareHint();
+      }
+    }
+
+    function restoreQuestionAfterSend(question) {
+      questionEl.value = "";
+      questionEl.style.height = "auto";
+      const keep = activeScenario
+        ? SCENARIOS[activeScenario].question
+        : question;
+      questionEl.value = keep;
+      questionEl.style.height = "auto";
+      questionEl.style.height = `${Math.min(questionEl.scrollHeight, 120)}px`;
+    }
+
     renderSessionBar();
     refreshServerTotals();
     updateCompareHint();
@@ -809,6 +1079,7 @@
       const zone = zoneEl.value;
       const format = formatEl.value;
       const reasoningMode = modeEl.value;
+      const temperature = getTemperature();
       const pointId = zoneToPoint[zone];
       const question = questionEl.value.trim();
       if (!question) return;
@@ -817,50 +1088,88 @@
         resetCompareBucket(question);
       }
 
-      appendUserMessage(question, zone, format === "free" ? reasoningMode : null);
-      questionEl.value = "";
-      questionEl.style.height = "auto";
-      if (activeScenario) {
-        questionEl.value = SCENARIOS[activeScenario].question;
-        questionEl.style.height = "auto";
-        questionEl.style.height = `${Math.min(questionEl.scrollHeight, 120)}px`;
-      }
+      appendUserMessage(
+        question,
+        zone,
+        format === "free" ? reasoningMode : null,
+        formatTemp(temperature),
+      );
+      restoreQuestionAfterSend(question);
 
       const typingEl = appendTypingIndicator();
-      submitBtn.disabled = true;
-      compareBtn.disabled = true;
+      setBusy(true);
 
       try {
-        const response = await fetch("/api/ask", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pointId, question, format, reasoningMode }),
+        const data = await postAsk({
+          pointId,
+          question,
+          format,
+          reasoningMode,
+          temperature,
         });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.message || data.error || `HTTP ${response.status}`);
-        }
-
         replaceTypingWithReply(typingEl, data);
-        if (data.usage) addSessionUsage(data.usage);
-        if (data.totals) {
-          applyServerTotals(data.totals);
-          renderSessionBar();
-        } else {
-          await refreshServerTotals();
-        }
-
-        if (format === "free" && data.reply) {
-          compareBucket[data.reasoningMode || reasoningMode] = data.reply;
-          updateCompareHint();
-        }
+        applyAskResult(data, format, reasoningMode);
+        if (!data.totals) await refreshServerTotals();
       } catch (err) {
         replaceTypingWithError(typingEl, err.message || "Не удалось отправить");
       } finally {
-        submitBtn.disabled = false;
-        updateCompareHint();
+        setBusy(false);
+        questionEl.focus();
+        scrollToBottom();
+      }
+    });
+
+    tempSweepBtn.addEventListener("click", async () => {
+      errorEl.classList.remove("visible");
+
+      const zone = zoneEl.value;
+      const format = formatEl.value;
+      const reasoningMode = modeEl.value;
+      const pointId = zoneToPoint[zone];
+      const question = questionEl.value.trim();
+      if (!question) {
+        errorEl.textContent = "Сначала вопрос (пресет N).";
+        errorEl.classList.add("visible");
+        return;
+      }
+
+      if (question !== compareQuestion) {
+        resetCompareBucket(question);
+      }
+
+      appendUserMessage(
+        question,
+        zone,
+        format === "free" ? reasoningMode : null,
+        "0→1.2",
+      );
+      restoreQuestionAfterSend(question);
+      setBusy(true);
+
+      try {
+        for (const temperature of TEMPERATURES) {
+          setTemperature(temperature);
+          const typingEl = appendTypingIndicator();
+          try {
+            const data = await postAsk({
+              pointId,
+              question,
+              format,
+              reasoningMode,
+              temperature,
+            });
+            replaceTypingWithReply(typingEl, data);
+            applyAskResult(data, format, reasoningMode);
+            if (!data.totals) await refreshServerTotals();
+          } catch (err) {
+            replaceTypingWithError(
+              typingEl,
+              `T=${formatTemp(temperature)}: ${err.message || "ошибка"}`,
+            );
+          }
+        }
+      } finally {
+        setBusy(false);
         questionEl.focus();
         scrollToBottom();
       }
@@ -876,8 +1185,7 @@
       }));
 
       const typingEl = appendTypingIndicator();
-      submitBtn.disabled = true;
-      compareBtn.disabled = true;
+      setBusy(true);
 
       try {
         const response = await fetch("/api/compare", {
@@ -905,8 +1213,7 @@
       } catch (err) {
         replaceTypingWithError(typingEl, err.message || "Сравнение не удалось");
       } finally {
-        submitBtn.disabled = false;
-        updateCompareHint();
+        setBusy(false);
         scrollToBottom();
       }
     });

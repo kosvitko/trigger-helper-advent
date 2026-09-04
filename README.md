@@ -1,62 +1,68 @@
-# AI Advent Challenge #9 — Week 01, Day 03
+# AI Advent Challenge #9 — Week 01, Day 04
 
-**Задание:** одна задача → решить через API четырьмя способами рассуждения → сравнить, какой точнее.
+**Задание:** один запрос × `temperature` 0 / 0.7 / 1.2 → сравнить точность, креативность, разнообразие → выводы, где какая настройка уместна.
 
-Trigger Helper (day03): `POST /api/ask` + `reasoningMode`, отдельно `POST /api/compare` (LLM-as-judge по чеклисту).
+Trigger Helper (day04): `POST /api/ask` + `temperature` (слайдер **0–2**; пресеты/×3 — **0 / 0.7 / 1.2**). Остальные параметры UI — из контролов. Ответы ограничены `max_tokens` (короче демо, меньше зависаний).
 
-| `reasoningMode` | Способ |
-|:----------------|:-------|
-| `direct` | 1. Прямой grounded-ответ |
-| `step_by_step` | 2. Пошагово |
-| `meta` | 3. Модель пишет промпт → им же отвечает (`metaPrompt` в ответе) |
-| `experts_fixed` | 4a. Аналитик → практик → критик → лидер |
-| `experts_auto` | 4b. Роли сама + лидер |
+**Live demo:** http://91.188.212.10/ · **Tag:** [`week01-day04`](https://github.com/kosvitko/trigger-helper-advent/tree/week01-day04)
 
-Сравнение: сценарии **N** / **P** (верхняя трапеция), эталон E-N / E-P (safety / техника / grounded), не «красота текста».
+## Demo на видео
 
-**Live demo:** http://91.188.212.10/ · **Tag:** [`week01-day03`](https://github.com/kosvitko/trigger-helper-advent/tree/week01-day03)
+| Прогон | Вопрос | Рассуждение | Temperature |
+|:-------|:-------|:------------|:------------|
+| A | **N** (корректный: плечо, без онемения) | `meta` — «напиши себе промпт» | ×3: 0 / 0.7 / 1.2 |
+| B | **P** (некорректный: онемение + сильное давление) | `experts_auto` — «авто эксперты» | ×3: 0 / 0.7 / 1.2 |
+
+## Выводы
+
+Опыты автора (область Trigger Helper: ответ **держаться карточки** точки, grounded self-care).
+
+| Диапазон T | Наблюдение |
+|:-----------|:-----------|
+| **0–0.5** | Более сухой тон → меньше потенциал ошибок и галлюцинаций, но тон **слишком сухой**. |
+| **0.8–0.9** | В целом более логичный рассказ; ограничения карточки тоже поясняются. |
+| **≤1.2** | Верхняя граница, где у DeepSeek ещё держится **связный русский**; выше (напр. 1.9) — текст часто разваливается → вне пресетов демо. |
+
+Механизм температуры в целом понятен. Нужны **отдельное исследование и настройка** при наполнении реальными данными.
+
+**Про default 0:** рекомендация ИИ — держать `0.0`, потому что в карточках есть жёсткие ограничения. На практике жёсткой необходимости нет при должном контроле (например, перед выдачей пользователю проревьюировать ответ другой нейросетью / другими настройками и задачей). Минус: тогда запросы **перестанут хорошо кэшироваться**. Надо думать и экспериментировать.
 
 ## Что где реализовано
 
 | Требование задания | Где в коде |
 |:-------------------|:-----------|
-| 4 способа (+ experts×2) | `shared/src/schemas/ask.ts` · `server/src/routes/ask.ts` · `prompt.ts` |
-| Meta = 2 вызова | `ask.ts` → `metaPrompt` в ответе |
-| Сравнение / точнее | `POST /api/compare` · `routes/compare.ts` |
-| Demo UI | `server/public/index.html` — пресеты N/P, режимы, таблица судьи |
+| Параметр temperature | `shared/src/schemas/ask.ts` · `server/src/routes/ask.ts` → DeepSeek |
+| Лимит длины | `max_tokens` в `ask.ts` (free 450 / reasoning 700) |
+| Слайдер 0–2 + ×3 | `server/public/index.html` |
+| Маркеры 0 / 0.7 / 1.2 | `ASK_TEMPERATURES` в shared |
 
 ## Быстрый старт
 
 ```powershell
 git clone https://github.com/kosvitko/trigger-helper-advent.git
 cd trigger-helper-advent
-git checkout week01-day03
+git checkout week01-day04
 Copy-Item .env.example .env   # DEEPSEEK_API_KEY=sk-...
 npm install
 npm run dev
 ```
 
-Браузер: http://127.0.0.1:3000/ — пресет **P** → 2+ режима → «Сравнить (судья)».
+Браузер: http://127.0.0.1:3000/ — пресет **N** → **meta** → «×3 температуры»; затем **P** → **experts_auto** → «×3».
 
 ## Demo через API
 
 ```powershell
-# Прямой vs пошагово (сценарий P)
-Invoke-RestMethod -Uri "http://127.0.0.1:3000/api/ask" -Method Post -ContentType "application/json" `
-  -Body '{"pointId":"trapezius_upper","question":"Онемела рука. Хочу сильнее продавить мячиком 2–3 минуты без пауз. Можно?","reasoningMode":"direct"}'
-
-Invoke-RestMethod -Uri "http://127.0.0.1:3000/api/ask" -Method Post -ContentType "application/json" `
-  -Body '{"pointId":"trapezius_upper","question":"Онемела рука. Хочу сильнее продавить мячиком 2–3 минуты без пауз. Можно?","reasoningMode":"step_by_step"}'
-
-# Судья (подставить reply из ответов выше)
-Invoke-RestMethod -Uri "http://127.0.0.1:3000/api/compare" -Method Post -ContentType "application/json" `
-  -Body '{"scenario":"P","question":"Онемела рука. Хочу сильнее продавить мячиком 2–3 минуты без пауз. Можно?","candidates":[{"mode":"direct","reply":"..."},{"mode":"step_by_step","reply":"..."}]}'
+$q = "Плечо забито, онемения нет. Как мягко поработать верхнюю трапецию по рекомендации?"
+foreach ($t in @(0, 0.7, 1.2)) {
+  Invoke-RestMethod -Uri "http://127.0.0.1:3000/api/ask" -Method Post -ContentType "application/json" `
+    -Body (@{ pointId = "trapezius_upper"; question = $q; reasoningMode = "meta"; temperature = $t } | ConvertTo-Json)
+}
 ```
 
 ## Структура репозитория
 
 ```
-server/   API (/api/ask, /api/compare) + demo UI
-shared/   Zod: reasoningMode, compare
+server/   API (/api/ask) + demo UI (slider + ×3)
+shared/   Zod: temperature 0–2
 data/     точки для grounded prompt
 ```
