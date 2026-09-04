@@ -1,68 +1,90 @@
-# AI Advent Challenge #9 — Week 01, Day 04
+# AI Advent Challenge #9 — Week 01, Day 05
 
-**Задание:** один запрос × `temperature` 0 / 0.7 / 1.2 → сравнить точность, креативность, разнообразие → выводы, где какая настройка уместна.
+**Задание:** один запрос × слабая / средняя / сильная модель → time / tokens / cost → качество / скорость / ресурсоёмкость → вывод.
 
-Trigger Helper (day04): `POST /api/ask` + `temperature` (слайдер **0–2**; пресеты/×3 — **0 / 0.7 / 1.2**). Остальные параметры UI — из контролов. Ответы ограничены `max_tokens` (короче демо, меньше зависаний).
+Trigger Helper (day05): `scope` `grounded` | `open`, пресет **L**, ×3 модели (ProxyAPI или DeepSeek fallback), `latency_ms`, usage `by_model`, суточный лимит на дорогие модели.
 
-**Live demo:** http://91.188.212.10/ · **Tag:** [`week01-day04`](https://github.com/kosvitko/trigger-helper-advent/tree/week01-day04)
+**Live demo:** http://91.188.212.10/ · **Tag:** [`week01-day05`](https://github.com/kosvitko/trigger-helper-advent/tree/week01-day05)
 
 ## Demo на видео
 
-| Прогон | Вопрос | Рассуждение | Temperature |
-|:-------|:-------|:------------|:------------|
-| A | **N** (корректный: плечо, без онемения) | `meta` — «напиши себе промпт» | ×3: 0 / 0.7 / 1.2 |
-| B | **P** (некорректный: онемение + сильное давление) | `experts_auto` — «авто эксперты» | ×3: 0 / 0.7 / 1.2 |
+| | |
+|:--|:--|
+| Scope | **Задача** (`open`) |
+| Пресет | **L** — первый экран «болит шея» (текст зафиксирован) |
+| Рассуждение | `direct` |
+| Temperature | `0.3` |
+| Прогон | **×3 модели** |
+
+Тройка (ProxyAPI):
+
+| Tier | Model |
+|:-----|:------|
+| быстрая | `gemini/gemini-2.5-flash-lite` |
+| средняя | `gemini/gemini-2.5-flash` |
+| сильная | `anthropic/claude-sonnet-4-5` |
+
+Без `PROXYAPI_API_KEY` — DeepSeek `chat` / `reasoner` как fallback.
 
 ## Выводы
 
-Опыты автора (область Trigger Helper: ответ **держаться карточки** точки, grounded self-care).
+Сравнение на одной задаче L (структура: цель → сценарий → экран → риски → MVP), одна T и один режим рассуждения.
 
-| Диапазон T | Наблюдение |
-|:-----------|:-----------|
-| **0–0.5** | Более сухой тон → меньше потенциал ошибок и галлюцинаций, но тон **слишком сухой**. |
-| **0.8–0.9** | В целом более логичный рассказ; ограничения карточки тоже поясняются. |
-| **≤1.2** | Верхняя граница, где у DeepSeek ещё держится **связный русский**; выше (напр. 1.9) — текст часто разваливается → вне пресетов демо. |
+| Модель | Наблюдение (lab) |
+|:-------|:-----------------|
+| **flash-lite** | Быстро и дёшево; структура часто есть, глубина и аккуратность ограничений слабее. |
+| **flash** | Заметный шаг вверх по плотности и продуктовой логике при всё ещё умеренной цене/времени. |
+| **Sonnet 4.5** | Самый сильный разбор экрана и дисклеймера; дольше и дороже; нужен запас `max_tokens` и длинный HTTP timeout. |
 
-Механизм температуры в целом понятен. Нужны **отдельное исследование и настройка** при наполнении реальными данными.
-
-**Про default 0:** рекомендация ИИ — держать `0.0`, потому что в карточках есть жёсткие ограничения. На практике жёсткой необходимости нет при должном контроле (например, перед выдачей пользователю проревьюировать ответ другой нейросетью / другими настройками и задачей). Минус: тогда запросы **перестанут хорошо кэшироваться**. Надо думать и экспериментировать.
+**Итог для продукта:** для черновиков UI/онбординга достаточно mid (flash); strong — когда важны формулировки рисков и полнота структуры. Цена и latency смотреть в strip ×3 и в usage `by_model`. `gpt-4o-mini` как mid на этой задаче выглядел слабее flash-lite — в сдаче mid заменён на `gemini-2.5-flash`.
 
 ## Что где реализовано
 
-| Требование задания | Где в коде |
-|:-------------------|:-----------|
-| Параметр temperature | `shared/src/schemas/ask.ts` · `server/src/routes/ask.ts` → DeepSeek |
-| Лимит длины | `max_tokens` в `ask.ts` (free 450 / reasoning 700) |
-| Слайдер 0–2 + ×3 | `server/public/index.html` |
-| Маркеры 0 / 0.7 / 1.2 | `ASK_TEMPERATURES` в shared |
+| Требование | Где |
+|:-----------|:----|
+| ×3 модели | `ASK_DEMO_MODEL_TIERS` · `GET /api/models` · UI «×3» |
+| time / tokens / cost | `latency_ms` · `usage` · ledger `by_model` |
+| open vs grounded | `scope` в `shared` / `ask` |
+| Пресет L | `OPEN_PRESET_L_QUESTION` · `OPEN_TASK_MODE=public` |
+| Лимит дорогих | `FREE_DAILY_ASKS` · `isExpensiveModel` |
 
 ## Быстрый старт
 
 ```powershell
 git clone https://github.com/kosvitko/trigger-helper-advent.git
 cd trigger-helper-advent
-git checkout week01-day04
-Copy-Item .env.example .env   # DEEPSEEK_API_KEY=sk-...
+git checkout week01-day05
+Copy-Item .env.example .env
+# DEEPSEEK_API_KEY=...
+# опционально PROXYAPI_API_KEY=... для тройки Gemini/Claude
 npm install
 npm run dev
 ```
 
-Браузер: http://127.0.0.1:3000/ — пресет **N** → **meta** → «×3 температуры»; затем **P** → **experts_auto** → «×3».
+Браузер: http://127.0.0.1:3000/ — **Задача** → **L** → `direct` → T=0.3 → **×3**.
 
 ## Demo через API
 
 ```powershell
-$q = "Плечо забито, онемения нет. Как мягко поработать верхнюю трапецию по рекомендации?"
-foreach ($t in @(0, 0.7, 1.2)) {
-  Invoke-RestMethod -Uri "http://127.0.0.1:3000/api/ask" -Method Post -ContentType "application/json" `
-    -Body (@{ pointId = "trapezius_upper"; question = $q; reasoningMode = "meta"; temperature = $t } | ConvertTo-Json)
-}
+$q = @"
+Пользователь впервые открыл приложение самопомощи и написал: «болит шея». Спроектируй один первый экран: что спросить / что показать (1–2 точки или зоны) / нужна ли графика или анимация / 3 шага самопомощи / дисклеймер.
+Структура: цель → сценарий 3–5 шагов → содержимое экрана → 2 риска → MVP. Без кода. Коротко и по делу.
+"@
+$body = @{
+  scope = "open"
+  question = $q
+  format = "free"
+  reasoningMode = "direct"
+  temperature = 0.3
+  model = "gemini/gemini-2.5-flash"
+} | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:3000/api/ask" -Method Post -ContentType "application/json" -Body $body
 ```
 
 ## Структура репозитория
 
 ```
-server/   API (/api/ask) + demo UI (slider + ×3)
-shared/   Zod: temperature 0–2
-data/     точки для grounded prompt
+server/   API (/api/ask, /api/models, /api/usage) + demo UI
+shared/   Zod: scope, L preset, demo tiers
+data/     точки для grounded
 ```

@@ -1,10 +1,12 @@
 import {
   CompareRequestSchema,
+  OPEN_TASK_MODE,
   ReasoningModeSchema,
   type CompareResponse,
   type ReasoningMode,
 } from "@trigger-helper/shared";
 import type { FastifyInstance } from "fastify";
+import type { Env } from "../config/env.js";
 import type { DeepSeekService } from "../services/deepseek.js";
 import type { UsageLedgerService } from "../services/usage-ledger.js";
 import {
@@ -16,6 +18,7 @@ import {
 type CompareRouteDeps = {
   deepSeekService: DeepSeekService;
   usageLedger: UsageLedgerService;
+  env: Env;
 };
 
 const JUDGE_MAX_TOKENS = 1200;
@@ -142,7 +145,10 @@ export async function registerCompareRoutes(
         scenario,
         result.usage,
       );
-      body.totals = await deps.usageLedger.record(result.usage);
+      body.latency_ms = result.latency_ms;
+      body.totals = await deps.usageLedger.record(result.usage, {
+        countExpensive: OPEN_TASK_MODE === "public",
+      });
       return body;
     } catch (error) {
       request.log.error(error);

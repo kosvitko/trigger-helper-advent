@@ -1,54 +1,80 @@
 import {
   AskRequestSchema,
+  OPEN_PRESET_L_QUESTION,
+  OPEN_TASK_MODE,
   type AskFormat,
   type AskResponse,
+  type AskScope,
   type AskTemperature,
+  type Point,
   type ReasoningMode,
 } from "@trigger-helper/shared";
 import type { FastifyInstance } from "fastify";
+import type { Env } from "../config/env.js";
 import type { DeepSeekService } from "../services/deepseek.js";
 import type { PointsService } from "../services/points.js";
 import type { UsageLedgerService } from "../services/usage-ledger.js";
 import {
   buildJsonSystemPrompt,
   buildMetaPromptWriterSystem,
+  buildOpenMetaPromptWriterSystem,
+  buildOpenReasoningSystemPrompt,
   buildReasoningSystemPrompt,
 } from "../services/prompt.js";
 import { mergeUsage } from "../services/usage.js";
+import { isExpensiveModel } from "../services/model-cost-tier.js";
 
 type AskRouteDeps = {
   pointsService: PointsService;
   deepSeekService: DeepSeekService;
   usageLedger: UsageLedgerService;
+  env: Env;
 };
 
 /** Length control for format=json (Advent day02) — enough for one complete object. */
 const JSON_MAX_TOKENS = 700;
 
-/** Free/direct tip — keep answers short for demo cost and readability. */
-const FREE_MAX_TOKENS = 450;
+/** Free/direct grounded — keep readable, but don't clip short tips. */
+const FREE_MAX_TOKENS = 1_200;
 
-/** Step / experts / meta answer — roles need room, not an essay. */
-const REASONING_MAX_TOKENS = 700;
+/** Step / experts / meta answer — multi-role replies need room. */
+const REASONING_MAX_TOKENS = 4_000;
 
-/** Meta: model writes a prompt first — keep that short too. */
-const META_WRITER_MAX_TOKENS = 280;
+/** Meta: model writes a prompt first — ceiling only, need not fill. */
+const META_WRITER_MAX_TOKENS = 2_000;
+
+/** Day05 open / preset L — long complete answers. */
+const OPEN_MAX_TOKENS = 30_000;
+
+type AskRunResult = {
+  reply: string;
+  metaPrompt?: string;
+  usage: AskResponse["usage"];
+  latency_ms: number;
+};
 
 async function runMetaAsk(
   deepSeek: DeepSeekService,
-  point: Parameters<typeof buildMetaPromptWriterSystem>[0],
+  scope: AskScope,
+  point: Point | null,
   question: string,
   temperature: AskTemperature,
-): Promise<{ reply: string; metaPrompt: string; usage: AskResponse["usage"] }> {
+  model: string | undefined,
+): Promise<AskRunResult> {
+  const writerSystem =
+    scope === "open"
+      ? buildOpenMetaPromptWriterSystem()
+      : buildMetaPromptWriterSystem(point!);
+
   const writer = await deepSeek.chat(
     [
-      { role: "system", content: buildMetaPromptWriterSystem(point) },
+      { role: "system", content: writerSystem },
       {
         role: "user",
         content: `Составь промпт для ответа на вопрос:\n${question}`,
       },
     ],
-    { maxTokens: META_WRITER_MAX_TOKENS, temperature },
+    { maxTokens: META_WRITER_MAX_TOKENS, temperature, model },
   );
 
   const metaPrompt = writer.reply.trim();
@@ -57,45 +83,76 @@ async function runMetaAsk(
       { role: "system", content: metaPrompt },
       { role: "user", content: question },
     ],
-    { maxTokens: REASONING_MAX_TOKENS, temperature },
+    {
+      maxTokens: scope === "open" ? OPEN_MAX_TOKENS : REASONING_MAX_TOKENS,
+      temperature,
+      model,
+    },
   );
 
   return {
     reply: answer.reply,
     metaPrompt,
     usage: mergeUsage([writer.usage, answer.usage]),
+    latency_ms: writer.latency_ms + answer.latency_ms,
   };
 }
 
-async function runReasoningAsk(
+async function runAsk(
   deepSeek: DeepSeekService,
-  point: Parameters<typeof buildReasoningSystemPrompt>[0],
+  scope: AskScope,
+  point: Point | null,
   question: string,
   mode: ReasoningMode,
   temperature: AskTemperature,
-): Promise<{ reply: string; metaPrompt?: string; usage: AskResponse["usage"] }> {
+  model: string | undefined,
+): Promise<AskRunResult> {
   if (mode === "meta") {
-    return runMetaAsk(deepSeek, point, question, temperature);
+    return runMetaAsk(deepSeek, scope, point, question, temperature, model);
   }
+
+  const system =
+    scope === "open"
+      ? buildOpenReasoningSystemPrompt(mode)
+      : buildReasoningSystemPrompt(point!, mode);
+
+  const maxTokens =
+    scope === "open"
+      ? OPEN_MAX_TOKENS
+      : mode === "direct"
+        ? FREE_MAX_TOKENS
+        : REASONING_MAX_TOKENS;
 
   const result = await deepSeek.chat(
     [
-      { role: "system", content: buildReasoningSystemPrompt(point, mode) },
+      { role: "system", content: system },
       { role: "user", content: question },
     ],
-    {
-      maxTokens: mode === "direct" ? FREE_MAX_TOKENS : REASONING_MAX_TOKENS,
-      temperature,
-    },
+    { maxTokens, temperature, model },
   );
 
-  return { reply: result.reply, usage: result.usage };
+  return {
+    reply: result.reply,
+    usage: result.usage,
+    latency_ms: result.latency_ms,
+  };
 }
 
 export async function registerAskRoutes(
   app: FastifyInstance,
   deps: AskRouteDeps,
 ): Promise<void> {
+  app.get("/api/models", async () => {
+    const models = deps.deepSeekService.getDemoModels();
+    return {
+      proxyapi: deps.deepSeekService.hasProxyApi(),
+      open_task_mode: OPEN_TASK_MODE,
+      open_task_locked: OPEN_TASK_MODE === "public",
+      open_preset_l: OPEN_PRESET_L_QUESTION,
+      models,
+    };
+  });
+
   app.post("/api/ask", async (request, reply) => {
     const parsed = AskRequestSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -105,19 +162,54 @@ export async function registerAskRoutes(
       });
     }
 
-    const { pointId, question, format, reasoningMode, temperature } =
-      parsed.data;
-    const point = await deps.pointsService.findById(pointId);
-    if (!point) {
-      return reply.status(400).send({
-        error: "Point not found",
-        pointId,
-      });
+    const {
+      scope,
+      pointId,
+      format,
+      reasoningMode,
+      temperature,
+      model,
+    } = parsed.data;
+    let { question } = parsed.data;
+
+    const freeCap = deps.env.FREE_DAILY_ASKS;
+    const requestedModel = model ?? deps.env.DEEPSEEK_MODEL;
+    const countExpensive = OPEN_TASK_MODE === "public";
+    if (
+      countExpensive &&
+      freeCap > 0 &&
+      isExpensiveModel(requestedModel)
+    ) {
+      const used = await deps.usageLedger.getExpensiveAsksToday();
+      if (used >= freeCap) {
+        return reply.status(429).send({
+          error: "Ask limit reached",
+          message: `Дневной лимит дорогих моделей: ${freeCap} (МСК). DeepSeek / flash-lite / mini — без лимита.`,
+          limit: freeCap,
+          used,
+          model: requestedModel,
+        });
+      }
+    }
+
+    if (scope === "open" && OPEN_TASK_MODE === "public") {
+      // Advent public L: server-owned text (ignore client edits).
+      question = OPEN_PRESET_L_QUESTION;
+    }
+
+    let point: Point | null = null;
+    if (scope === "grounded") {
+      point = (await deps.pointsService.findById(pointId!)) ?? null;
+      if (!point) {
+        return reply.status(400).send({
+          error: "Point not found",
+          pointId,
+        });
+      }
     }
 
     try {
-      // Day02 path: JSON format control (reasoning modes stay on free).
-      if (format === "json") {
+      if (format === "json" && scope === "grounded" && point) {
         const result = await deps.deepSeekService.chat(
           [
             { role: "system", content: buildJsonSystemPrompt(point) },
@@ -127,6 +219,7 @@ export async function registerAskRoutes(
             jsonMode: true,
             maxTokens: JSON_MAX_TOKENS,
             temperature,
+            model,
           },
         );
 
@@ -134,29 +227,41 @@ export async function registerAskRoutes(
           reply: result.reply,
           usage: result.usage,
           format: "json",
+          scope,
           reasoningMode: "direct",
           temperature,
-          totals: await deps.usageLedger.record(result.usage),
+          model: result.usage.model,
+          latency_ms: result.latency_ms,
+          totals: await deps.usageLedger.record(result.usage, {
+            countExpensive,
+          }),
         };
         return body;
       }
 
-      const result = await runReasoningAsk(
+      const result = await runAsk(
         deps.deepSeekService,
+        scope,
         point,
         question,
         reasoningMode,
         temperature,
+        model,
       );
 
       const body: AskResponse = {
         reply: result.reply,
         usage: result.usage,
         format: "free" satisfies AskFormat,
+        scope,
         reasoningMode,
         temperature,
+        model: result.usage.model,
+        latency_ms: result.latency_ms,
         ...(result.metaPrompt ? { metaPrompt: result.metaPrompt } : {}),
-        totals: await deps.usageLedger.record(result.usage),
+        totals: await deps.usageLedger.record(result.usage, {
+          countExpensive,
+        }),
       };
       return body;
     } catch (error) {
