@@ -38,6 +38,12 @@ export const UsageTotalsSchema = z.object({
   expensive_day: z.string().optional(),
   /** Asks to expensive models today (resets when expensive_day changes). */
   expensive_asks_today: z.number().int().nonnegative().default(0),
+  /** Moscow day for ₽ budget counters (usually same as expensive_day). */
+  budget_day: z.string().optional(),
+  /** Billing ₽ today (all models; DeepSeek via FX). */
+  cost_rub_today: z.number().nonnegative().default(0),
+  /** Billing ₽ today for expensive models only. */
+  cost_rub_expensive_today: z.number().nonnegative().default(0),
   updated_at: z.string(),
 });
 

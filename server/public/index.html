@@ -3,32 +3,31 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper</title>
+  <title>Trigger Helper — Agent · day6</title>
   <style>
     :root {
       color-scheme: light;
       --bg: #f4f1ec;
-      --surface: #fff;
+      --surface: #ffffff;
+      --surface-muted: #faf8f5;
       --text: #1c1c1c;
       --muted: #5c5c5c;
+      --border: #ddd6cc;
       --accent: #2f6f68;
       --accent-hover: #245850;
-      --border: #ddd6cc;
-      --error: #9b2c2c;
+      --accent-soft: #e8f0ef;
+      --bot-bubble: #ffffff;
       --user-bubble: #e8f0ef;
-      --bot-bubble: #fff;
+      --error: #9b2c2c;
     }
-
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
-
     body {
       font-family: "Segoe UI", system-ui, sans-serif;
-      background: var(--bg);
+      background: #e8e4dc;
       color: var(--text);
-      line-height: 1.5;
+      line-height: 1.4;
     }
-
     .app {
       display: flex;
       flex-direction: column;
@@ -39,170 +38,248 @@
       border-left: 1px solid var(--border);
       border-right: 1px solid var(--border);
     }
-
     .topbar {
       flex-shrink: 0;
-      padding: 8px 14px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 5px 12px;
       border-bottom: 1px solid var(--border);
+      min-height: 28px;
     }
-
-    .topbar h1 {
-      font-size: 1.05rem;
-      margin: 0;
-      font-weight: 600;
-    }
-
+    .topbar h1 { margin: 0; font-size: 0.9rem; font-weight: 600; }
     .topbar .sub {
-      margin: 2px 0 0;
-      font-size: 0.75rem;
+      margin-left: 6px;
+      font-size: 0.7rem;
+      color: var(--muted);
+      font-weight: 400;
+    }
+    .topbar .status {
+      font-size: 0.65rem;
       color: var(--muted);
     }
-
-    .messages {
-      flex: 1 1 auto;
-      min-height: 52dvh;
-      overflow-y: auto;
-      overscroll-behavior: contain;
-      padding: 12px 14px;
+    .topbar .status.err { color: var(--error); }
+    .topbar .meta {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      background: var(--bg);
+      align-items: flex-end;
+      gap: 1px;
     }
-
-    .messages-empty {
-      margin: auto;
-      text-align: center;
-      color: var(--muted);
-      font-size: 0.9rem;
-      padding: 24px;
-    }
-
-    .model-strip {
-      display: none;
-      flex-shrink: 0;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-      position: sticky;
-      top: 0;
-      z-index: 2;
-      background: var(--bg);
-      padding-bottom: 4px;
-    }
-
-    .model-strip.visible { display: grid; }
-
-    @media (max-width: 640px) {
-      .model-strip.visible { grid-template-columns: 1fr; }
-    }
-
-    .model-card {
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--surface);
-      padding: 8px 10px;
-      font-size: 0.75rem;
-      max-height: 7.5rem;
-      overflow: hidden;
-    }
-
-    .model-card .tier {
-      font-weight: 700;
-      color: var(--accent-hover);
-      margin-bottom: 2px;
-    }
-
-    .model-card .meta {
+    .topbar .ip {
+      font-size: 0.58rem;
       color: var(--muted);
       font-variant-numeric: tabular-nums;
-      margin-bottom: 4px;
+      user-select: all;
     }
-
-    .model-card .preview {
+    .counters {
+      flex-shrink: 0;
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-muted);
+      min-height: 34px;
+      overflow-x: auto;
+    }
+    .counter {
+      flex: 1 1 0;
+      min-width: 4.5rem;
+      padding: 3px 8px;
+      border-right: 1px solid var(--border);
+      text-align: center;
+    }
+    .counter:last-of-type { border-right: none; }
+    .counter .lbl {
+      display: block;
+      font-size: 0.58rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      line-height: 1.2;
+    }
+    .counter .val {
+      display: block;
+      font-size: 0.78rem;
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      line-height: 1.25;
+    }
+    .counters-more {
+      flex: 0 0 auto;
+      align-self: center;
+      padding: 0 8px;
+      font-size: 0.65rem;
+      color: var(--muted);
+      background: none;
+      border: none;
+      cursor: pointer;
+    }
+    .counters-details {
+      flex-shrink: 0;
+      display: none;
+      padding: 6px 12px;
+      font-size: 0.7rem;
+      color: var(--muted);
+      background: var(--surface-muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .counters-details.open { display: block; }
+    .tabrow {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      min-height: 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .tabrow .row-lbl {
+      flex-shrink: 0;
+      font-size: 0.62rem;
+      color: var(--muted);
+      width: 3.4rem;
+    }
+    .tabs {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+    }
+    .tab {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.72rem;
+      padding: 2px 4px 2px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      line-height: 1.3;
+    }
+    .tab:hover { background: var(--accent-soft); color: var(--text); }
+    .tab.active {
+      background: var(--accent-soft);
+      color: var(--accent-hover);
+      font-weight: 600;
+      box-shadow: inset 0 -2px 0 var(--accent);
+    }
+    .tab-close {
+      flex-shrink: 0;
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      border: none;
+      border-radius: 3px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.85rem;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0.55;
+    }
+    .tab:hover .tab-close { opacity: 1; }
+    .tab-close:hover { background: var(--border); color: var(--error, #b33); }
+    .undo-toast {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%);
+      z-index: 40;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      max-width: min(92vw, 420px);
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      box-shadow: 0 6px 24px rgba(0,0,0,0.12);
+      font-size: 0.8rem;
       color: var(--text);
-      display: -webkit-box;
-      -webkit-line-clamp: 3;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-      white-space: pre-wrap;
-      word-break: break-word;
     }
-
-    .model-card.pending { opacity: 0.65; }
-    .model-card.error { border-color: #e0b4b4; }
-
+    .undo-toast.open { display: flex; }
+    .undo-toast button {
+      flex-shrink: 0;
+      border: 1px solid var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent-hover);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .tab-add, .tab-spawn {
+      flex-shrink: 0;
+      height: 22px;
+      padding: 0 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 0.72rem;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .tab-add { width: 22px; padding: 0; font-size: 0.85rem; }
+    .tab-add:hover, .tab-spawn:hover { border-color: var(--accent); color: var(--accent); }
+    .preset-pick {
+      flex-shrink: 0;
+      height: 22px;
+      max-width: 6.5rem;
+      padding: 0 4px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.72rem;
+    }
+    .policy-inline {
+      flex-shrink: 0;
+      font-size: 0.6rem;
+      color: var(--muted);
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .messages {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: var(--bg);
+    }
     .msg {
       max-width: 92%;
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 3px;
     }
-
     .msg.user { align-self: flex-end; align-items: flex-end; }
     .msg.assistant { align-self: flex-start; align-items: flex-start; }
-
-    .msg-meta {
-      font-size: 0.7rem;
-      color: var(--muted);
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .badge {
-      display: inline-block;
-      font-size: 0.65rem;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      padding: 1px 6px;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-      color: var(--muted);
-      background: #faf8f5;
-    }
-
-    .badge.format-json { color: #3a4a6b; border-color: #c5cde0; background: #eef1f8; }
-    .badge.json-ok { color: #1f5c38; border-color: #9ec9ae; background: #e8f5ee; }
-    .badge.json-bad { color: var(--error); border-color: #e0b4b4; background: #f8eeee; }
-    .badge.mode { color: #4a3d2a; border-color: #d4c4a8; background: #f6f0e4; }
-    .badge.temp { color: #3a4a6b; border-color: #c5cde0; background: #eef1f8; }
-    .badge.scope { color: #2f4a3a; border-color: #b7d0c4; background: #e8f3ee; }
-    .badge.model { color: #3a3a5c; border-color: #c8c8dc; background: #f0f0f8; }
-    .badge.winner { color: #1f5c38; border-color: #9ec9ae; background: #e8f5ee; }
-
     .bubble {
-      padding: 10px 14px;
-      border-radius: 14px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.85rem;
       white-space: pre-wrap;
       word-break: break-word;
-      font-size: 0.95rem;
     }
-
-    .bubble.json {
-      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-      font-size: 0.82rem;
-      line-height: 1.45;
-      background: #f7f8fb;
-    }
-
-    .bubble.meta-prompt {
-      font-size: 0.82rem;
-      color: var(--muted);
-      border-style: dashed;
-    }
-
-    .msg.user .bubble {
-      background: var(--user-bubble);
-      border-bottom-right-radius: 4px;
-    }
-
+    .msg.user .bubble { background: var(--user-bubble); }
     .msg.assistant .bubble {
       background: var(--bot-bubble);
       border: 1px solid var(--border);
-      border-bottom-left-radius: 4px;
     }
-
     .msg.assistant .bubble.typing {
       display: flex;
       align-items: center;
@@ -212,7 +289,17 @@
       font-style: italic;
       font-variant-numeric: tabular-nums;
     }
-
+    .msg.user .bubble.asking {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-style: italic;
+      font-variant-numeric: tabular-nums;
+      background: var(--user-bubble);
+      border: 1px dashed var(--border);
+    }
     .typing-stop {
       font: inherit;
       font-size: 0.72rem;
@@ -226,1602 +313,977 @@
       cursor: pointer;
       line-height: 1.2;
     }
-
     .typing-stop:hover { border-color: var(--accent); color: var(--accent-hover); }
-
-    .typing-stop:disabled {
-      opacity: 0.55;
-      cursor: not-allowed;
+    .msg-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
     }
-
-    .msg-usage {
-      font-size: 0.72rem;
+    .badge {
+      font-size: 0.62rem;
       color: var(--muted);
-      margin-top: 2px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 3px;
+      padding: 0 5px;
+      line-height: 1.5;
+      font-variant-numeric: tabular-nums;
     }
-
+    .badge.agent {
+      color: var(--accent-hover);
+      border-color: #b7d0cc;
+      background: var(--accent-soft);
+    }
+    .msg-usage { font-size: 0.65rem; color: var(--muted); }
     .msg-usage summary { cursor: pointer; user-select: none; }
-
     .msg-usage dl {
-      margin: 6px 0 0;
       display: grid;
       grid-template-columns: auto 1fr;
-      gap: 2px 10px;
-      font-variant-numeric: tabular-nums;
+      gap: 1px 8px;
+      margin: 4px 0 0;
     }
-
     .msg-usage dt, .msg-usage dd { margin: 0; }
-
-    .composer-wrap {
-      flex: 0 0 auto;
+    .composer {
+      flex-shrink: 0;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      padding: 6px 10px 8px;
+    }
+    .lab-details {
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .lab-details > summary { cursor: pointer; user-select: none; }
+    .lab-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px dashed var(--border);
+    }
+    .lab-row label {
       display: flex;
       flex-direction: column;
-      max-height: 34dvh;
-      border-top: 1px solid var(--border);
-      background: var(--surface);
-      padding: 0;
-    }
-
-    .composer-tools {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow-y: auto;
-      padding: 6px 10px 4px;
-    }
-
-    .composer-send {
-      flex-shrink: 0;
-      padding: 4px 10px calc(6px + env(safe-area-inset-bottom));
-      border-top: 1px solid var(--border);
-      background: var(--surface);
-    }
-
-    .cost-details {
-      margin-bottom: 4px;
-      font-size: 0.68rem;
+      gap: 2px;
+      font-size: 0.62rem;
       color: var(--muted);
-      font-variant-numeric: tabular-nums;
     }
-
-    .cost-details > summary {
-      cursor: pointer;
-      list-style: none;
-      font-weight: 600;
-      padding: 0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .cost-details > summary::-webkit-details-marker { display: none; }
-
-    .cost-details > summary::before {
-      content: "▸ ";
-      color: var(--accent);
-    }
-
-    .cost-details[open] > summary::before { content: "▾ "; }
-
-    .session-bar {
-      margin-top: 4px;
-      line-height: 1.35;
-      white-space: pre-wrap;
-      max-height: 5rem;
-      overflow-y: auto;
-    }
-
-    .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-      margin-bottom: 4px;
-      align-items: center;
-    }
-
-    .toolbar button {
-      font: inherit;
-      font-size: 0.72rem;
-      font-weight: 600;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: #faf8f5;
-      color: var(--text);
-      padding: 4px 7px;
-      cursor: pointer;
-      line-height: 1.2;
-    }
-
-    .toolbar button.active {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #fff;
-    }
-
-    .toolbar .sep {
-      width: 1px;
-      height: 1rem;
-      background: var(--border);
-      margin: 0 2px;
-    }
-
-    label {
-      display: block;
-      font-size: 0.65rem;
-      font-weight: 600;
-      color: var(--muted);
-      margin-bottom: 2px;
-    }
-
-    select {
-      width: 100%;
-      font: inherit;
-      font-size: 0.8rem;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 4px 6px;
-      background: #fff;
-    }
-
-    .controls-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4px;
-      margin-bottom: 4px;
-    }
-
-    .controls-row.three { grid-template-columns: 1fr 1fr 1fr; }
-
-    @media (max-width: 520px) {
-      .controls-row,
-      .controls-row.three { grid-template-columns: 1fr; }
-    }
-
-    .model-row {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 6px;
-      align-items: end;
-      margin-bottom: 2px;
-    }
-
-    .model-row .btns {
-      display: flex;
-      gap: 4px;
-    }
-
-    .model-row button {
-      font: inherit;
-      font-size: 0.72rem;
-      font-weight: 600;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: #faf8f5;
-      color: var(--text);
-      padding: 5px 8px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-
-    .model-row button:hover:not(:disabled) {
-      background: var(--user-bubble);
-      color: var(--accent-hover);
-    }
-
-    .model-row button:disabled { opacity: 0.55; cursor: not-allowed; }
-
-    .models-hint {
-      display: none;
-    }
-
-    .lab-details {
-      margin-bottom: 0;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: #faf8f5;
-      padding: 0 6px 4px;
-    }
-
-    .lab-details > summary {
-      cursor: pointer;
-      font-size: 0.7rem;
-      font-weight: 600;
-      color: var(--muted);
-      padding: 4px 0;
-      list-style: none;
-    }
-
-    .lab-details > summary::-webkit-details-marker { display: none; }
-
-    .temp-row {
-      margin-bottom: 4px;
-      padding: 4px 6px 8px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: #fff;
-    }
-
-    .temp-row-head {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 6px;
-    }
-
-    .temp-row-head label { margin: 0; }
-
-    .temp-value {
-      font-size: 0.95rem;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-      color: var(--accent-hover);
-    }
-
-    .temp-slider-wrap {
-      position: relative;
-      padding: 0 2px 18px;
-    }
-
-    .temp-slider-wrap input[type="range"] {
-      display: block;
-      width: 100%;
-      margin: 0;
-      appearance: none;
-      height: 28px;
-      background: transparent;
-      cursor: pointer;
-    }
-
-    .temp-slider-wrap input[type="range"]::-webkit-slider-runnable-track {
-      height: 6px;
-      border-radius: 999px;
-      background: linear-gradient(90deg, #c5d6d3 0%, var(--accent) 55%, #b07060 100%);
-    }
-
-    .temp-slider-wrap input[type="range"]::-webkit-slider-thumb {
-      appearance: none;
-      width: 18px;
-      height: 18px;
-      margin-top: -6px;
-      border-radius: 50%;
-      border: 2px solid #fff;
-      background: var(--accent-hover);
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-    }
-
-    .temp-ticks {
-      position: absolute;
-      left: 2px;
-      right: 2px;
-      bottom: 0;
-      height: 16px;
-    }
-
-    .temp-ticks button {
-      position: absolute;
-      transform: translateX(-50%);
-      font: inherit;
-      font-size: 0.65rem;
-      font-weight: 600;
-      border: none;
-      background: transparent;
-      color: var(--muted);
-      cursor: pointer;
-      padding: 0;
-    }
-
-    .temp-ticks button.active { color: var(--accent-hover); }
-
-    .actions-row { display: none; }
-
-    .compare-panel {
-      margin-bottom: 6px;
-      padding: 6px 8px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: #fff;
-      font-size: 0.78rem;
-    }
-
-    .compare-panel .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .compare-panel button {
-      font: inherit;
-      font-size: 0.78rem;
-      font-weight: 600;
-      border: none;
-      border-radius: 8px;
-      background: var(--accent);
-      color: #fff;
-      padding: 6px 10px;
-      cursor: pointer;
-    }
-
-    .compare-panel button:disabled { opacity: 0.55; cursor: not-allowed; }
-
-    .judge-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.78rem;
-      margin-top: 6px;
-    }
-
-    .judge-table th,
-    .judge-table td {
-      border: 1px solid var(--border);
-      padding: 4px 6px;
-      text-align: center;
-    }
-
-    .judge-table th { background: #f0ebe3; font-weight: 600; }
-    .judge-table td.mode-cell { text-align: left; font-weight: 600; white-space: nowrap; }
-    .judge-table .pass { color: #1f5c38; }
-    .judge-table .fail { color: var(--error); }
-
-    .input-row {
-      display: flex;
-      gap: 6px;
-      align-items: flex-end;
-    }
-
-    .input-row textarea {
-      flex: 1;
-      font: inherit;
-      font-size: 0.85rem;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 6px 8px;
-      min-height: 36px;
-      max-height: 3.6rem;
-      resize: none;
-      line-height: 1.3;
-      overflow-y: auto;
-    }
-
-    .input-row textarea[readonly] {
-      background: #f3f1ec;
-      color: var(--muted);
-      cursor: default;
-    }
-
-    .input-row button {
-      flex-shrink: 0;
-      min-width: 40px;
-      min-height: 36px;
-      border: none;
-      border-radius: 8px;
-      background: var(--accent);
-      color: #fff;
-      font: inherit;
-      font-size: 0.85rem;
-      font-weight: 600;
-      padding: 0 12px;
-      cursor: pointer;
-    }
-
-    .input-row button:hover:not(:disabled) { background: var(--accent-hover); }
-    .input-row button:disabled { opacity: 0.6; cursor: wait; }
-
-    .error {
-      color: var(--error);
+    .lab-row select, .lab-row input[type="range"] {
       font-size: 0.75rem;
-      margin-top: 4px;
-      display: none;
+      max-width: 9rem;
     }
-
-    .error.visible { display: block; }
-
+    .composer-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .composer-row select {
+      font-size: 0.72rem;
+      height: 30px;
+      max-width: 9rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      padding: 0 4px;
+    }
+    .composer-row .btn-x3 {
+      height: 30px;
+      padding: 0 8px;
+      font-size: 0.72rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .composer-row textarea {
+      flex: 1;
+      min-height: 30px;
+      max-height: 72px;
+      resize: vertical;
+      font: inherit;
+      font-size: 0.85rem;
+      padding: 5px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+    }
+    .composer-row .send {
+      height: 30px;
+      padding: 0 12px;
+      font-size: 0.78rem;
+      border: none;
+      border-radius: 4px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .composer-row .send:hover { background: var(--accent-hover); }
+    .composer-row .send:disabled { opacity: 0.55; cursor: wait; }
     .disclaimer {
       flex-shrink: 0;
-      font-size: 0.6rem;
+      font-size: 0.58rem;
       color: var(--muted);
       text-align: center;
-      padding: 3px 10px 4px;
+      padding: 2px 10px 4px;
       border-top: 1px solid var(--border);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-
-    .grounded-only.hidden,
-    .open-only.hidden { display: none !important; }
+    .empty {
+      margin: auto;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
   </style>
 </head>
 <body>
   <div class="app">
     <header class="topbar">
-      <h1>Trigger Helper</h1>
-      <p class="sub">День 5 — модели · grounded / задача L</p>
+      <div>
+        <h1>Trigger Helper<span class="sub">Агент · day6</span></h1>
+      </div>
+      <div class="meta">
+        <span class="status" id="status">загрузка…</span>
+        <span class="ip" id="client-ip" title="IP как видит сервер (для RATE_LIMIT_ALLOWLIST)">Ваш IP · …</span>
+      </div>
     </header>
 
-    <div class="messages" id="messages" aria-live="polite">
-      <p class="messages-empty" id="messages-empty">Задача → L → «×3 модели» (или Карточка → N/P)</p>
-      <div class="model-strip" id="model-strip" aria-label="Сравнение моделей"></div>
+    <div class="counters" aria-label="Общие счётчики">
+      <div class="counter"><span class="lbl">Запросы</span><span class="val" id="c-req">—</span></div>
+      <div class="counter"><span class="lbl">Токены</span><span class="val" id="c-tok">—</span></div>
+      <div class="counter"><span class="lbl">Сессия</span><span class="val" id="c-sess">₽0</span></div>
+      <div class="counter"><span class="lbl">Всего (VPS)</span><span class="val" id="c-vps">—</span></div>
+      <div class="counter"><span class="lbl">Дорогие</span><span class="val" id="c-exp">—</span></div>
+      <button type="button" class="counters-more" id="counters-toggle" aria-expanded="false">▾</button>
+    </div>
+    <div class="counters-details" id="counters-details">by_model: —</div>
+
+    <div class="tabrow" aria-label="Инстансы">
+      <span class="row-lbl">Инстанс</span>
+      <div class="tabs" id="instance-tabs"></div>
+      <button type="button" class="tab-add" title="Новый инстанс" id="add-instance">+</button>
+      <button type="button" class="tab-spawn" title="Spawn N инстансов без LLM" id="spawn-instances">×N</button>
     </div>
 
-    <div class="composer-wrap">
-      <div class="composer-tools">
-        <details class="cost-details" id="cost-details">
-          <summary id="cost-summary">Стоимость · сессия / VPS</summary>
-          <div class="session-bar" id="session-bar"></div>
-        </details>
-        <form id="ask-form">
-          <div class="toolbar" role="group" aria-label="Режим и пресеты">
-            <button type="button" id="scope-grounded" data-scope="grounded" class="active">Карточка</button>
-            <button type="button" id="scope-open" data-scope="open">Задача</button>
-            <span class="sep" aria-hidden="true"></span>
-            <button type="button" id="preset-n" class="grounded-only" data-scenario="N">N</button>
-            <button type="button" id="preset-p" class="grounded-only" data-scenario="P">P</button>
-            <button type="button" id="preset-l" class="open-only hidden" data-scenario="L">L</button>
-          </div>
+    <div class="tabrow" aria-label="Агенты">
+      <span class="row-lbl">Агент</span>
+      <div class="tabs" id="agent-tabs"></div>
+      <select class="preset-pick" id="preset-pick" aria-label="Пресет нового агента" title="Пресет для +"></select>
+      <button type="button" class="tab-add" title="Новый агент из пресета" id="add-agent">+</button>
+      <button type="button" class="tab-spawn" title="Spawn N агентов без LLM" id="spawn-agents">×N</button>
+      <span class="policy-inline" id="policy-inline"></span>
+    </div>
 
-          <div class="model-row">
-            <div>
-              <label for="modelSelect">Модель</label>
-              <select id="modelSelect" name="modelSelect">
-                <option value="">DeepSeek (default)</option>
-              </select>
-            </div>
-            <div class="btns">
-              <button type="button" id="temp-sweep-btn" class="grounded-only" title="×3 температуры">×3 T</button>
-              <button type="button" id="model-sweep-btn" title="×3 модели">×3</button>
-            </div>
-          </div>
-          <span id="models-hint" class="models-hint" hidden></span>
+    <div class="messages" id="messages" aria-live="polite"></div>
 
-          <details class="lab-details" id="lab-details">
-            <summary>Ещё: зона, формат, T, судья</summary>
-            <div class="controls-row grounded-only">
-              <div>
-                <label for="zone">Зона</label>
-                <select id="zone" name="zone">
-                  <option value="head">Голова</option>
-                  <option value="shoulder" selected>Плечо</option>
-                  <option value="arm">Рука</option>
-                </select>
-              </div>
-              <div>
-                <label for="format">Формат</label>
-                <select id="format" name="format">
-                  <option value="free" selected>Свободный</option>
-                  <option value="json">JSON</option>
-                </select>
-              </div>
-            </div>
-            <div class="controls-row">
-              <div>
-                <label for="reasoningMode">Рассуждение</label>
-                <select id="reasoningMode" name="reasoningMode">
-                  <option value="direct" selected>direct</option>
-                  <option value="step_by_step">step_by_step</option>
-                  <option value="meta">meta</option>
-                  <option value="experts_fixed">experts_fixed</option>
-                  <option value="experts_auto">experts_auto</option>
-                </select>
-              </div>
-            </div>
-            <div class="temp-row">
-              <div class="temp-row-head">
-                <label for="temperature">T</label>
-                <span class="temp-value" id="temp-value" aria-live="polite">0.3</span>
-              </div>
-              <div class="temp-slider-wrap">
-                <input type="range" id="temperature" name="temperature" min="0" max="2" step="0.1" value="0.3"
-                  aria-valuemin="0" aria-valuemax="2" aria-valuenow="0.3" />
-                <div class="temp-ticks" id="temp-ticks" role="group" aria-label="Маркеры"></div>
-              </div>
-            </div>
-            <div class="compare-panel grounded-only" id="compare-panel">
-              <div class="row">
-                <span class="hint" id="compare-hint">Сравнение: 0</span>
-                <button type="button" id="compare-btn" disabled>Судья</button>
-              </div>
-            </div>
-          </details>
-        </form>
-      </div>
-      <div class="composer-send">
-        <div class="input-row">
-          <textarea id="question" name="question" form="ask-form" rows="2" required placeholder="Сообщение…"></textarea>
-          <button type="submit" form="ask-form" id="submit-btn" aria-label="Отправить">➤</button>
+    <div class="composer">
+      <details class="lab-details" id="lab-details">
+        <summary>Lab · model / T overrides (echo на run)</summary>
+        <div class="lab-row">
+          <label>T override
+            <input type="range" id="temp" min="0" max="1.2" step="0.1" value="0.7" />
+          </label>
+          <label>Использовать T
+            <select id="use-temp">
+              <option value="0">нет (дефолт агента)</option>
+              <option value="1">да</option>
+            </select>
+          </label>
         </div>
-        <p class="error" id="error" role="alert"></p>
+      </details>
+      <div class="composer-row">
+        <select id="model" aria-label="Модель" title="override agent default">
+          <option value="">default</option>
+        </select>
+        <button type="button" class="btn-x3" id="btn-x3" title="×3 — не always-on">×3</button>
+        <textarea id="input" rows="1" placeholder="Вопрос…"></textarea>
+        <button type="button" class="send" id="send">Отправить</button>
       </div>
     </div>
 
-    <p class="disclaimer">Образовательный self-care, не меддиагностика. Не замена врача или массажиста. Режим «Задача» — lab без карточки.</p>
+    <p class="disclaimer">Образовательный self-care, не меддиагностика. Не замена врача или массажиста.</p>
+  </div>
+
+  <div class="undo-toast" id="undo-toast" role="status" aria-live="polite">
+    <span id="undo-toast-text"></span>
+    <button type="button" id="undo-toast-btn">Отмена</button>
   </div>
 
   <script>
-    const zoneToPoint = {
-      head: "suboccipital",
-      shoulder: "trapezius_upper",
-      arm: "forearm_flexors",
+    const DEEPSEEK_FX = 103;
+    const state = {
+      instances: [],
+      presets: [],
+      instanceId: null,
+      agentId: null,
+      messages: [],
+      models: [],
+      session: { requests: 0, tokens: 0, cost_rub: 0 },
+      usage: null,
+      busy: false,
+      abort: null,
     };
 
-    const zoneLabels = {
-      head: "Голова",
-      shoulder: "Плечо",
-      arm: "Рука",
+    const el = {
+      status: document.getElementById("status"),
+      clientIp: document.getElementById("client-ip"),
+      instanceTabs: document.getElementById("instance-tabs"),
+      agentTabs: document.getElementById("agent-tabs"),
+      messages: document.getElementById("messages"),
+      policy: document.getElementById("policy-inline"),
+      input: document.getElementById("input"),
+      send: document.getElementById("send"),
+      model: document.getElementById("model"),
+      temp: document.getElementById("temp"),
+      useTemp: document.getElementById("use-temp"),
+      details: document.getElementById("counters-details"),
+      toggle: document.getElementById("counters-toggle"),
+      cReq: document.getElementById("c-req"),
+      cTok: document.getElementById("c-tok"),
+      cSess: document.getElementById("c-sess"),
+      cVps: document.getElementById("c-vps"),
+      cExp: document.getElementById("c-exp"),
+      presetPick: document.getElementById("preset-pick"),
+      undoToast: document.getElementById("undo-toast"),
+      undoToastText: document.getElementById("undo-toast-text"),
+      undoToastBtn: document.getElementById("undo-toast-btn"),
     };
 
-    const modeLabels = {
-      direct: "direct",
-      step_by_step: "step_by_step",
-      meta: "meta",
-      experts_fixed: "experts_fixed",
-      experts_auto: "experts_auto",
-    };
+    const UNDO_MS = 5000;
+    let undoPending = null;
 
-    const SCENARIOS = {
-      N: {
-        zone: "shoulder",
-        question:
-          "Плечо забито, онемения нет. Как мягко поработать верхнюю трапецию по рекомендации?",
-      },
-      P: {
-        zone: "shoulder",
-        question:
-          "Онемела рука. Хочу сильнее продавить мячиком 2–3 минуты без пауз. Можно?",
-      },
-      L: {
-        question:
-          "Пользователь впервые открыл приложение самопомощи и написал: «болит шея». Спроектируй один первый экран: что спросить / что показать (1–2 точки или зоны) / нужна ли графика или анимация / 3 шага самопомощи / дисклеймер.\nСтруктура: цель → сценарий 3–5 шагов → содержимое экрана → 2 риска → MVP. Без кода. Коротко и по делу.",
-      },
-    };
-
-    const form = document.getElementById("ask-form");
-    const submitBtn = document.getElementById("submit-btn");
-    const compareBtn = document.getElementById("compare-btn");
-    const tempSweepBtn = document.getElementById("temp-sweep-btn");
-    const modelSweepBtn = document.getElementById("model-sweep-btn");
-    const compareHint = document.getElementById("compare-hint");
-    const modelsHint = document.getElementById("models-hint");
-    const errorEl = document.getElementById("error");
-    const messagesEl = document.getElementById("messages");
-    const messagesEmptyEl = document.getElementById("messages-empty");
-    const modelStripEl = document.getElementById("model-strip");
-    const sessionBarEl = document.getElementById("session-bar");
-    const costSummaryEl = document.getElementById("cost-summary");
-    const questionEl = document.getElementById("question");
-    const QUESTION_MAX_PX = 58;
-
-    function fitQuestionHeight() {
-      questionEl.style.height = "auto";
-      questionEl.style.height = `${Math.min(questionEl.scrollHeight, QUESTION_MAX_PX)}px`;
-    }
-    const zoneEl = document.getElementById("zone");
-    const formatEl = document.getElementById("format");
-    const modeEl = document.getElementById("reasoningMode");
-    const modelSelectEl = document.getElementById("modelSelect");
-    const tempEl = document.getElementById("temperature");
-    const tempValueEl = document.getElementById("temp-value");
-    const tempTicksEl = document.getElementById("temp-ticks");
-
-    const TEMPERATURES = [0, 0.7, 1.2];
-    const TEMP_MIN = 0;
-    const TEMP_MAX = 2;
-    /** Только DeepSeek top-up → ₽. ProxyAPI уже в рублях, курс 103 не применять. */
-    const DEEPSEEK_FX_RUB_PER_USD = 103;
-    const SESSION_KEY = "trigger-helper-demo-session-v4";
-    /** Timing/cost runs for day05 report (session tab). */
-    const RUNS_KEY = "trigger-helper-demo-runs-v1";
-
-    /** @type {"grounded"|"open"} */
-    let scope = "grounded";
-    /** @type {"N"|"P"|"L"|null} */
-    let activeScenario = null;
-    /** @type {Array<{tier:string,label:string,model:string,via:string}>} */
-    let demoModels = [];
-    /** Advent public L = locked; private lab = editable. From /api/models. */
-    let openTaskLocked = false;
-    /** @type {Record<string, string>} */
-    let compareBucket = {};
-    let compareQuestion = "";
-
-    function emptyStats() {
-      return {
-        requests: 0,
-        cost_usd: 0,
-        cost_rub: 0,
-        total_tokens: 0,
-        cache_hit_tokens: 0,
-        by_model: {},
-      };
+    function setStatus(text, err) {
+      el.status.textContent = text;
+      el.status.classList.toggle("err", Boolean(err));
     }
 
-    function loadStats(storage, key) {
-      try {
-        const raw = storage.getItem(key);
-        if (!raw) return emptyStats();
-        const parsed = JSON.parse(raw);
-        return {
-          requests: Number(parsed.requests) || 0,
-          cost_usd: Number(parsed.cost_usd) || 0,
-          cost_rub: Number(parsed.cost_rub) || 0,
-          total_tokens: Number(parsed.total_tokens) || 0,
-          cache_hit_tokens: Number(parsed.cache_hit_tokens) || 0,
-          by_model: parsed.by_model && typeof parsed.by_model === "object" ? parsed.by_model : {},
-        };
-      } catch {
-        return emptyStats();
-      }
+    function fmtTok(n) {
+      if (n >= 1000) return (n / 1000).toFixed(1).replace(/\\.0$/, "") + "k";
+      return String(n);
     }
 
-    function saveStats(storage, key, stats) {
-      storage.setItem(key, JSON.stringify(stats));
+    function fmtRub(n) {
+      return "₽" + (Number(n) || 0).toFixed(2);
     }
 
-    let session = loadStats(sessionStorage, SESSION_KEY);
-    let serverTotals = emptyStats();
-
-    function roundTemp(value) {
-      return Math.round(Number(value) * 10) / 10;
-    }
-
-    function formatTemp(value) {
-      return roundTemp(value).toFixed(1);
-    }
-
-    function getTemperature() {
-      return roundTemp(tempEl.value);
-    }
-
-    function setTemperature(value, { syncTicks = true } = {}) {
-      const t = Math.min(TEMP_MAX, Math.max(TEMP_MIN, roundTemp(value)));
-      tempEl.value = String(t);
-      tempEl.setAttribute("aria-valuenow", String(t));
-      tempValueEl.textContent = formatTemp(t);
-      if (syncTicks) {
-        tempTicksEl.querySelectorAll("button").forEach((btn) => {
-          btn.classList.toggle("active", roundTemp(btn.dataset.t) === t);
-        });
-      }
-      return t;
-    }
-
-    function initTempTicks() {
-      tempTicksEl.innerHTML = "";
-      TEMPERATURES.forEach((t) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.dataset.t = String(t);
-        btn.textContent = formatTemp(t);
-        btn.style.left = `${(t / TEMP_MAX) * 100}%`;
-        btn.title = `T=${formatTemp(t)}`;
-        btn.addEventListener("click", () => setTemperature(t));
-        tempTicksEl.appendChild(btn);
-      });
-      setTemperature(tempEl.value);
-    }
-
-    tempEl.addEventListener("input", () => setTemperature(tempEl.value));
-    initTempTicks();
-
-    function formatUsd(value) {
-      if (value < 0.01) return `$${value.toFixed(6)}`;
-      return `$${value.toFixed(4)}`;
-    }
-
-    function formatMoney(statsOrUsage) {
-      const usd = Number(statsOrUsage.cost_usd ?? statsOrUsage.estimated_cost_usd) || 0;
-      const rub = Number(statsOrUsage.cost_rub ?? statsOrUsage.estimated_cost_rub) || 0;
-      const parts = [];
-      if (usd > 0) {
-        const deepseekRub = usd * DEEPSEEK_FX_RUB_PER_USD;
-        parts.push(`${formatUsd(usd)} (~${deepseekRub.toFixed(2)} ₽ DS)`);
-      }
-      if (rub > 0) {
-        parts.push(`${rub.toFixed(4)} ₽`);
-      }
-      return parts.length ? parts.join(" + ") : "—";
-    }
-
-    function shortModel(id) {
-      if (!id) return "?";
-      const parts = id.split("/");
-      return parts[parts.length - 1];
-    }
-
-    function costLine(label, stats) {
-      if (stats.requests === 0) return `${label}: —`;
-      return `${label}: ${stats.requests} · ${formatMoney(stats)} · ${stats.total_tokens} tok`;
-    }
-
-    function byModelLines(prefix, stats) {
-      const entries = Object.entries(stats.by_model || {});
-      if (!entries.length) return "";
-      return entries
-        .map(([model, b]) => {
-          return `${prefix}${shortModel(model)}: ${b.requests} · ${formatMoney(b)} · ${b.total_tokens} tok`;
-        })
-        .join("\n");
-    }
-
-    function renderSessionBar() {
-      const lines = [
-        costLine("Сессия", session),
-        byModelLines("  · сессия ", session),
-        costLine("Всего (VPS)", serverTotals),
-        byModelLines("  · всего ", serverTotals),
-      ].filter(Boolean);
-      sessionBarEl.textContent = lines.join("\n");
-      const sMoney = formatMoney(session);
-      const tMoney = formatMoney(serverTotals);
-      const limitPart =
-        askLimit > 0
-          ? ` · дорогие сегодня ${askLimit - (askRemaining ?? 0)}/${askLimit}`
-          : "";
-      costSummaryEl.textContent = `Стоимость · сессия ${session.requests ? sMoney : "—"} · всего ${serverTotals.requests ? tMoney : "—"}${limitPart}`;
-    }
-
-    function applyServerTotals(totals) {
-      if (!totals) return;
-      serverTotals = {
-        requests: Number(totals.requests) || 0,
-        cost_usd: Number(totals.cost_usd) || 0,
-        cost_rub: Number(totals.cost_rub) || 0,
-        total_tokens: Number(totals.total_tokens) || 0,
-        cache_hit_tokens: Number(totals.cache_hit_tokens) || 0,
-        by_model: totals.by_model && typeof totals.by_model === "object" ? totals.by_model : {},
-      };
-      if (totals.asks_limit !== undefined && totals.asks_limit !== null) {
-        askLimit = Number(totals.asks_limit) || 0;
-      }
-      if (totals.asks_remaining !== undefined && totals.asks_remaining !== null) {
-        askRemaining = totals.asks_remaining;
-      } else if (askLimit > 0) {
-        const used = Number(totals.expensive_asks_today) || 0;
-        askRemaining = Math.max(0, askLimit - used);
-      }
-    }
-
-    function addSessionUsage(usage) {
+    function displayRub(usage) {
+      if (!usage) return 0;
       const rub = Number(usage.estimated_cost_rub) || 0;
-      session.requests += 1;
-      session.cost_usd += usage.estimated_cost_usd || 0;
-      session.cost_rub += rub;
-      session.total_tokens += usage.total_tokens;
-      session.cache_hit_tokens += usage.prompt_cache_hit_tokens;
-      session.cost_usd = Number(session.cost_usd.toFixed(6));
-      session.cost_rub = Number(session.cost_rub.toFixed(4));
-      const key = usage.model || "unknown";
-      const prev = session.by_model[key] || {
-        requests: 0,
-        cost_usd: 0,
-        cost_rub: 0,
-        total_tokens: 0,
-        cache_hit_tokens: 0,
-      };
-      session.by_model[key] = {
-        requests: prev.requests + 1,
-        cost_usd: Number((prev.cost_usd + (usage.estimated_cost_usd || 0)).toFixed(6)),
-        cost_rub: Number((prev.cost_rub + rub).toFixed(4)),
-        total_tokens: prev.total_tokens + usage.total_tokens,
-        cache_hit_tokens: prev.cache_hit_tokens + usage.prompt_cache_hit_tokens,
-      };
-      saveStats(sessionStorage, SESSION_KEY, session);
-      renderSessionBar();
+      if (rub > 0) return rub;
+      const usd = Number(usage.estimated_cost_usd) || 0;
+      return usd * DEEPSEEK_FX;
     }
 
-    async function refreshServerTotals() {
-      try {
-        const response = await fetch("/api/usage");
-        if (!response.ok) return;
-        applyServerTotals(await response.json());
-        renderSessionBar();
-      } catch {
-        /* keep last known */
-      }
-    }
-
-    async function loadDemoModels() {
-      try {
-        const response = await fetch("/api/models");
-        if (!response.ok) throw new Error("models");
-        const data = await response.json();
-        demoModels = data.models || [];
-        openTaskLocked = Boolean(data.open_task_locked);
-        if (typeof data.open_preset_l === "string" && data.open_preset_l.trim()) {
-          SCENARIOS.L.question = data.open_preset_l;
-        }
-        const via = data.proxyapi ? "ProxyAPI" : "DeepSeek";
-        const lockHint = openTaskLocked ? " · L lock" : " · L edit";
-        modelsHint.textContent = `×3: ${demoModels.map((m) => shortModel(m.model)).join(" · ")} (${via})${lockHint}`;
-        modelSweepBtn.title = modelsHint.textContent;
-
-        const prev = modelSelectEl.value;
-        modelSelectEl.innerHTML = "";
-        const optDefault = document.createElement("option");
-        optDefault.value = "";
-        optDefault.textContent = "DeepSeek (default env)";
-        modelSelectEl.appendChild(optDefault);
-        demoModels.forEach((m) => {
-          const opt = document.createElement("option");
-          opt.value = m.model;
-          opt.textContent = `${m.label}: ${m.model}`;
-          modelSelectEl.appendChild(opt);
-        });
-        if (prev && [...modelSelectEl.options].some((o) => o.value === prev)) {
-          modelSelectEl.value = prev;
-        }
-        syncQuestionLock();
-      } catch {
-        modelsHint.textContent = "модели: не загрузились";
-      }
-    }
-
-    function getSelectedModel() {
-      const v = modelSelectEl.value.trim();
-      return v || undefined;
-    }
-
-    function scrollToBottom() {
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    function hideEmpty() {
-      if (messagesEmptyEl) messagesEmptyEl.style.display = "none";
-    }
-
-    function updateCompareHint() {
-      const n = Object.keys(compareBucket).length;
-      compareHint.textContent = activeScenario === "N" || activeScenario === "P"
-        ? `Сценарий ${activeScenario}: ответов ${n}/5`
-        : `Ответов для судьи: ${n} (нужен пресет N или P)`;
-      compareBtn.disabled = !(
-        (activeScenario === "N" || activeScenario === "P") &&
-        n >= 2
-      );
-    }
-
-    function resetCompareBucket(question) {
-      compareBucket = {};
-      compareQuestion = question;
-      updateCompareHint();
-    }
-
-    let askLimit = 20;
-    let askRemaining = null;
-
-    function syncQuestionLock() {
-      if (scope === "open") {
-        if (openTaskLocked) {
-          questionEl.value = SCENARIOS.L.question;
-          questionEl.readOnly = true;
-          questionEl.title =
-            "Режим «Задача» (public): только пресет L, редактирование выключено";
-        } else {
-          questionEl.readOnly = false;
-          questionEl.title =
-            "Режим «Задача» (private): текст можно править";
-          if (!questionEl.value.trim()) {
-            questionEl.value = SCENARIOS.L.question;
-          }
-        }
-        fitQuestionHeight();
-      } else {
-        questionEl.readOnly = false;
-        questionEl.title = "";
-      }
-    }
-
-    function setScope(next) {
-      scope = next;
-      document.getElementById("scope-grounded").classList.toggle("active", next === "grounded");
-      document.getElementById("scope-open").classList.toggle("active", next === "open");
-      document.querySelectorAll(".grounded-only").forEach((el) => {
-        el.classList.toggle("hidden", next !== "grounded");
+    async function api(path, opts) {
+      const res = await fetch(path, {
+        ...opts,
+        headers: {
+          // Fastify: "Body cannot be empty when content-type is set" —
+          // DELETE без тела не должен нести application/json
+          ...(opts && opts.body ? { "Content-Type": "application/json" } : {}),
+          ...(opts && opts.headers),
+        },
       });
-      document.querySelectorAll(".open-only").forEach((el) => {
-        el.classList.toggle("hidden", next !== "open");
-      });
-      if (next === "open") {
-        setScenario("L");
-        formatEl.value = "free";
-        modeEl.value = "direct";
-        setTemperature(0.3);
-      } else if (activeScenario === "L") {
-        setScenario("N");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data.message || data.error || res.statusText;
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
       }
-      syncQuestionLock();
-      updateCompareHint();
-    }
-
-    function setScenario(scenario) {
-      activeScenario = scenario;
-      const preset = SCENARIOS[scenario];
-      if (preset.zone) zoneEl.value = preset.zone;
-      questionEl.value = preset.question;
-      fitQuestionHeight();
-      if (scenario === "N" || scenario === "P") {
-        formatEl.value = "free";
-        modeEl.value = "direct";
-        setTemperature(0);
-      }
-      document.getElementById("preset-n")?.classList.toggle("active", scenario === "N");
-      document.getElementById("preset-p")?.classList.toggle("active", scenario === "P");
-      document.getElementById("preset-l")?.classList.toggle("active", scenario === "L");
-      resetCompareBucket(preset.question);
-      syncQuestionLock();
-      if (!questionEl.readOnly) questionEl.focus();
-    }
-
-    document.getElementById("scope-grounded").addEventListener("click", () => setScope("grounded"));
-    document.getElementById("scope-open").addEventListener("click", () => setScope("open"));
-    document.getElementById("preset-n").addEventListener("click", () => setScenario("N"));
-    document.getElementById("preset-p").addEventListener("click", () => setScenario("P"));
-    document.getElementById("preset-l").addEventListener("click", () => {
-      setScope("open");
-      setScenario("L");
-    });
-
-    function appendUserMessage(text, meta) {
-      hideEmpty();
-      const el = document.createElement("div");
-      el.className = "msg user";
-      const badges = [];
-      if (meta.scope) badges.push(`<span class="badge scope">${meta.scope}</span>`);
-      if (meta.zone) badges.push(`<span class="badge">${zoneLabels[meta.zone] || meta.zone}</span>`);
-      if (meta.mode) badges.push(`<span class="badge mode">${modeLabels[meta.mode] || meta.mode}</span>`);
-      if (meta.temperature !== undefined && meta.temperature !== null) {
-        badges.push(`<span class="badge temp">T=${meta.temperature}</span>`);
-      }
-      if (meta.model) badges.push(`<span class="badge model">${shortModel(meta.model)}</span>`);
-      el.innerHTML = `
-        <span class="msg-meta">${badges.join("")}</span>
-        <div class="bubble"></div>
-      `;
-      el.querySelector(".bubble").textContent = text;
-      messagesEl.appendChild(el);
-      scrollToBottom();
-      return el;
-    }
-
-    function formatElapsed(sec) {
-      const m = Math.floor(sec / 60);
-      const s = sec % 60;
-      return `${m}:${String(s).padStart(2, "0")}`;
-    }
-
-    function stopTypingTimer(el) {
-      if (!el) return;
-      const id = el._typingTimerId;
-      if (id) {
-        clearInterval(id);
-        el._typingTimerId = null;
-      }
-    }
-
-    let activeAbort = null;
-
-    function beginRequest() {
-      if (activeAbort) activeAbort.abort();
-      activeAbort = new AbortController();
-      return activeAbort.signal;
-    }
-
-    function stopActiveRequest() {
-      if (activeAbort) activeAbort.abort();
-    }
-
-    function endRequest() {
-      activeAbort = null;
+      return data;
     }
 
     function isAbortError(err) {
       return (
         err?.name === "AbortError" ||
-        (typeof DOMException !== "undefined" &&
-          err instanceof DOMException &&
-          err.name === "AbortError")
+        /aborted|AbortError/i.test(String(err?.message || err || ""))
       );
     }
 
+    function formatElapsed(sec) {
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return m + ":" + String(s).padStart(2, "0");
+    }
+
+    const ASKING_UI_MS = 1000;
+
+    function stopTypingTimer(node) {
+      if (!node) return;
+      if (node._typingTimerId) {
+        clearInterval(node._typingTimerId);
+        node._typingTimerId = null;
+      }
+    }
+
+    function appendAskingIndicator(delayMs) {
+      const empty = el.messages.querySelector(".empty");
+      if (empty) empty.remove();
+      const node = document.createElement("div");
+      node.className = "msg user";
+      node.dataset.asking = "1";
+      const totalSec = Math.max(1, Math.ceil(delayMs / 1000));
+      node.innerHTML =
+        '<div class="bubble asking">Спрашиваю… <span class="asking-timer">' +
+        formatElapsed(totalSec) +
+        "</span>" +
+        '<button type="button" class="typing-stop">Остановить</button></div>';
+      const timerEl = node.querySelector(".asking-timer");
+      const endsAt = Date.now() + delayMs;
+      node._typingTimerId = setInterval(() => {
+        const left = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+        if (timerEl) timerEl.textContent = formatElapsed(left);
+        if (left <= 0) stopTypingTimer(node);
+      }, 200);
+      node.querySelector(".typing-stop").addEventListener("click", () => {
+        if (state.abort) state.abort.abort();
+      });
+      el.messages.appendChild(node);
+      el.messages.scrollTop = el.messages.scrollHeight;
+      return node;
+    }
+
+    function waitAskingCountdown(delayMs, signal) {
+      return new Promise((resolve, reject) => {
+        if (delayMs <= 0) {
+          resolve();
+          return;
+        }
+        const onAbort = () => {
+          clearTimeout(tid);
+          reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+        };
+        if (signal?.aborted) {
+          onAbort();
+          return;
+        }
+        signal?.addEventListener("abort", onAbort, { once: true });
+        const tid = setTimeout(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, delayMs);
+      });
+    }
+
     function appendTypingIndicator() {
-      hideEmpty();
-      const el = document.createElement("div");
-      el.className = "msg assistant";
-      el.dataset.typing = "1";
-      el.innerHTML = `
-        <div class="bubble typing">
-          <span>Печатает… <span class="typing-timer">0:00</span></span>
-          <button type="button" class="typing-stop">Остановить</button>
-        </div>`;
-      const timerEl = el.querySelector(".typing-timer");
-      const stopBtn = el.querySelector(".typing-stop");
+      const empty = el.messages.querySelector(".empty");
+      if (empty) empty.remove();
+      const node = document.createElement("div");
+      node.className = "msg assistant";
+      node.dataset.typing = "1";
+      node.innerHTML =
+        '<div class="bubble typing">Печатает… <span class="typing-timer">0:00</span>' +
+        '<button type="button" class="typing-stop">Остановить</button></div>';
+      const timerEl = node.querySelector(".typing-timer");
       const started = Date.now();
-      el._typingTimerId = setInterval(() => {
+      node._typingTimerId = setInterval(() => {
         const sec = Math.floor((Date.now() - started) / 1000);
         if (timerEl) timerEl.textContent = formatElapsed(sec);
       }, 250);
-      stopBtn.addEventListener("click", () => {
-        stopBtn.disabled = true;
-        stopBtn.textContent = "Стоп…";
-        stopActiveRequest();
+      node.querySelector(".typing-stop").addEventListener("click", () => {
+        if (state.abort) state.abort.abort();
       });
-      messagesEl.appendChild(el);
-      scrollToBottom();
-      return el;
+      el.messages.appendChild(node);
+      el.messages.scrollTop = el.messages.scrollHeight;
+      return node;
     }
 
-    function replaceTypingWithStopped(typingEl) {
-      stopTypingTimer(typingEl);
-      typingEl.removeAttribute("data-typing");
-      typingEl.innerHTML = `<div class="bubble typing" style="font-style: normal;">Остановлено</div>`;
-      scrollToBottom();
+    function removeTyping(node) {
+      stopTypingTimer(node);
+      if (node && node.parentNode) node.remove();
     }
 
-    function usageDetailsHtml(usage, latencyMs) {
-      const latency =
-        latencyMs !== undefined && latencyMs !== null
-          ? `<dt>Latency</dt><dd>${latencyMs} ms</dd>`
-          : "";
-      return `
-        <details class="msg-usage">
-          <summary>${formatMoney(usage)} · ${usage.total_tokens} tok${
-            latencyMs != null ? ` · ${latencyMs} ms` : ""
-          }</summary>
-          <dl>
-            <dt>Модель</dt><dd>${usage.model}</dd>
-            ${latency}
-            <dt>Кэш hit</dt><dd>${usage.prompt_cache_hit_tokens}</dd>
-            <dt>Кэш miss</dt><dd>${usage.prompt_cache_miss_tokens}</dd>
-            <dt>Prompt</dt><dd>${usage.prompt_tokens}</dd>
-            <dt>Completion</dt><dd>${usage.completion_tokens}</dd>
-            <dt>Оценка</dt><dd>${formatMoney(usage)}</dd>
-          </dl>
-        </details>
-      `;
+    function replaceTypingWithError(node, message) {
+      stopTypingTimer(node);
+      if (!node) return;
+      node.dataset.typing = "";
+      node.dataset.asking = "";
+      node.className = node.className.includes("user")
+        ? "msg user"
+        : "msg assistant";
+      node.innerHTML = '<div class="bubble"></div>';
+      const bubble = node.querySelector(".bubble");
+      bubble.style.color = "var(--error)";
+      bubble.textContent = message;
     }
 
-    function isParseableJson(text) {
-      try {
-        JSON.parse(text);
-        return true;
-      } catch {
-        return false;
-      }
+    function appendUserQuestion(text) {
+      const wrap = document.createElement("div");
+      wrap.className = "msg user";
+      wrap.innerHTML = '<div class="bubble"></div>';
+      wrap.querySelector(".bubble").textContent = text;
+      el.messages.appendChild(wrap);
+      el.messages.scrollTop = el.messages.scrollHeight;
     }
 
-    function replaceTypingWithReply(typingEl, payload) {
-      stopTypingTimer(typingEl);
-      typingEl.removeAttribute("data-typing");
-      const format = payload.format || "free";
-      const isJson = format === "json";
-      const mode = payload.reasoningMode || "direct";
-      const temperature =
-        payload.temperature !== undefined ? payload.temperature : null;
-      const badges = [
-        `<span class="badge scope">${payload.scope || scope}</span>`,
-        `<span class="badge mode">${modeLabels[mode] || mode}</span>`,
-      ];
-      if (payload.model || payload.usage?.model) {
-        badges.push(
-          `<span class="badge model">${shortModel(payload.model || payload.usage.model)}</span>`,
-        );
-      }
-      if (temperature !== null && temperature !== undefined) {
-        badges.push(`<span class="badge temp">T=${temperature}</span>`);
-      }
-      if (payload.latency_ms != null) {
-        badges.push(`<span class="badge">${payload.latency_ms} ms</span>`);
-      }
-      if (isJson) {
-        const ok = isParseableJson(payload.reply);
-        badges.push(`<span class="badge format-json">JSON</span>`);
-        badges.push(
-          ok
-            ? `<span class="badge json-ok">✓ JSON Ok</span>`
-            : `<span class="badge json-bad">JSON invalid</span>`,
-        );
-      }
-
-      let extra = "";
-      if (payload.metaPrompt) {
-        extra += `<div class="bubble meta-prompt"></div>`;
-      }
-
-      typingEl.innerHTML = `
-        <span class="msg-meta">Ответ ${badges.join("")}</span>
-        ${extra}
-        <div class="bubble${isJson ? " json" : ""}"></div>
-        ${payload.usage ? usageDetailsHtml(payload.usage, payload.latency_ms) : ""}
-      `;
-      if (payload.metaPrompt) {
-        typingEl.querySelector(".bubble.meta-prompt").textContent =
-          `metaPrompt:\n${payload.metaPrompt}`;
-      }
-      const bubbles = typingEl.querySelectorAll(".bubble:not(.meta-prompt)");
-      bubbles[bubbles.length - 1].textContent = payload.reply;
-      scrollToBottom();
+    function currentInstance() {
+      return state.instances.find((i) => i.id === state.instanceId) || null;
     }
 
-    function replaceTypingWithError(typingEl, message) {
-      stopTypingTimer(typingEl);
-      typingEl.innerHTML = `<div class="bubble" style="border-color: var(--error); color: var(--error);"></div>`;
-      typingEl.querySelector(".bubble").textContent = message;
-      scrollToBottom();
+    function currentAgent() {
+      const inst = currentInstance();
+      if (!inst) return null;
+      return inst.agents.find((a) => a.id === state.agentId) || null;
     }
 
-    function ensureModelStrip() {
-      hideEmpty();
-      modelStripEl.classList.add("visible");
-      modelStripEl.innerHTML = "";
-      return modelStripEl;
+    function policyLine(agent) {
+      if (!agent) return "";
+      const t = agent.defaultTemperature;
+      const hint = agent.outputPolicy?.formatHint || "?";
+      return "out: " + hint + " · T" + t;
     }
 
-    function renderModelCard(tier, state) {
-      let card = modelStripEl.querySelector(`[data-tier="${tier}"]`);
-      if (!card) {
-        card = document.createElement("div");
-        card.className = "model-card pending";
-        card.dataset.tier = tier;
-        modelStripEl.appendChild(card);
+    function renderTabs() {
+      el.instanceTabs.innerHTML = "";
+      for (const inst of state.instances) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "tab" + (inst.id === state.instanceId ? " active" : "");
+        btn.dataset.instance = inst.id;
+        const label = document.createElement("span");
+        label.textContent = inst.label;
+        btn.appendChild(label);
+        const close = document.createElement("span");
+        close.className = "tab-close";
+        close.dataset.closeInstance = inst.id;
+        close.title = "Закрыть инстанс";
+        close.setAttribute("role", "button");
+        close.textContent = "×";
+        btn.appendChild(close);
+        el.instanceTabs.appendChild(btn);
       }
-      card.className = `model-card${state.error ? " error" : ""}${state.pending ? " pending" : ""}`;
-      const preview = state.preview || (state.pending ? "…" : state.error || "");
-      card.innerHTML = `
-        <div class="tier">${state.label || tier}</div>
-        <div class="meta">${state.meta || ""}</div>
-        <div class="preview"></div>
-      `;
-      card.querySelector(".preview").textContent = preview;
-    }
 
-    function appendJudgeResult(data) {
-      hideEmpty();
-      const el = document.createElement("div");
-      el.className = "msg assistant";
-      const criteriaIds = data.scores[0]?.criteria?.map((c) => c.id) || [];
-      const head = criteriaIds.map((id) => `<th>${id}</th>`).join("");
-      const rows = data.scores
-        .map((s) => {
-          const cells = s.criteria
-            .map((c) =>
-              c.pass ? `<td class="pass">✓</td>` : `<td class="fail">✗</td>`,
-            )
-            .join("");
-          const win =
-            data.winner === s.mode
-              ? ` <span class="badge winner">winner</span>`
-              : "";
-          return `<tr>
-            <td class="mode-cell">${s.mode}${win}</td>
-            ${cells}
-            <td>${s.passed}/${s.total}</td>
-          </tr>`;
-        })
-        .join("");
-
-      el.innerHTML = `
-        <span class="msg-meta">Судья · сценарий ${activeScenario || "?"}
-          ${data.winner ? `<span class="badge winner">${data.winner}</span>` : `<span class="badge">ничья / без winner</span>`}
-        </span>
-        <div class="bubble">
-          <div></div>
-          <table class="judge-table">
-            <thead><tr><th>mode</th>${head}<th>Σ</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-        ${data.usage ? usageDetailsHtml(data.usage) : ""}
-      `;
-      el.querySelector(".bubble > div").textContent = data.rationale || "";
-      messagesEl.appendChild(el);
-      scrollToBottom();
-    }
-
-    questionEl.addEventListener("input", () => {
-      if (scope === "open" && openTaskLocked) {
-        questionEl.value = SCENARIOS.L.question;
-        fitQuestionHeight();
-        return;
+      const inst = currentInstance();
+      el.agentTabs.innerHTML = "";
+      if (inst) {
+        for (const agent of inst.agents) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "tab" + (agent.id === state.agentId ? " active" : "");
+          btn.dataset.agent = agent.id;
+          const label = document.createElement("span");
+          label.textContent = agent.label;
+          btn.appendChild(label);
+          const close = document.createElement("span");
+          close.className = "tab-close";
+          close.dataset.closeAgent = agent.id;
+          close.title = "Закрыть агента";
+          close.setAttribute("role", "button");
+          close.textContent = "×";
+          btn.appendChild(close);
+          el.agentTabs.appendChild(btn);
+        }
       }
-      fitQuestionHeight();
-      if (
-        activeScenario &&
-        questionEl.value.trim() !== SCENARIOS[activeScenario].question
-      ) {
-        activeScenario = null;
-        document.getElementById("preset-n")?.classList.remove("active");
-        document.getElementById("preset-p")?.classList.remove("active");
-        document.getElementById("preset-l")?.classList.remove("active");
-        resetCompareBucket(questionEl.value.trim());
-      }
-    });
-
-    questionEl.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        if (!submitBtn.disabled) form.requestSubmit();
-      }
-    });
-
-    function setBusy(busy) {
-      submitBtn.disabled = busy;
-      tempSweepBtn.disabled = busy;
-      modelSweepBtn.disabled = busy;
-      if (busy) compareBtn.disabled = true;
-      else updateCompareHint();
+      el.policy.textContent = policyLine(currentAgent());
     }
 
-    async function postAsk(body, signal) {
-      const response = await fetch("/api/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal,
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.message || data.error || `HTTP ${response.status}`);
-      }
-      return data;
+    function clearUndoToast() {
+      if (undoPending?.timer) clearTimeout(undoPending.timer);
+      undoPending = null;
+      el.undoToast.classList.remove("open");
+      el.undoToastText.textContent = "";
     }
 
-    function loadRuns() {
-      try {
-        const raw = sessionStorage.getItem(RUNS_KEY);
-        if (!raw) return [];
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return [];
-      }
-    }
-
-    function recordRun(entry) {
-      const runs = loadRuns();
-      runs.push({
-        at: new Date().toISOString(),
-        scope,
-        ...entry,
-      });
-      sessionStorage.setItem(RUNS_KEY, JSON.stringify(runs));
-    }
-
-    function applyAskResult(data, format, reasoningMode, meta = {}) {
-      if (data.usage) addSessionUsage(data.usage);
-      if (data.totals) {
-        applyServerTotals(data.totals);
-        renderSessionBar();
-      }
-      if (
-        scope === "grounded" &&
-        format === "free" &&
-        data.reply &&
-        (activeScenario === "N" || activeScenario === "P")
-      ) {
-        compareBucket[data.reasoningMode || reasoningMode] = data.reply;
-        updateCompareHint();
-      }
-      recordRun({
-        kind: meta.kind || "ask",
-        tier: meta.tier || null,
-        model: data.model || data.usage?.model || null,
-        latency_ms:
-          data.latency_ms !== undefined && data.latency_ms !== null
-            ? data.latency_ms
-            : null,
-        total_tokens: data.usage?.total_tokens ?? null,
-        cost_usd: data.usage?.estimated_cost_usd ?? null,
-        cost_rub: data.usage?.estimated_cost_rub ?? null,
-        temperature: data.temperature ?? null,
-        reasoningMode: data.reasoningMode || reasoningMode || null,
-        format: data.format || format || null,
-      });
-    }
-
-    function restoreQuestionAfterSend(question) {
-      const keep = activeScenario ? SCENARIOS[activeScenario].question : question;
-      questionEl.value = keep;
-      fitQuestionHeight();
-    }
-
-    function buildAskBody({ question, format, reasoningMode, temperature, model }) {
-      const body = {
-        scope,
-        question:
-          scope === "open" && openTaskLocked
-            ? SCENARIOS.L.question
-            : question,
-        format: scope === "open" ? "free" : format,
-        reasoningMode,
-        temperature,
+    function showUndoToast(label, onUndo) {
+      clearUndoToast();
+      el.undoToastText.textContent = "Чат «" + label + "» закрыт.";
+      el.undoToast.classList.add("open");
+      undoPending = {
+        onUndo,
+        timer: setTimeout(() => {
+          undoPending = null;
+          el.undoToast.classList.remove("open");
+        }, UNDO_MS),
       };
-      if (scope === "grounded") {
-        body.pointId = zoneToPoint[zoneEl.value];
-      }
-      const chosen = model !== undefined ? model : getSelectedModel();
-      if (chosen) body.model = chosen;
-      return body;
     }
 
-    renderSessionBar();
-    refreshServerTotals();
-    updateCompareHint();
-    loadDemoModels();
-    syncQuestionLock();
-
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      errorEl.classList.remove("visible");
-
-      const format = formatEl.value;
-      const reasoningMode = modeEl.value;
-      const temperature = getTemperature();
-      const question = questionEl.value.trim();
-      if (!question) return;
-
-      if (question !== compareQuestion) resetCompareBucket(question);
-
-      appendUserMessage(question, {
-        scope,
-        zone: scope === "grounded" ? zoneEl.value : null,
-        mode: format === "free" || scope === "open" ? reasoningMode : null,
-        temperature: formatTemp(temperature),
-        model: getSelectedModel() || "DeepSeek",
-      });
-      restoreQuestionAfterSend(question);
-
-      const signal = beginRequest();
-      const typingEl = appendTypingIndicator();
-      setBusy(true);
-
-      try {
-        const data = await postAsk(
-          buildAskBody({ question, format, reasoningMode, temperature }),
-          signal,
+    async function closeAgent(agentId) {
+      if (!state.instanceId) return;
+      const inst = currentInstance();
+      if (!inst || inst.agents.length <= 1) {
+        setStatus("нельзя закрыть последнего агента", true);
+        return;
+      }
+      const index = inst.agents.findIndex((a) => a.id === agentId);
+      if (index < 0) return;
+      const data = await api(
+        "/api/instances/" + state.instanceId + "/agents/" + agentId,
+        { method: "DELETE" },
+      );
+      const wasActive = state.agentId === agentId;
+      inst.agents = inst.agents.filter((a) => a.id !== agentId);
+      if (wasActive) {
+        state.agentId = inst.agents[Math.max(0, index - 1)]?.id || inst.agents[0]?.id || null;
+      }
+      renderTabs();
+      await loadMessages();
+      const snap = {
+        kind: "agent",
+        instanceId: state.instanceId,
+        agent: data.agent,
+        messages: data.messages || [],
+        index,
+      };
+      showUndoToast(data.agent.label, async () => {
+        const restored = await api(
+          "/api/instances/" + snap.instanceId + "/agents/restore",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              agent: snap.agent,
+              messages: snap.messages,
+              index: snap.index,
+            }),
+          },
         );
-        replaceTypingWithReply(typingEl, data);
-        applyAskResult(data, format, reasoningMode);
-        if (!data.totals) await refreshServerTotals();
-      } catch (err) {
-        if (isAbortError(err)) replaceTypingWithStopped(typingEl);
-        else replaceTypingWithError(typingEl, err.message || "Не удалось отправить");
-      } finally {
-        endRequest();
-        setBusy(false);
-        questionEl.focus();
-        scrollToBottom();
-      }
-    });
-
-    tempSweepBtn.addEventListener("click", async () => {
-      errorEl.classList.remove("visible");
-      if (scope !== "grounded") {
-        errorEl.textContent = "×3 температуры — в режиме Карточка.";
-        errorEl.classList.add("visible");
-        return;
-      }
-
-      const format = formatEl.value;
-      const reasoningMode = modeEl.value;
-      const question = questionEl.value.trim();
-      if (!question) {
-        errorEl.textContent = "Сначала вопрос (пресет N/P).";
-        errorEl.classList.add("visible");
-        return;
-      }
-
-      if (question !== compareQuestion) resetCompareBucket(question);
-
-      appendUserMessage(question, {
-        scope,
-        zone: zoneEl.value,
-        mode: format === "free" ? reasoningMode : null,
-        temperature: "0→1.2",
-      });
-      restoreQuestionAfterSend(question);
-      const signal = beginRequest();
-      setBusy(true);
-
-      try {
-        for (const temperature of TEMPERATURES) {
-          if (signal.aborted) break;
-          setTemperature(temperature);
-          const typingEl = appendTypingIndicator();
-          try {
-            const data = await postAsk(
-              buildAskBody({ question, format, reasoningMode, temperature }),
-              signal,
-            );
-            replaceTypingWithReply(typingEl, data);
-            applyAskResult(data, format, reasoningMode, {
-              kind: "temp_sweep",
-              tier: `T=${formatTemp(temperature)}`,
-            });
-            if (!data.totals) await refreshServerTotals();
-          } catch (err) {
-            if (isAbortError(err)) {
-              replaceTypingWithStopped(typingEl);
-              break;
-            }
-            replaceTypingWithError(
-              typingEl,
-              `T=${formatTemp(temperature)}: ${err.message || "ошибка"}`,
-            );
-          }
+        const target = state.instances.find((i) => i.id === snap.instanceId);
+        if (target) {
+          const at = Math.min(snap.index, target.agents.length);
+          target.agents.splice(at, 0, restored.agent);
         }
-      } finally {
-        endRequest();
-        setBusy(false);
-        questionEl.focus();
-        scrollToBottom();
-      }
-    });
-
-    modelSweepBtn.addEventListener("click", async () => {
-      errorEl.classList.remove("visible");
-      if (!demoModels.length) {
-        await loadDemoModels();
-      }
-      if (!demoModels.length) {
-        errorEl.textContent = "Нет списка моделей — перезапусти server после сборки.";
-        errorEl.classList.add("visible");
-        return;
-      }
-
-      const format = scope === "open" ? "free" : formatEl.value;
-      const reasoningMode = modeEl.value;
-      const temperature = getTemperature();
-      const question = questionEl.value.trim();
-      if (!question) {
-        errorEl.textContent = scope === "open" ? "Сначала пресет L." : "Сначала вопрос.";
-        errorEl.classList.add("visible");
-        return;
-      }
-
-      appendUserMessage(question, {
-        scope,
-        zone: scope === "grounded" ? zoneEl.value : null,
-        mode: reasoningMode,
-        temperature: formatTemp(temperature),
-        model: "×3",
+        state.instanceId = snap.instanceId;
+        state.agentId = restored.agent.id;
+        renderTabs();
+        await loadMessages();
+        setStatus("чат восстановлен · " + restored.agent.label);
       });
-      restoreQuestionAfterSend(question);
+      setStatus("закрыт · " + data.agent.label);
+    }
 
-      ensureModelStrip();
-      const signal = beginRequest();
-      setBusy(true);
-
-      try {
-        for (const m of demoModels) {
-          if (signal.aborted) break;
-          renderModelCard(m.tier, {
-            label: `${m.label} · ${shortModel(m.model)}`,
-            meta: "запрос…",
-            pending: true,
-          });
-          const typingEl = appendTypingIndicator();
-          try {
-            const data = await postAsk(
-              buildAskBody({
-                question,
-                format,
-                reasoningMode,
-                temperature,
-                model: m.model,
-              }),
-              signal,
-            );
-            replaceTypingWithReply(typingEl, data);
-            applyAskResult(data, format, reasoningMode, {
-              kind: "model_sweep",
-              tier: m.tier,
-            });
-            if (!data.totals) await refreshServerTotals();
-            const money = formatMoney(data.usage || {});
-            const ms =
-              data.latency_ms != null ? `${data.latency_ms} ms` : "? ms";
-            renderModelCard(m.tier, {
-              label: `${m.label} · ${shortModel(data.usage?.model || m.model)}`,
-              meta: `${ms} · ${data.usage?.total_tokens ?? "?"} tok · ${money}`,
-              preview: data.reply,
-              pending: false,
-            });
-          } catch (err) {
-            if (isAbortError(err)) {
-              replaceTypingWithStopped(typingEl);
-              renderModelCard(m.tier, {
-                label: `${m.label} · ${shortModel(m.model)}`,
-                meta: "остановлено",
-                error: "Остановлено",
-                pending: false,
-              });
-              break;
-            }
-            replaceTypingWithError(
-              typingEl,
-              `${m.label}: ${err.message || "ошибка"}`,
-            );
-            renderModelCard(m.tier, {
-              label: `${m.label} · ${shortModel(m.model)}`,
-              meta: "ошибка",
-              error: err.message || "ошибка",
-              pending: false,
-            });
-          }
-        }
-      } finally {
-        endRequest();
-        setBusy(false);
-        questionEl.focus();
-        scrollToBottom();
-      }
-    });
-
-    compareBtn.addEventListener("click", async () => {
-      if (
-        !(activeScenario === "N" || activeScenario === "P") ||
-        Object.keys(compareBucket).length < 2
-      ) {
+    async function closeInstance(instanceId) {
+      if (state.instances.length <= 1) {
+        setStatus("нельзя закрыть последний инстанс", true);
         return;
       }
-      errorEl.classList.remove("visible");
-
-      const candidates = Object.entries(compareBucket).map(([mode, reply]) => ({
-        mode,
-        reply,
-      }));
-
-      const signal = beginRequest();
-      const typingEl = appendTypingIndicator();
-      setBusy(true);
-
-      try {
-        const response = await fetch("/api/compare", {
+      const index = state.instances.findIndex((i) => i.id === instanceId);
+      if (index < 0) return;
+      const data = await api("/api/instances/" + instanceId, { method: "DELETE" });
+      state.instances = state.instances.filter((i) => i.id !== instanceId);
+      if (state.instanceId === instanceId) {
+        const next = state.instances[Math.max(0, index - 1)] || state.instances[0];
+        state.instanceId = next?.id || null;
+        state.agentId = next?.agents[0]?.id || null;
+      }
+      renderTabs();
+      await loadMessages();
+      const snap = {
+        kind: "instance",
+        instance: data.instance,
+        threads: data.threads || {},
+        index,
+      };
+      showUndoToast(data.instance.label, async () => {
+        const restored = await api("/api/instances/restore", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            scenario: activeScenario,
-            question: compareQuestion,
-            candidates,
+            instance: snap.instance,
+            threads: snap.threads,
           }),
-          signal,
         });
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.message || data.error || `HTTP ${response.status}`);
-        }
-        stopTypingTimer(typingEl);
-        typingEl.remove();
-        appendJudgeResult(data);
-        if (data.usage) addSessionUsage(data.usage);
-        recordRun({
-          kind: "compare",
-          tier: activeScenario,
-          model: data.usage?.model || null,
-          latency_ms: data.latency_ms ?? null,
-          total_tokens: data.usage?.total_tokens ?? null,
-          cost_usd: data.usage?.estimated_cost_usd ?? null,
-          cost_rub: data.usage?.estimated_cost_rub ?? null,
-          temperature: null,
-          reasoningMode: "judge",
-          format: "json",
-        });
-        if (data.totals) {
-          applyServerTotals(data.totals);
-          renderSessionBar();
+        const at = Math.min(snap.index, state.instances.length);
+        state.instances.splice(at, 0, restored.instance);
+        state.instanceId = restored.instance.id;
+        state.agentId = restored.instance.agents[0]?.id || null;
+        renderTabs();
+        await loadMessages();
+        setStatus("инстанс восстановлен · " + restored.instance.label);
+      });
+      setStatus("закрыт · " + data.instance.label);
+    }
+
+    function renderMessages() {
+      el.messages.innerHTML = "";
+      if (!state.messages.length) {
+        el.messages.innerHTML = '<p class="empty">Нет сообщений в этом агенте</p>';
+        return;
+      }
+      for (const m of state.messages) {
+        const wrap = document.createElement("div");
+        wrap.className = "msg " + m.role;
+        if (m.role === "user") {
+          wrap.innerHTML = '<div class="bubble"></div>';
+          wrap.querySelector(".bubble").textContent = m.content;
         } else {
-          await refreshServerTotals();
+          const rub = m.cost_rub != null ? m.cost_rub : displayRub(m.usage);
+          const tok = m.usage ? m.usage.total_tokens : "—";
+          const usageHtml = m.usage
+            ? `<details class="msg-usage"><summary>usage ▾</summary>
+                <dl>
+                  <dt>Prompt</dt><dd>${m.usage.prompt_tokens}</dd>
+                  <dt>Completion</dt><dd>${m.usage.completion_tokens}</dd>
+                  <dt>Cache hit</dt><dd>${m.usage.prompt_cache_hit_tokens}</dd>
+                </dl></details>`
+            : "";
+          wrap.innerHTML = `
+            <div class="bubble"></div>
+            <div class="msg-meta">
+              <span class="badge agent">${m.label || m.agentId || "?"}</span>
+              <span class="badge">${m.model || "?"}</span>
+              <span class="badge">${m.latency_ms != null ? m.latency_ms + " ms" : "—"}</span>
+              <span class="badge">${tok} tok</span>
+              <span class="badge">${fmtRub(rub)}</span>
+            </div>
+            ${usageHtml}`;
+          wrap.querySelector(".bubble").textContent = m.content;
         }
+        el.messages.appendChild(wrap);
+      }
+      el.messages.scrollTop = el.messages.scrollHeight;
+    }
+
+    function renderCounters() {
+      el.cReq.textContent = String(state.session.requests);
+      el.cTok.textContent = fmtTok(state.session.tokens);
+      el.cSess.textContent = fmtRub(state.session.cost_rub);
+      const u = state.usage;
+      if (!u) {
+        el.cVps.textContent = "—";
+        el.cExp.textContent = "—";
+        el.details.textContent = "by_model: —";
+        return;
+      }
+      const vpsRub = (Number(u.cost_rub) || 0) + (Number(u.cost_usd) || 0) * DEEPSEEK_FX;
+      el.cVps.textContent = fmtRub(vpsRub);
+      const limit = u.asks_limit ?? 0;
+      const used = u.expensive_asks_today ?? 0;
+      el.cExp.textContent = limit > 0 ? used + "/" + limit : String(used);
+      const parts = Object.entries(u.by_model || {}).map(([model, b]) => {
+        const rub = (Number(b.cost_rub) || 0) + (Number(b.cost_usd) || 0) * DEEPSEEK_FX;
+        return model + " " + b.requests + " · " + fmtRub(rub) + " · " + fmtTok(b.total_tokens);
+      });
+      el.details.textContent = parts.length ? "by_model: " + parts.join(" · ") : "by_model: —";
+    }
+
+    async function loadUsage() {
+      state.usage = await api("/api/usage");
+      renderCounters();
+    }
+
+    async function loadModels() {
+      const data = await api("/api/models");
+      state.models = data.models || [];
+      el.model.innerHTML = '<option value="">default</option>';
+      for (const m of state.models) {
+        const opt = document.createElement("option");
+        opt.value = m.model;
+        opt.textContent = m.label + " · " + m.model;
+        el.model.appendChild(opt);
+      }
+    }
+
+    function fillPresetPick() {
+      const prev = el.presetPick.value;
+      el.presetPick.innerHTML = "";
+      const list = state.presets.length
+        ? state.presets
+        : [
+            { id: "care", label: "Care" },
+            { id: "strict", label: "Strict" },
+            { id: "open", label: "Open" },
+          ];
+      for (const p of list) {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.label || p.id;
+        el.presetPick.appendChild(opt);
+      }
+      const ids = list.map((p) => p.id);
+      el.presetPick.value = ids.includes(prev)
+        ? prev
+        : ids.includes("strict")
+          ? "strict"
+          : ids[0] || "care";
+    }
+
+    async function hydrate() {
+      const [agentsMeta, instData] = await Promise.all([
+        api("/api/agents"),
+        api("/api/instances"),
+      ]);
+      state.presets = agentsMeta.presets || [];
+      fillPresetPick();
+      state.instances = instData.instances || [];
+      if (!state.instances.length) {
+        setStatus("нет инстансов", true);
+        return;
+      }
+      if (!state.instanceId || !state.instances.find((i) => i.id === state.instanceId)) {
+        state.instanceId = state.instances[0].id;
+      }
+      const inst = currentInstance();
+      if (!inst.agents.length) {
+        state.agentId = null;
+      } else if (!state.agentId || !inst.agents.find((a) => a.id === state.agentId)) {
+        state.agentId = inst.agents[0].id;
+      }
+      renderTabs();
+      await loadMessages();
+      setStatus("ok · F5 hydrate");
+    }
+
+    async function loadMessages() {
+      if (!state.instanceId || !state.agentId) {
+        state.messages = [];
+        renderMessages();
+        return;
+      }
+      const data = await api(
+        "/api/instances/" + state.instanceId + "/agents/" + state.agentId + "/messages",
+      );
+      state.messages = data.messages || [];
+      renderMessages();
+      el.policy.textContent = policyLine(currentAgent());
+    }
+
+    async function addInstance() {
+      const data = await api("/api/instances", {
+        method: "POST",
+        body: JSON.stringify({ seedPresetIds: ["care"] }),
+      });
+      state.instances.push(data.instance);
+      state.instanceId = data.instance.id;
+      state.agentId = data.instance.agents[0]?.id || null;
+      renderTabs();
+      await loadMessages();
+    }
+
+    async function addAgent() {
+      if (!state.instanceId) return;
+      const presetId = el.presetPick.value || "strict";
+      const data = await api("/api/instances/" + state.instanceId + "/agents", {
+        method: "POST",
+        body: JSON.stringify({ presetId }),
+      });
+      const inst = currentInstance();
+      inst.agents.push(data.agent);
+      state.agentId = data.agent.id;
+      renderTabs();
+      await loadMessages();
+    }
+
+    async function spawnAgents() {
+      if (!state.instanceId) return;
+      const n = Number(prompt("Сколько агентов создать (без LLM)?", "5") || "0");
+      if (!n || n < 1) return;
+      const data = await api("/api/instances/" + state.instanceId + "/spawn", {
+        method: "POST",
+        body: JSON.stringify({ kind: "agents", count: n, presetId: "care" }),
+      });
+      await hydrate();
+      setStatus("spawn agents: " + data.created + " (без LLM)");
+    }
+
+    async function spawnInstances() {
+      const n = Number(prompt("Сколько инстансов создать (без LLM)?", "3") || "0");
+      if (!n || n < 1) return;
+      const data = await api("/api/spawn/instances", {
+        method: "POST",
+        body: JSON.stringify({ count: n, presetId: "care" }),
+      });
+      await hydrate();
+      setStatus("spawn instances: " + data.created + " (без LLM)");
+    }
+
+    async function send() {
+      if (state.busy || !state.instanceId || !state.agentId) return;
+      const text = el.input.value.trim();
+      if (!text) return;
+      const overrides = {};
+      if (el.model.value) overrides.model = el.model.value;
+      if (el.useTemp.value === "1") overrides.temperature = Number(el.temp.value);
+
+      el.input.value = "";
+      const controller = new AbortController();
+      state.abort = controller;
+      state.busy = true;
+      el.send.disabled = true;
+      setStatus("run…");
+
+      let askingEl = null;
+      let typingEl = null;
+      const empty = el.messages.querySelector(".empty");
+      if (empty) empty.remove();
+
+      try {
+        await loadUsage();
+        const delayMs = Number(state.usage?.budget?.delay_ms) || 0;
+
+        const runPromise = api("/api/agent/run", {
+          method: "POST",
+          signal: controller.signal,
+          body: JSON.stringify({
+            instanceId: state.instanceId,
+            agentId: state.agentId,
+            input: text,
+            overrides: Object.keys(overrides).length ? overrides : undefined,
+          }),
+        });
+
+        if (delayMs >= ASKING_UI_MS) {
+          askingEl = appendAskingIndicator(delayMs);
+          setStatus("спрашиваю… " + formatElapsed(Math.ceil(delayMs / 1000)));
+          await waitAskingCountdown(delayMs, controller.signal);
+          removeTyping(askingEl);
+          askingEl = null;
+        }
+
+        appendUserQuestion(text);
+        state.messages.push({
+          role: "user",
+          content: text,
+          agentId: state.agentId,
+        });
+        typingEl = appendTypingIndicator();
+
+        const data = await runPromise;
+        removeTyping(typingEl);
+        typingEl = null;
+        state.session.requests += 1;
+        state.session.tokens += data.usage?.total_tokens || 0;
+        state.session.cost_rub += data.message?.cost_rub ?? displayRub(data.usage);
+        if (data.totals) state.usage = { ...state.usage, ...data.totals };
+        await loadUsage();
+        await loadMessages();
+        const echo = data.agent?.overridesApplied
+          ? " · overrides model=" + data.agent.overridesApplied.model +
+            " T=" + data.agent.overridesApplied.temperature
+          : "";
+        const bud = state.usage?.budget;
+        const budHint =
+          bud && bud.limit_rub > 0
+            ? " · бюджет ₽" +
+              Number(bud.used_rub).toFixed(1) +
+              "/" +
+              bud.limit_rub
+            : "";
+        setStatus("ok · " + data.agent.label + echo + budHint);
       } catch (err) {
-        if (isAbortError(err)) replaceTypingWithStopped(typingEl);
-        else replaceTypingWithError(typingEl, err.message || "Сравнение не удалось");
+        if (askingEl) {
+          if (isAbortError(err)) {
+            replaceTypingWithError(askingEl, "Остановлено");
+          } else {
+            replaceTypingWithError(askingEl, err.message || String(err));
+          }
+          askingEl = null;
+        }
+        if (typingEl) {
+          if (isAbortError(err)) {
+            replaceTypingWithError(typingEl, "Остановлено");
+          } else {
+            replaceTypingWithError(typingEl, err.message || String(err));
+          }
+          typingEl = null;
+        } else if (!askingEl && isAbortError(err)) {
+          setStatus("остановлено");
+        }
+        if (isAbortError(err)) {
+          setStatus("остановлено");
+        } else {
+          setStatus(err.message || String(err), true);
+        }
       } finally {
-        endRequest();
-        setBusy(false);
-        scrollToBottom();
+        state.busy = false;
+        state.abort = null;
+        el.send.disabled = false;
+      }
+    }
+
+    el.instanceTabs.addEventListener("click", async (e) => {
+      const close = e.target.closest("[data-close-instance]");
+      if (close) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeInstance(close.dataset.closeInstance).catch((err) =>
+          setStatus(err.message, true),
+        );
+        return;
+      }
+      const t = e.target.closest(".tab");
+      if (!t) return;
+      if (state.busy && state.abort) state.abort.abort();
+      state.instanceId = t.dataset.instance;
+      const inst = currentInstance();
+      state.agentId = inst?.agents[0]?.id || null;
+      renderTabs();
+      await loadMessages();
+    });
+
+    el.agentTabs.addEventListener("click", async (e) => {
+      const close = e.target.closest("[data-close-agent]");
+      if (close) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAgent(close.dataset.closeAgent).catch((err) =>
+          setStatus(err.message, true),
+        );
+        return;
+      }
+      const t = e.target.closest(".tab");
+      if (!t) return;
+      if (state.busy && state.abort) state.abort.abort();
+      state.agentId = t.dataset.agent;
+      renderTabs();
+      await loadMessages();
+    });
+
+    el.undoToastBtn.addEventListener("click", () => {
+      const pending = undoPending;
+      if (!pending?.onUndo) return;
+      clearUndoToast();
+      pending.onUndo().catch((err) => setStatus(err.message, true));
+    });
+
+    document.getElementById("add-instance").addEventListener("click", () => {
+      addInstance().catch((e) => setStatus(e.message, true));
+    });
+    document.getElementById("add-agent").addEventListener("click", () => {
+      addAgent().catch((e) => setStatus(e.message, true));
+    });
+    document.getElementById("spawn-agents").addEventListener("click", () => {
+      spawnAgents().catch((e) => setStatus(e.message, true));
+    });
+    document.getElementById("spawn-instances").addEventListener("click", () => {
+      spawnInstances().catch((e) => setStatus(e.message, true));
+    });
+    el.send.addEventListener("click", () => send());
+    el.input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        send();
       }
     });
+    document.getElementById("btn-x3").addEventListener("click", () => {
+      setStatus("×3 не always-on — backlog / не must дня");
+    });
+    el.toggle.addEventListener("click", () => {
+      const open = el.details.classList.toggle("open");
+      el.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      el.toggle.textContent = open ? "▴" : "▾";
+    });
+
+    (async function boot() {
+      try {
+        await api("/api/health");
+        try {
+          const me = await api("/api/whoami");
+          if (me.ip) el.clientIp.textContent = "Ваш IP · " + me.ip;
+        } catch (_) {
+          el.clientIp.textContent = "Ваш IP · ?";
+        }
+        await loadModels();
+        await loadUsage();
+        await hydrate();
+      } catch (err) {
+        setStatus(err.message || String(err), true);
+      }
+    })();
   </script>
 </body>
 </html>

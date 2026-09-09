@@ -133,6 +133,20 @@ export function estimateCost(
   };
 }
 
+/** Billing ₽ for budgets/UI: ProxyAPI rub as-is; DeepSeek USD × FX. */
+export function costRubFromUsage(usage: {
+  estimated_cost_usd?: number;
+  estimated_cost_rub?: number;
+}): number {
+  const rub = usage.estimated_cost_rub ?? 0;
+  if (rub > 0) return Number(rub.toFixed(4));
+  const usd = usage.estimated_cost_usd ?? 0;
+  if (usd > 0) {
+    return Number((usd * DEEPSEEK_FX_RUB_PER_USD).toFixed(4));
+  }
+  return 0;
+}
+
 /** @deprecated use estimateCost — kept name for older imports */
 export function estimateCostUsd(
   model: string,

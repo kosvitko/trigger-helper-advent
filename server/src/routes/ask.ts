@@ -23,6 +23,10 @@ import {
 } from "../services/prompt.js";
 import { mergeUsage } from "../services/usage.js";
 import { isExpensiveModel } from "../services/model-cost-tier.js";
+import {
+  applyCostAwareThrottle,
+  getBudgetSnapshot,
+} from "../services/cost-aware-throttle.js";
 
 type AskRouteDeps = {
   pointsService: PointsService;
@@ -206,6 +210,11 @@ export async function registerAskRoutes(
           pointId,
         });
       }
+    }
+
+    const budget = await getBudgetSnapshot(deps.usageLedger, deps.env);
+    if ((await applyCostAwareThrottle(reply, budget)) === "rejected") {
+      return;
     }
 
     try {

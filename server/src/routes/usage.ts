@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { Env } from "../config/env.js";
+import { getBudgetSnapshot } from "../services/cost-aware-throttle.js";
 import type { UsageLedgerService } from "../services/usage-ledger.js";
 
 export async function registerUsageRoutes(
@@ -11,11 +12,13 @@ export async function registerUsageRoutes(
     const totals = await ledger.getTotals();
     const limit = env.FREE_DAILY_ASKS;
     const used = totals.expensive_asks_today ?? 0;
+    const budget = await getBudgetSnapshot(ledger, env);
     return {
       ...totals,
       asks_limit: limit,
       asks_remaining: limit > 0 ? Math.max(0, limit - used) : null,
       asks_limit_scope: "expensive_daily_msk",
+      budget,
     };
   });
 }

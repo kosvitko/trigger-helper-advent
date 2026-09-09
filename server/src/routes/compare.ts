@@ -14,6 +14,10 @@ import {
   buildJudgeSystemPrompt,
   buildJudgeUserPrompt,
 } from "../services/prompt.js";
+import {
+  applyCostAwareThrottle,
+  getBudgetSnapshot,
+} from "../services/cost-aware-throttle.js";
 
 type CompareRouteDeps = {
   deepSeekService: DeepSeekService;
@@ -121,6 +125,11 @@ export async function registerCompareRoutes(
 
     const { scenario, question, candidates } = parsed.data;
     const modes = candidates.map((c) => c.mode);
+
+    const budget = await getBudgetSnapshot(deps.usageLedger, deps.env);
+    if ((await applyCostAwareThrottle(reply, budget)) === "rejected") {
+      return;
+    }
 
     try {
       const result = await deps.deepSeekService.chat(
