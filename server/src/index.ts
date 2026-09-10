@@ -11,6 +11,11 @@ import { registerUsageRoutes } from "./routes/usage.js";
 import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";
 import { createInstanceRegistry } from "./services/agent/instance-registry.js";
 import { createLlmAgent } from "./services/agent/llm-agent.js";
+import {
+  AGENT_STATE_VERSION,
+  createAgentStateStore,
+  type AgentStateSnapshot,
+} from "./services/agent/persistence.js";
 import { createThreadStore } from "./services/agent/threads.js";
 import { createDeepSeekService } from "./services/deepseek.js";
 import { createPointsService } from "./services/points.js";
@@ -29,12 +34,38 @@ async function main(): Promise<void> {
   const pointsService = createPointsService(env.DATA_DIR);
   const deepSeekService = createDeepSeekService(env);
   const usageLedger = createUsageLedgerService(env.USAGE_FILE);
-  const registry = createInstanceRegistry({
-    maxInstances: env.MAX_INSTANCES,
-    maxAgentsPerInstance: env.MAX_AGENTS_PER_INSTANCE,
+  // Day07: persist agent context across Node restarts (var/agent-state.json)
+  const agentState = createAgentStateStore(env.AGENT_STATE_FILE);
+  const savedState = await agentState.load();
+  const registry = createInstanceRegistry(
+    {
+      maxInstances: env.MAX_INSTANCES,
+      maxAgentsPerInstance: env.MAX_AGENTS_PER_INSTANCE,
+    },
+    {
+      seed: savedState.instances.length === 0,
+      onChange: () => agentState.scheduleSave(),
+    },
+  );
+  registry.loadState({
+    instances: savedState.instances,
+    instanceSeq: savedState.instance_seq,
+    agentSeqByInstance: savedState.agent_seq,
   });
-  const threads = createThreadStore();
+  const threads = createThreadStore({ onChange: () => agentState.scheduleSave() });
+  threads.loadThreads(savedState.threads);
   const llmAgent = createLlmAgent(deepSeekService, env.DEEPSEEK_MODEL);
+  agentState.setSnapshotProvider((): AgentStateSnapshot => {
+    const state = registry.snapshotState();
+    return {
+      version: AGENT_STATE_VERSION,
+      saved_at: new Date().toISOString(),
+      instance_seq: state.instanceSeq,
+      agent_seq: state.agentSeqByInstance,
+      instances: state.instances,
+      threads: threads.snapshotThreads(),
+    };
+  });
 
   await registerIpRateLimit(app, env);
   await registerHealthRoutes(app);
@@ -60,6 +91,18 @@ async function main(): Promise<void> {
   });
 
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
+
+  // Day07: flush agent state on shutdown (Ctrl+C / systemd stop keeps the dialog)
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => {
+      void agentState
+        .flush()
+        .catch(() => undefined)
+        .finally(() => {
+          process.exit(0);
+        });
+    });
+  }
 }
 
 main().catch((error) => {

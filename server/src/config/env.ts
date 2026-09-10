@@ -18,6 +18,8 @@ const envSchema = z.object({
   DATA_DIR: z.string().optional(),
   /** Persistent usage totals JSON on VPS (default: <repo>/var/usage-totals.json). */
   USAGE_FILE: z.string().optional(),
+  /** Day07: agent context file (default: <repo>/var/agent-state.json). */
+  AGENT_STATE_FILE: z.string().optional(),
   /**
    * Daily cap for expensive models only (0 = off). Moscow calendar day.
    * DeepSeek / flash-lite / gpt-4o-mini / haiku — без лимита.

@@ -40,12 +40,21 @@ function snapshotPreset(
   };
 }
 
+export type RegistrySnapshot = {
+  instanceSeq: number;
+  agentSeqByInstance: Record<string, number>;
+  instances: Instance[];
+};
+
 export class InstanceRegistry {
   private readonly instances = new Map<string, Instance>();
   private instanceSeq = 0;
   private readonly agentSeqByInstance = new Map<string, number>();
 
-  constructor(private readonly caps: InstanceRegistryCaps) {}
+  constructor(
+    private readonly caps: InstanceRegistryCaps,
+    private readonly onChange?: () => void,
+  ) {}
 
   list(): Instance[] {
     return [...this.instances.values()];
@@ -98,6 +107,7 @@ export class InstanceRegistry {
       createdAt: new Date().toISOString(),
     };
     this.instances.set(id, instance);
+    this.onChange?.();
     return instance;
   }
 
@@ -118,6 +128,7 @@ export class InstanceRegistry {
     }
     const agent = this.makeAgent(instanceId, presetId, label);
     instance.agents.push(agent);
+    this.onChange?.();
     return agent;
   }
 
@@ -198,6 +209,7 @@ export class InstanceRegistry {
       throw new InstanceRegistryError("Агент не найден", 404);
     }
     const [agent] = instance.agents.splice(idx, 1);
+    this.onChange?.();
     return agent;
   }
 
@@ -211,6 +223,7 @@ export class InstanceRegistry {
     }
     this.instances.delete(instanceId);
     this.agentSeqByInstance.delete(instanceId);
+    this.onChange?.();
     return instance;
   }
 
@@ -238,6 +251,7 @@ export class InstanceRegistry {
         ? index
         : instance.agents.length;
     instance.agents.splice(at, 0, agent);
+    this.onChange?.();
     return agent;
   }
 
@@ -256,7 +270,38 @@ export class InstanceRegistry {
     if (!this.agentSeqByInstance.has(instance.id)) {
       this.agentSeqByInstance.set(instance.id, instance.agents.length);
     }
+    this.onChange?.();
     return instance;
+  }
+
+  /** Day07: full state for the snapshot file. */
+  snapshotState(): RegistrySnapshot {
+    return {
+      instanceSeq: this.instanceSeq,
+      agentSeqByInstance: Object.fromEntries(this.agentSeqByInstance),
+      instances: this.list(),
+    };
+  }
+
+  /** Day07: restore from the state file (trusted local file; bypasses caps). */
+  loadState(state: Partial<RegistrySnapshot>): void {
+    this.instanceSeq = state.instanceSeq ?? this.instanceSeq;
+    for (const [id, seq] of Object.entries(state.agentSeqByInstance ?? {})) {
+      this.agentSeqByInstance.set(id, seq);
+    }
+    for (const instance of state.instances ?? []) {
+      if (
+        !instance ||
+        typeof instance.id !== "string" ||
+        !Array.isArray(instance.agents)
+      ) {
+        continue;
+      }
+      this.instances.set(instance.id, instance);
+      if (!this.agentSeqByInstance.has(instance.id)) {
+        this.agentSeqByInstance.set(instance.id, instance.agents.length);
+      }
+    }
   }
 
   private nextAgentSeq(instanceId: string): number {
@@ -269,9 +314,13 @@ export class InstanceRegistry {
 
 export function createInstanceRegistry(
   caps: InstanceRegistryCaps,
+  opts: { seed?: boolean; onChange?: () => void } = {},
 ): InstanceRegistry {
-  const registry = new InstanceRegistry(caps);
-  // Seed for step-1 run: one instance with Care
-  registry.create({ label: "Demo", seedPresetIds: ["care"] });
+  const registry = new InstanceRegistry(caps, opts.onChange);
+  // Seed for step-1 run: one instance with Care (fresh state only —
+  // with a persisted snapshot the seed would duplicate day07 state)
+  if (opts.seed !== false) {
+    registry.create({ label: "Demo", seedPresetIds: ["care"] });
+  }
   return registry;
 }

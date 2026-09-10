@@ -1,37 +1,72 @@
-# AI Advent Challenge #9 — Week 02, Day 06
+# AI Advent Challenge #9 — Week 02, Day 07
 
-**Задание:** простой агент — запрос пользователя → LLM API → ответ в UI. Агент = **отдельная сущность** (не голый вызов API).
+**Задание:** сохранение контекста — хранить историю диалога (messages) в JSON или SQLite, при перезапуске загружать обратно, продолжать диалог как будто агент не выключался.
 
-Trigger Helper (day06): модуль `Agent` + policies, dual **инстансы × агенты**, чат с hydrate после F5 (server in-memory, без БД), полоса счётчиков (сессия / VPS / дорогие), meta на ответе (model · ms · tok · ₽).
+Trigger Helper (day07): треды агента + реестр инстансов сериализуются в **JSON-снапшот** (`var/agent-state.json`): atomic `tmp → rename`, запись с дебаунсом после каждой мутации, flush при остановке; на старте снапшот читается и валидируется (Zod, битые записи отбрасываются по одной). Диалог → рестарт процесса → F5 → тред на месте → агент отвечает с фактами из дотрестартного диалога (в LLM уходит хвост истории треда).
 
-**Stack:** TypeScript · Fastify · Zod · DeepSeek (env) · demo `server/public` (Agent UI; day05 lab demo не сохраняем)
+**Live demo:** http://91.188.212.10/ · **Tag:** [`week02-day07`](https://github.com/kosvitko/trigger-helper-advent/tree/week02-day07)
 
-**Статус README:** черновик под outbox · код/tag ещё не в этом срезе  
-**Tag (когда будет):** `week02-day06` · Live: http://91.188.212.10/
+Модель в демо — дефолтная дешёвая (DeepSeek chat), одна, без ×3.
 
-## Quick start (после реализации)
-
-```bash
-cp .env.example .env   # DEEPSEEK_API_KEY=...
-npm install
-npm run dev            # http://localhost:3000 — Agent UI
-```
-
-Smoke: `GET /api/health` · `POST /api/agent/run` · (опц.) `POST /api/ask` без регрессии API.
-
-## Demo на видео (план)
+## Demo на видео
 
 | | |
 |:--|:--|
-| UI | Agent: вкладки инстансов + агентов |
-| Действия | run → `+ агент` → `+ инстанс` → spawn count → F5 hydrate |
-| Debug | счётчики + ₽/tok/ms на ответе |
+| Чаты | **2 инстанса × 2 чата** — треды независимы |
+| Диалоги | шея → точка (Inst1/Care) · протокол самопомощи (Inst1/Strict) · голова (Inst2) |
+| Рестарт | перезапуск процесса сервера на камере (`systemctl restart`) |
+| F5 | **3 треда восстановлены раздельно** (1/1/1) с диска, не из кэша браузера |
+| Проверка | «Мы до перезапуска разбирали шею — какую точку?» → агент отвечает из своего треда |
 
-## Layout кода
+Перед записью треды почищены (state-файл удалён + рестарт сервиса).
 
-| Путь | Что |
-|:-----|:----|
-| `server/` `shared/` `data/` | runtime |
-| `advent/week02/` | мета сдачи (этот README в outbox) |
+## Что где реализовано
 
-Ключ API только в env на server, не в клиенте и не в git.
+| Требование | Где |
+|:-----------|:----|
+| JSON-хранилище | `server/src/services/agent/persistence.ts` — `AgentStateStore` (atomic write, debounce, health-restore пустого состояния) |
+| Снапшот контекста | instances + seq-счётчики + threads `instanceId|agentId → messages[]` — тред без реестра бессмыслен (`run`/`messages` проверяют существование агента) |
+| Загрузка при старте | `server/src/index.ts` — снапшот до `app.listen`; seed-инстанс только на пустом состоянии |
+| Персист-хуки | `ThreadStore` / `InstanceRegistry` — `onChange` → дебаунс-запись; flush на SIGINT/SIGTERM |
+| Продолжение диалога | `POST /api/agent/run` без изменений: history из того же `ThreadStore` → хвост 10 сообщений в контекст LLM |
+| Гигиена | ≤100 последних сообщений на тред в файле; `var/` вне git; путь настраивается `AGENT_STATE_FILE` |
+
+Почему JSON, а не SQLite: read-only-каталог данных мал, миграции не нужны, нативный модуль на VPS не привлекаем — SQLite запланирован позже, с аккаунтами.
+
+## Быстрый старт
+
+```bash
+git clone https://github.com/kosvitko/trigger-helper-advent.git
+cd trigger-helper-advent
+git checkout week02-day07
+cp .env.example .env   # DEEPSEEK_API_KEY=...
+npm install
+npm run dev            # http://127.0.0.1:3000 — Agent UI
+```
+
+Сценарий проверки: два вопроса агенту → остановить сервер → запустить снова → F5 → тред на месте → «какую точку мы разбирали?» → ответ с фактами.
+
+## Demo через API
+
+```bash
+# инстанс + агент
+curl -X POST http://127.0.0.1:3000/api/instances -H "Content-Type: application/json" -d '{"seedPresetIds":["care"]}'
+
+# диалог (history сохраняется в var/agent-state.json)
+curl -X POST http://127.0.0.1:3000/api/agent/run -H "Content-Type: application/json" \
+  -d '{"instanceId":"<iid>","agentId":"<aid>","input":"Шея каменная — какую точку проверить?"}'
+
+# после рестарта процесса: та же история доступна
+curl http://127.0.0.1:3000/api/instances/<iid>/agents/<aid>/messages
+```
+
+## Структура репозитория
+
+```
+server/   API (agents / instances / run / messages, /api/ask) + Agent UI
+shared/   Zod-схемы: инстансы, агенты, сообщения
+data/     точки для grounded-режима
+var/      снапшот контекста (agent-state.json) — вне git
+```
+
+Ключ API только в env на сервере, не в клиенте и не в git.
