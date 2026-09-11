@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Agent · day6</title>
+  <title>Trigger Helper — Agent · day8</title>
   <style>
     :root {
       color-scheme: light;
@@ -344,6 +344,84 @@
       margin: 4px 0 0;
     }
     .msg-usage dt, .msg-usage dd { margin: 0; }
+    /* Day08: tokens / context window / compression */
+    .ctx-banner {
+      flex-shrink: 0;
+      margin: 8px 12px 0;
+      padding: 6px 9px;
+      font-size: 0.72rem;
+      border: 1px solid #e0b4b4;
+      background: #fdf3f3;
+      color: var(--error);
+      border-radius: 6px;
+    }
+    /* Day08+: compression economics probe */
+    .probe-result {
+      flex-shrink: 0;
+      margin: 8px 12px 0;
+      padding: 6px 9px;
+      font-size: 0.7rem;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 6px;
+      line-height: 1.55;
+    }
+    .probe-result div { font-variant-numeric: tabular-nums; }
+    .probe-result .good { color: var(--accent); font-weight: 600; }
+    .probe-result .bad { color: var(--error); font-weight: 600; }
+    .token-panel {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 4px;
+      font-size: 0.66rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .token-line { flex: 1 1 auto; min-width: 11rem; }
+    .ctx-bar {
+      flex: 0 0 90px;
+      height: 6px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      background: var(--surface-muted);
+      overflow: hidden;
+    }
+    .ctx-bar > span {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+    }
+    .ctx-bar.warn > span { background: #c98a2b; }
+    .ctx-bar.over > span { background: var(--error); }
+    .tok-spark { flex: 0 0 120px; height: 22px; }
+    .tok-spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+    .token-actions button {
+      font-size: 0.66rem;
+      height: 22px;
+      padding: 0 8px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .token-actions button:hover { border-color: var(--accent); color: var(--accent-hover); }
+    .token-actions button:disabled { opacity: 0.55; cursor: wait; }
+    .msg.system { align-self: center; max-width: 96%; }
+    .msg.system .bubble {
+      background: var(--surface-muted);
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    .badge.compress {
+      color: var(--accent-hover);
+      border-color: #b7d0cc;
+      background: var(--accent-soft);
+    }
     .composer {
       flex-shrink: 0;
       border-top: 1px solid var(--border);
@@ -446,7 +524,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day6</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day8</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -480,9 +558,20 @@
       <span class="policy-inline" id="policy-inline"></span>
     </div>
 
+    <div class="ctx-banner" id="ctx-banner" hidden></div>
+    <div class="probe-result" id="probe-result" hidden></div>
     <div class="messages" id="messages" aria-live="polite"></div>
 
     <div class="composer">
+      <div class="token-panel" id="token-panel">
+        <span class="token-line" id="token-line">История: —</span>
+        <span class="ctx-bar" id="ctx-bar" title="оценка запроса / лимит контекста"><span id="ctx-fill"></span></span>
+        <svg class="tok-spark" id="tok-spark" viewBox="0 0 120 22" preserveAspectRatio="none" aria-label="prompt-токены по запросам"></svg>
+        <span class="token-actions">
+          <button type="button" id="btn-compress" title="Сжать старую историю в сводку (дешёвая модель)">Сжать</button>
+          <button type="button" id="btn-probe" title="Холостой замер: сколько стоил бы этот вопрос до и после сжатия (4 вызова, тред не меняется)">Измерить экономию</button>
+        </span>
+      </div>
       <details class="lab-details" id="lab-details">
         <summary>Lab · model / T overrides (echo на run)</summary>
         <div class="lab-row">
@@ -493,6 +582,12 @@
             <select id="use-temp">
               <option value="0">нет (дефолт агента)</option>
               <option value="1">да</option>
+            </select>
+          </label>
+          <label>История
+            <select id="history-mode" title="tail = скользящее окно · full = вся история">
+              <option value="tail">tail · 10</option>
+              <option value="full">full · 100</option>
             </select>
           </label>
         </div>
@@ -528,6 +623,10 @@
       usage: null,
       busy: false,
       abort: null,
+      /** Day08: GET .../tokens payload. */
+      tokens: null,
+      /** Day08: last compression, shown on the matching summary bubble. */
+      compressInfo: null,
     };
 
     const el = {
@@ -550,6 +649,15 @@
       cVps: document.getElementById("c-vps"),
       cExp: document.getElementById("c-exp"),
       presetPick: document.getElementById("preset-pick"),
+      tokenLine: document.getElementById("token-line"),
+      ctxBar: document.getElementById("ctx-bar"),
+      ctxFill: document.getElementById("ctx-fill"),
+      tokSpark: document.getElementById("tok-spark"),
+      btnCompress: document.getElementById("btn-compress"),
+      btnProbe: document.getElementById("btn-probe"),
+      probeResult: document.getElementById("probe-result"),
+      historyMode: document.getElementById("history-mode"),
+      ctxBanner: document.getElementById("ctx-banner"),
       undoToast: document.getElementById("undo-toast"),
       undoToastText: document.getElementById("undo-toast-text"),
       undoToastBtn: document.getElementById("undo-toast-btn"),
@@ -910,6 +1018,24 @@
         if (m.role === "user") {
           wrap.innerHTML = '<div class="bubble"></div>';
           wrap.querySelector(".bubble").textContent = m.content;
+        } else if (m.role === "system") {
+          const rub = m.cost_rub != null ? m.cost_rub : displayRub(m.usage);
+          const info =
+            state.compressInfo && state.compressInfo.messageId === m.id
+              ? state.compressInfo
+              : null;
+          const delta = info
+            ? `<span class="badge compress">сжатие ~${fmtTok(info.beforeTokens)} → ~${fmtTok(info.afterTokens)} (${fmtRub(info.costRub)})</span>`
+            : "";
+          wrap.innerHTML = `
+            <div class="bubble"></div>
+            <div class="msg-meta">
+              <span class="badge compress">сводка истории</span>
+              <span class="badge">${m.usage ? fmtTok(m.usage.total_tokens) + " tok" : "—"}</span>
+              <span class="badge">${fmtRub(rub)}</span>
+              ${delta}
+            </div>`;
+          wrap.querySelector(".bubble").textContent = m.content;
         } else {
           const rub = m.cost_rub != null ? m.cost_rub : displayRub(m.usage);
           const tok = m.usage ? m.usage.total_tokens : "—";
@@ -964,6 +1090,72 @@
     async function loadUsage() {
       state.usage = await api("/api/usage");
       renderCounters();
+    }
+
+    /* Day08: thread tokens (GET .../tokens — 0 LLM calls). */
+    function renderTokens() {
+      const t = state.tokens;
+      if (!t) {
+        el.tokenLine.textContent = "История: —";
+        el.ctxFill.style.width = "0%";
+        el.ctxBar.title = "оценка запроса / лимит контекста";
+        el.ctxBar.classList.remove("warn", "over");
+        el.tokSpark.innerHTML = "";
+        return;
+      }
+      const th = t.thread || {};
+      const est = th.tokensEstimate || 0;
+      el.tokenLine.textContent =
+        "История: " + (th.count || 0) + " сообщ · ~" + fmtTok(est) +
+        " ток в окне · " + fmtTok(th.tokensActualSum || 0) + " ток израсходовано API · " +
+        fmtRub(th.costRubSum || 0);
+      const ratio = t.limit > 0 ? est / t.limit : 0;
+      el.ctxFill.style.width = Math.min(100, Math.round(ratio * 100)) + "%";
+      el.ctxBar.classList.toggle("warn", ratio >= 0.7 && ratio < 0.9);
+      el.ctxBar.classList.toggle("over", ratio >= 0.9);
+      el.ctxBar.title =
+        "~" + fmtTok(est) + " / " + fmtTok(t.limit) + " ток · " + (t.model || "") +
+        (t.caps ? " · tail " + t.caps.tail + " / full " + t.caps.full : "");
+      renderSpark(t.series || []);
+    }
+
+    /* prompt-токены по запросам: плато при tail, рост при full */
+    function renderSpark(series) {
+      const pts = series.filter((p) => p.role === "assistant" && p.promptTokens > 0);
+      el.tokSpark.innerHTML = "";
+      if (pts.length < 2) return;
+      const max = Math.max(...pts.map((p) => p.promptTokens));
+      const stepX = 120 / (pts.length - 1);
+      const poly = pts
+        .map((p, i) => {
+          const y = 21 - (p.promptTokens / max) * 20;
+          return (i * stepX).toFixed(1) + "," + y.toFixed(1);
+        })
+        .join(" ");
+      el.tokSpark.innerHTML =
+        '<polyline points="' + poly + '" vector-effect="non-scaling-stroke" />';
+    }
+
+    async function loadTokens() {
+      if (!state.instanceId || !state.agentId) {
+        state.tokens = null;
+        renderTokens();
+        return;
+      }
+      state.tokens = await api(
+        "/api/instances/" + state.instanceId + "/agents/" + state.agentId + "/tokens",
+      );
+      renderTokens();
+    }
+
+    function showBanner(text) {
+      el.ctxBanner.textContent = text;
+      el.ctxBanner.hidden = false;
+    }
+
+    function clearBanner() {
+      el.ctxBanner.hidden = true;
+      el.ctxBanner.textContent = "";
     }
 
     async function loadModels() {
@@ -1031,7 +1223,9 @@
     async function loadMessages() {
       if (!state.instanceId || !state.agentId) {
         state.messages = [];
+        state.tokens = null;
         renderMessages();
+        renderTokens();
         return;
       }
       const data = await api(
@@ -1040,6 +1234,7 @@
       state.messages = data.messages || [];
       renderMessages();
       el.policy.textContent = policyLine(currentAgent());
+      await loadTokens();
     }
 
     async function addInstance() {
@@ -1098,12 +1293,15 @@
       const overrides = {};
       if (el.model.value) overrides.model = el.model.value;
       if (el.useTemp.value === "1") overrides.temperature = Number(el.temp.value);
+      overrides.historyMode = el.historyMode.value === "full" ? "full" : "tail";
 
       el.input.value = "";
       const controller = new AbortController();
       state.abort = controller;
       state.busy = true;
       el.send.disabled = true;
+      el.btnCompress.disabled = true;
+      el.btnProbe.disabled = true;
       setStatus("run…");
 
       let askingEl = null;
@@ -1112,6 +1310,7 @@
       if (empty) empty.remove();
 
       try {
+        clearBanner();
         await loadUsage();
         const delayMs = Number(state.usage?.budget?.delay_ms) || 0;
 
@@ -1151,6 +1350,20 @@
         if (data.totals) state.usage = { ...state.usage, ...data.totals };
         await loadUsage();
         await loadMessages();
+        let tkHint = "";
+        if (data.tokens) {
+          const est = data.tokens.estimate.total;
+          const lim = data.tokens.limit;
+          tkHint =
+            " · ~" + fmtTok(est) + "/" + fmtTok(lim) + " ток " +
+            data.tokens.historyMode + " (факт prompt " + (data.usage?.prompt_tokens || 0) + ")";
+          if (est / lim >= 0.9) {
+            showBanner(
+              "Близко к лимиту: ~" + fmtTok(est) + " / " + fmtTok(lim) +
+                " ток (" + data.tokens.historyMode + "). Нажмите «Сжать».",
+            );
+          }
+        }
         const echo = data.agent?.overridesApplied
           ? " · overrides model=" + data.agent.overridesApplied.model +
             " T=" + data.agent.overridesApplied.temperature
@@ -1163,7 +1376,7 @@
               "/" +
               bud.limit_rub
             : "";
-        setStatus("ok · " + data.agent.label + echo + budHint);
+        setStatus("ok · " + data.agent.label + echo + tkHint + budHint);
       } catch (err) {
         if (askingEl) {
           if (isAbortError(err)) {
@@ -1185,6 +1398,12 @@
         }
         if (isAbortError(err)) {
           setStatus("остановлено");
+        } else if (err.status === 413) {
+          showBanner(
+            (err.message || "Контекст переполнен") +
+              " — нажмите «Сжать» или верните историю tail.",
+          );
+          setStatus("413 · контекст переполнен", true);
         } else {
           setStatus(err.message || String(err), true);
         }
@@ -1192,8 +1411,132 @@
         state.busy = false;
         state.abort = null;
         el.send.disabled = false;
+        el.btnCompress.disabled = false;
+        el.btnProbe.disabled = false;
       }
     }
+
+    /* Day08: сжать старую историю в одну сводку (дешёвая модель). */
+    async function compressHistory() {
+      if (state.busy || !state.instanceId || !state.agentId) return;
+      const length = state.messages.length;
+      if (length < 6) {
+        setStatus("сжатие: история уже короткая (" + length + ")", true);
+        return;
+      }
+      state.busy = true;
+      el.send.disabled = true;
+      el.btnCompress.disabled = true;
+      el.btnProbe.disabled = true;
+      setStatus("сжимаю историю…");
+      try {
+        const data = await api(
+          "/api/instances/" + state.instanceId + "/agents/" + state.agentId + "/compress",
+          { method: "POST", body: JSON.stringify({ keepLast: 4 }) },
+        );
+        state.compressInfo = {
+          messageId: data.summary.id,
+          beforeTokens: data.before.tokensEstimate,
+          afterTokens: data.after.tokensEstimate,
+          costRub: data.compression.cost_rub,
+        };
+        state.session.requests += 1;
+        state.session.tokens += data.compression.usage?.total_tokens || 0;
+        state.session.cost_rub += data.compression.cost_rub || 0;
+        if (data.totals) state.usage = { ...state.usage, ...data.totals };
+        clearBanner();
+        await loadUsage();
+        await loadMessages();
+        setStatus(
+          "сжато: " + data.compression.summarizedMessages + " сообщ → сводка · ~" +
+            fmtTok(data.before.tokensEstimate) + " → ~" + fmtTok(data.after.tokensEstimate) +
+            " ток (" + fmtRub(data.compression.cost_rub) + ")",
+        );
+      } catch (err) {
+        if (err.status === 413) showBanner(err.message || "Контекст переполнен");
+        setStatus(err.message || String(err), true);
+      } finally {
+        state.busy = false;
+        el.send.disabled = false;
+        el.btnCompress.disabled = false;
+        el.btnProbe.disabled = false;
+      }
+    }
+
+    el.btnCompress.addEventListener("click", () => {
+      compressHistory();
+    });
+
+    /* Day08+: холостой A/B замер экономики сжатия — 4 вызова, тред не меняется.
+       A — вопрос на полном хвосте (кэш тёплый) · C — сжатие ·
+       B1 — тот же вопрос на сжатом контексте (кэш холодный) · B2 — B1 повторно (тёплый). */
+    async function probeCompressEconomics() {
+      if (state.busy || !state.instanceId || !state.agentId) return;
+      state.busy = true;
+      el.send.disabled = true;
+      el.btnCompress.disabled = true;
+      el.btnProbe.disabled = true;
+      el.btnProbe.disabled = true;
+      setStatus("замер экономики сжатия… (4 холостых вызова, тред не меняется)");
+      try {
+        const data = await api(
+          "/api/instances/" + state.instanceId + "/agents/" + state.agentId + "/compress/probe",
+          { method: "POST", body: JSON.stringify({ keepLast: 4 }) },
+        );
+        state.session.requests += 4;
+        state.session.tokens +=
+          (data.full.usage?.total_tokens || 0) +
+          (data.compress.usage?.total_tokens || 0) +
+          (data.compressedCold.usage?.total_tokens || 0) +
+          (data.compressedWarm.usage?.total_tokens || 0);
+        state.session.cost_rub +=
+          data.full.cost_rub + data.compress.cost_rub +
+          data.compressedCold.cost_rub + data.compressedWarm.cost_rub;
+        if (data.totals) state.usage = { ...state.usage, ...data.totals };
+        await loadUsage();
+        renderProbe(data);
+      } catch (err) {
+        setStatus(err.message || String(err), true);
+      } finally {
+        state.busy = false;
+        el.send.disabled = false;
+        el.btnCompress.disabled = false;
+        el.btnProbe.disabled = false;
+        el.btnProbe.disabled = false;
+      }
+    }
+
+    function renderProbe(d) {
+      const a = d.full || {}, c = d.compress || {}, b1 = d.compressedCold || {}, b2 = d.compressedWarm || {};
+      const perAsk = (a.cost_rub || 0) - (b2.cost_rub || 0);
+      const saveCls = perAsk > 0 ? "good" : "bad";
+      const paybackNum = (c.cost_rub || 0) + (b1.cost_rub || 0) - (a.cost_rub || 0);
+      let payback;
+      if (perAsk <= 0) {
+        payback = '<span class="bad">на этом масштабе сжатие не окупается — полный хвост дешевле</span>';
+      } else {
+        const k = Math.max(1, Math.ceil(paybackNum / perAsk));
+        payback = 'сжатие окупается после <b>~' + k + '</b> вопрос' +
+          (k % 10 === 1 && k % 100 !== 11 ? "а" : "ов") + ' <span class="good">(Δ ₽' +
+          perAsk.toFixed(4) + '/вопрос)</span>';
+      }
+      el.probeResult.innerHTML =
+        "<div><b>Экономика сжатия</b> · вопрос «" + String(d.question || "").slice(0, 60) + "…»</div>" +
+        "<div>Было · полный хвост: ~" + fmtTok(a.usage?.prompt_tokens || 0) +
+          " промпт-ток · ₽" + Number(a.cost_rub || 0).toFixed(4) + " за вопрос</div>" +
+        "<div>Сжатие (разово): ₽" + Number(c.cost_rub || 0).toFixed(4) +
+          " · " + (c.summarizedCount || 0) + " сообщ → сводка</div>" +
+        "<div>Стало · сжатый хвост: ₽" + Number(b1.cost_rub || 0).toFixed(4) +
+          " (холодный кэш) → ₽" + Number(b2.cost_rub || 0).toFixed(4) + " (тёплый)</div>" +
+        "<div>Экономия за вопрос на тёплом кэше: <span class='" + saveCls + "'>₽" +
+          perAsk.toFixed(4) + "</span> · " + payback + "</div>";
+      el.probeResult.hidden = false;
+      setStatus("замер готов: 4 вызова оплачены, тред не менялся");
+    }
+
+    el.btnProbe.addEventListener("click", () => {
+      probeCompressEconomics();
+    });
 
     el.instanceTabs.addEventListener("click", async (e) => {
       const close = e.target.closest("[data-close-instance]");

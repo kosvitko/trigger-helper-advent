@@ -1,19 +1,29 @@
 import {
   AddAgentRequestSchema,
   AgentRunRequestSchema,
+  CompressThreadRequestSchema,
   CreateInstanceRequestSchema,
   OPEN_TASK_MODE,
   RestoreAgentRequestSchema,
   RestoreInstanceRequestSchema,
   SpawnRequestSchema,
   type AgentRunResponse,
-} from "@trigger-helper/shared";
+  type AgentRunTokensDto,
+   type CompressThreadResponse,
+   type AgentMessage,
+ } from "@trigger-helper/shared";
 import type { FastifyInstance } from "fastify";
 import type { Env } from "../config/env.js";
 import {
+  AGENT_HISTORY_CAPS,
   AgentPolicyError,
+  ContextLimitError,
   type LlmAgent,
 } from "../services/agent/llm-agent.js";
+import {
+  messageCostRub,
+  sumThreadTokens,
+} from "../services/agent/token-estimate.js";
 import {
   InstanceRegistryError,
   type InstanceRegistry,
@@ -238,6 +248,209 @@ export async function registerAgentRoutes(
     },
   );
 
+  /** Day08: token series for the whole thread (0 LLM calls). */
+  app.get(
+    "/api/instances/:id/agents/:agentId/tokens",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const found = deps.registry.getAgent(id, agentId);
+      if (!found) {
+        return reply.status(404).send({ error: "Instance or agent not found" });
+      }
+
+      const messages = deps.threads.list(id, agentId);
+      const model = found.agent.defaultModel ?? deps.env.DEEPSEEK_MODEL;
+
+      let cumTokens = 0;
+      let cumCostRub = 0;
+      const series = messages.map((m) => {
+        const costRub = messageCostRub(m);
+        cumTokens += m.usage?.total_tokens ?? 0;
+        cumCostRub += costRub;
+        return {
+          id: m.id,
+          role: m.role,
+          createdAt: m.createdAt,
+          promptTokens: m.usage?.prompt_tokens ?? 0,
+          completionTokens: m.usage?.completion_tokens ?? 0,
+          costRub: Number(costRub.toFixed(4)),
+          cumTokens,
+          cumCostRub: Number(cumCostRub.toFixed(4)),
+        };
+      });
+
+      return {
+        instanceId: id,
+        agentId,
+        model,
+        limit: deps.llmAgent.contextLimit(model),
+        caps: AGENT_HISTORY_CAPS,
+        thread: sumThreadTokens(messages),
+        series,
+      };
+    },
+  );
+
+  /** Day08: compress the old thread into one system summary (cheap model). */
+  app.post(
+    "/api/instances/:id/agents/:agentId/compress",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const parsed = CompressThreadRequestSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const found = deps.registry.getAgent(id, agentId);
+      if (!found) {
+        return reply.status(404).send({ error: "Instance or agent not found" });
+      }
+
+      const history = deps.threads.list(id, agentId);
+      const before = sumThreadTokens(history);
+
+      try {
+        const result = await deps.llmAgent.compress({
+          history,
+          keepLast: parsed.data.keepLast,
+          model: parsed.data.model,
+        });
+
+        const draft = deps.threads.createMessage({
+          role: "system",
+          content: result.summary,
+          agentId,
+          label: found.agent.label,
+          model: result.model,
+          latency_ms: result.latency_ms,
+          usage: result.usage,
+          cost_rub: result.cost_rub,
+        });
+        // Day08: estimate delta is the compression payoff, stored on the
+        // summary so thread totals keep the saving after restarts.
+        const savedTokens = Math.max(
+          0,
+          before.tokensEstimate -
+            sumThreadTokens([draft, ...result.keptMessages]).tokensEstimate,
+        );
+        const summary: AgentMessage = { ...draft, saved_tokens: savedTokens };
+        const thread = [summary, ...result.keptMessages];
+        deps.threads.replace(id, agentId, thread);
+        const totals = await deps.usageLedger.record(result.usage, {
+          countExpensive: OPEN_TASK_MODE === "public",
+        });
+        const after = sumThreadTokens(thread);
+
+        const body: CompressThreadResponse = {
+          summary,
+          before: { count: before.count, tokensEstimate: before.tokensEstimate },
+          after: { count: after.count, tokensEstimate: after.tokensEstimate },
+          compression: {
+            model: result.model,
+            latency_ms: result.latency_ms,
+            cost_rub: result.cost_rub,
+            savedTokens: Math.max(
+              0,
+              before.tokensEstimate - after.tokensEstimate,
+            ),
+            summarizedMessages: result.summarizedCount,
+            keptMessages: result.keptMessages.length,
+            usage: result.usage,
+          },
+          thread,
+          totals,
+        };
+        return body;
+      } catch (error) {
+        if (error instanceof ContextLimitError) {
+          return sendContextLimit(reply, error);
+        }
+        if (error instanceof AgentPolicyError) {
+          return reply.status(400).send({
+            error: "Nothing to compress",
+            message: error.message,
+          });
+        }
+        request.log.error(error);
+        return reply.status(502).send({
+          error: "Compress failed",
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    },
+  );
+
+  /** Day08+: idle economics probe — 4 real calls, thread NOT touched, replies discarded. */
+  app.post(
+    "/api/instances/:id/agents/:agentId/compress/probe",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const parsed = CompressThreadRequestSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const found = deps.registry.getAgent(id, agentId);
+      if (!found) {
+        return reply.status(404).send({ error: "Instance or agent not found" });
+      }
+
+      const history = deps.threads.list(id, agentId);
+      try {
+        const probe = await deps.llmAgent.probeCompressEconomics({
+          agent: found.agent,
+          history,
+          question: parsed.data.question,
+          keepLast: parsed.data.keepLast,
+          model: parsed.data.model,
+        });
+        // Idle calls are real spend: bill them; the thread stays untouched.
+        const countExpensive = OPEN_TASK_MODE === "public";
+        let totals = await deps.usageLedger.record(probe.full.usage, {
+          countExpensive,
+        });
+        totals = await deps.usageLedger.record(probe.compress.usage, {
+          countExpensive,
+        });
+        totals = await deps.usageLedger.record(probe.compressedCold.usage, {
+          countExpensive,
+        });
+        totals = await deps.usageLedger.record(probe.compressedWarm.usage, {
+          countExpensive,
+        });
+        return { ...probe, totals };
+      } catch (error) {
+        if (error instanceof ContextLimitError) {
+          return sendContextLimit(reply, error);
+        }
+        if (error instanceof AgentPolicyError) {
+          return reply.status(400).send({
+            error: "Nothing to compress",
+            message: error.message,
+          });
+        }
+        request.log.error(error);
+        return reply.status(502).send({
+          error: "Probe failed",
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    },
+  );
+
   app.post("/api/agent/run", async (request, reply) => {
     const parsed = AgentRunRequestSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -310,6 +523,11 @@ export async function registerAgentRoutes(
         countExpensive,
       });
 
+      const tokens: AgentRunTokensDto = {
+        ...result.tokens,
+        thread: sumThreadTokens(deps.threads.list(instanceId, agentId)),
+      };
+
       const body: AgentRunResponse = {
         reply: result.reply,
         message: assistantMsg,
@@ -329,10 +547,14 @@ export async function registerAgentRoutes(
         },
         usage: result.usage,
         latency_ms: result.latency_ms,
+        tokens,
         totals,
       };
       return body;
     } catch (error) {
+      if (error instanceof ContextLimitError) {
+        return sendContextLimit(reply, error);
+      }
       if (error instanceof AgentPolicyError) {
         return reply.status(400).send({
           error: "Policy rejected input",
@@ -345,6 +567,27 @@ export async function registerAgentRoutes(
         message: error instanceof Error ? error.message : "Unknown error",
       });
     }
+  });
+}
+
+function sendContextLimit(
+  reply: {
+    status: (code: number) => {
+      send: (body: unknown) => unknown;
+    };
+  },
+  error: ContextLimitError,
+) {
+  return reply.status(413).send({
+    error: "Context limit exceeded",
+    message: error.message,
+    source: error.details.source,
+    estimate: error.details.estimate,
+    limit: error.details.limit,
+    model: error.details.model,
+    historyMode: error.details.historyMode,
+    breakdown: error.details.breakdown,
+    hint: "Сожмите историю (кнопка «Сжать») или верните режим tail.",
   });
 }
 

@@ -49,6 +49,39 @@ export function isExpensiveModel(model: string): boolean {
   return false;
 }
 
+/**
+ * Conservative fallback: smallest realistic chat window. A wrong-low limit
+ * only refuses a request locally (user can compress history); a wrong-high
+ * limit spends a request on an API 400.
+ */
+export const DEFAULT_CONTEXT_LIMIT = 8_192;
+
+/** Ordered markers — first hit wins (broad families before specific ones). */
+const CONTEXT_LIMIT_MARKERS: ReadonlyArray<readonly [string, number]> = [
+  ["gemini", 1_000_000],
+  ["claude", 200_000],
+  ["sonnet", 200_000],
+  ["opus", 200_000],
+  ["gpt-5", 128_000],
+  ["gpt-4.1", 128_000],
+  ["gpt-4o", 128_000],
+  ["gpt-4-turbo", 128_000],
+  ["deepseek", 128_000],
+];
+
+/**
+ * Day08: context window per model (tokens) for the pre-flight guard.
+ * Verified: DeepSeek V3.2 chat/reasoner = 128K, gpt-4o(-mini) = 128K,
+ * Claude = 200K, Gemini 2.5 = 1M. Unknown ids → conservative default.
+ */
+export function contextLimitForModel(model: string): number {
+  const m = model.toLowerCase();
+  for (const [marker, limit] of CONTEXT_LIMIT_MARKERS) {
+    if (m.includes(marker)) return limit;
+  }
+  return DEFAULT_CONTEXT_LIMIT;
+}
+
 /** Calendar day in Moscow (Advent / Gladkov TZ). */
 export function todayMoscowDate(): string {
   return new Date().toLocaleDateString("en-CA", {

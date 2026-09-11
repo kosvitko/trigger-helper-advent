@@ -60,7 +60,8 @@ export const InstanceSchema = z.object({
 });
 export type Instance = z.infer<typeof InstanceSchema>;
 
-export const AgentMessageRoleSchema = z.enum(["user", "assistant"]);
+/** Day08: `system` role carries history-compression summaries. */
+export const AgentMessageRoleSchema = z.enum(["user", "assistant", "system"]);
 export type AgentMessageRole = z.infer<typeof AgentMessageRoleSchema>;
 
 /** Server-owned DTO; ₽ display computed on server. */
@@ -75,9 +76,45 @@ export const AgentMessageSchema = z.object({
   usage: LlmUsageSchema.optional(),
   /** Display rubles: ProxyAPI rub or DeepSeek USD×FX. */
   cost_rub: z.number().nonnegative().optional(),
+  /** Day08: tokens saved in the request by compressing this summary. */
+  saved_tokens: z.number().int().nonnegative().optional(),
   createdAt: z.string(),
 });
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
+
+/** Day08: `tail` — sliding window (10), `full` — whole history (cap 100). */
+export const AgentHistoryModeSchema = z.enum(["tail", "full"]);
+export type AgentHistoryMode = z.infer<typeof AgentHistoryModeSchema>;
+
+/** Request-size estimate split (heuristic; API usage stays the fact). */
+export const TokenBreakdownSchema = z.object({
+  system: z.number().int().nonnegative(),
+  history: z.number().int().nonnegative(),
+  user: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  historyMessages: z.number().int().nonnegative(),
+});
+export type TokenBreakdownDto = z.infer<typeof TokenBreakdownSchema>;
+
+/** Whole-thread tokens: estimate + billed usage facts. */
+export const ThreadTokensSchema = z.object({
+  count: z.number().int().nonnegative(),
+  tokensEstimate: z.number().int().nonnegative(),
+  tokensActualSum: z.number().int().nonnegative(),
+  costRubSum: z.number().nonnegative(),
+  /** Day08: total tokens saved by compressions in this thread. */
+  savedTokensSum: z.number().int().nonnegative(),
+});
+export type ThreadTokensDto = z.infer<typeof ThreadTokensSchema>;
+
+export const AgentRunTokensSchema = z.object({
+  estimate: TokenBreakdownSchema,
+  limit: z.number().int().positive(),
+  historyMode: AgentHistoryModeSchema,
+  historySent: z.number().int().nonnegative(),
+  thread: ThreadTokensSchema.optional(),
+});
+export type AgentRunTokensDto = z.infer<typeof AgentRunTokensSchema>;
 
 export const AgentRunRequestSchema = z.object({
   instanceId: z.string().min(1),
@@ -87,6 +124,7 @@ export const AgentRunRequestSchema = z.object({
     .object({
       model: z.string().min(1).optional(),
       temperature: z.number().min(0).max(2).optional(),
+      historyMode: AgentHistoryModeSchema.optional(),
     })
     .optional(),
 });
@@ -116,9 +154,47 @@ export const AgentRunResponseSchema = z.object({
   }),
   usage: LlmUsageSchema,
   latency_ms: z.number().int().nonnegative(),
+  /** Day08: request size (estimate) + context limit + thread totals. */
+  tokens: AgentRunTokensSchema.optional(),
   totals: z.unknown().optional(),
 });
 export type AgentRunResponse = z.infer<typeof AgentRunResponseSchema>;
+
+/** Day08: compress thread history into one system summary. */
+export const CompressThreadRequestSchema = z.object({
+  /** Dialogue messages kept verbatim (default 4). */
+  keepLast: z.number().int().nonnegative().max(50).optional(),
+  /** Summarizer model (default: server DEEPSEEK_MODEL). */
+  model: z.string().min(1).optional(),
+  /** Day08+ probe: idle A/B test question (default: server phrase). */
+  question: z.string().min(1).max(2000).optional(),
+});
+export type CompressThreadRequest = z.infer<typeof CompressThreadRequestSchema>;
+
+export const CompressThreadResponseSchema = z.object({
+  summary: AgentMessageSchema,
+  before: z.object({
+    count: z.number().int().nonnegative(),
+    tokensEstimate: z.number().int().nonnegative(),
+  }),
+  after: z.object({
+    count: z.number().int().nonnegative(),
+    tokensEstimate: z.number().int().nonnegative(),
+  }),
+  compression: z.object({
+    model: z.string(),
+    latency_ms: z.number().int().nonnegative(),
+    cost_rub: z.number().nonnegative(),
+    /** before.tokensEstimate - after.tokensEstimate. */
+    savedTokens: z.number().int().nonnegative(),
+    summarizedMessages: z.number().int().nonnegative(),
+    keptMessages: z.number().int().nonnegative(),
+    usage: LlmUsageSchema,
+  }),
+  thread: z.array(AgentMessageSchema),
+  totals: z.unknown().optional(),
+});
+export type CompressThreadResponse = z.infer<typeof CompressThreadResponseSchema>;
 
 export const CreateInstanceRequestSchema = z.object({
   label: z.string().min(1).max(64).optional(),

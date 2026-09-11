@@ -93,6 +93,9 @@ export class ThreadStore {
         : {}),
       ...(partial.usage ? { usage: partial.usage } : {}),
       ...(partial.cost_rub !== undefined ? { cost_rub: partial.cost_rub } : {}),
+      ...(partial.saved_tokens !== undefined
+        ? { saved_tokens: partial.saved_tokens }
+        : {}),
     };
   }
 }

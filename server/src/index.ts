@@ -54,7 +54,11 @@ async function main(): Promise<void> {
   });
   const threads = createThreadStore({ onChange: () => agentState.scheduleSave() });
   threads.loadThreads(savedState.threads);
-  const llmAgent = createLlmAgent(deepSeekService, env.DEEPSEEK_MODEL);
+  const llmAgent = createLlmAgent(
+    deepSeekService,
+    env.DEEPSEEK_MODEL,
+    env.DEMO_CONTEXT_LIMIT,
+  );
   agentState.setSnapshotProvider((): AgentStateSnapshot => {
     const state = registry.snapshotState();
     return {

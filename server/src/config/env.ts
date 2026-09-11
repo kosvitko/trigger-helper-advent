@@ -29,6 +29,11 @@ const envSchema = z.object({
   MAX_INSTANCES: z.coerce.number().int().positive().default(8),
   MAX_AGENTS_PER_INSTANCE: z.coerce.number().int().positive().default(16),
   /**
+   * Day08 demo: force one small context window (tokens) for every model to
+   * show the overflow path without a 100-message thread. 0 = per-model limit.
+   */
+  DEMO_CONTEXT_LIMIT: z.coerce.number().int().nonnegative().default(0),
+  /**
    * Per-IP rate limit for costly POSTs (ask / compare / agent / spawn / create).
    * 0 = off. Needs trustProxy behind nginx so req.ip = client, not 127.0.0.1.
    */
