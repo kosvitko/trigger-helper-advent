@@ -590,6 +590,10 @@
               <option value="full">full · 100</option>
             </select>
           </label>
+          <label>Автосжатие
+            <input type="number" id="compress-every" min="0" max="100" step="1" placeholder="10"
+              title="автосжатие каждые M диалоговых сообщений · пусто = default сервера · 0 = выкл" />
+          </label>
         </div>
       </details>
       <div class="composer-row">
@@ -627,6 +631,8 @@
       tokens: null,
       /** Day08: last compression, shown on the matching summary bubble. */
       compressInfo: null,
+      /** Day09: server default for the auto-compress threshold (GET /api/agents). */
+      autoCompressDefault: 10,
     };
 
     const el = {
@@ -657,6 +663,7 @@
       btnProbe: document.getElementById("btn-probe"),
       probeResult: document.getElementById("probe-result"),
       historyMode: document.getElementById("history-mode"),
+      compressEvery: document.getElementById("compress-every"),
       ctxBanner: document.getElementById("ctx-banner"),
       undoToast: document.getElementById("undo-toast"),
       undoToastText: document.getElementById("undo-toast-text"),
@@ -806,6 +813,43 @@
     function removeTyping(node) {
       stopTypingTimer(node);
       if (node && node.parentNode) node.remove();
+    }
+
+    /** Day09: «Сжимаю историю…» — stopwatch phase while the server compresses. */
+    function appendCompressIndicator() {
+      const empty = el.messages.querySelector(".empty");
+      if (empty) empty.remove();
+      const node = document.createElement("div");
+      node.className = "msg assistant";
+      node.dataset.compress = "1";
+      node.innerHTML =
+        '<div class="bubble typing">Сжимаю историю… <span class="typing-timer">0:00</span>' +
+        '<button type="button" class="typing-stop">Остановить</button></div>';
+      const timerEl = node.querySelector(".typing-timer");
+      const started = Date.now();
+      node._typingTimerId = setInterval(() => {
+        const sec = Math.floor((Date.now() - started) / 1000);
+        if (timerEl) timerEl.textContent = formatElapsed(sec);
+      }, 250);
+      node.querySelector(".typing-stop").addEventListener("click", () => {
+        if (state.abort) state.abort.abort();
+      });
+      el.messages.appendChild(node);
+      el.messages.scrollTop = el.messages.scrollHeight;
+      return node;
+    }
+
+    /** Day09: client mirror of shouldAutoCompress (keepLast=4, same formula). */
+    function predictAutoCompress() {
+      const raw = el.compressEvery ? el.compressEvery.value.trim() : "";
+      const every = raw === "" ? state.autoCompressDefault : Number(raw);
+      if (!(every > 0)) return false;
+      let dialogue = 0;
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        if (state.messages[i].role === "system") break;
+        dialogue++;
+      }
+      return dialogue - 4 >= every;
     }
 
     function replaceTypingWithError(node, message) {
@@ -1200,6 +1244,8 @@
         api("/api/instances"),
       ]);
       state.presets = agentsMeta.presets || [];
+      state.autoCompressDefault = agentsMeta.autoCompress?.defaultEvery ?? 10;
+      if (el.compressEvery) el.compressEvery.placeholder = state.autoCompressDefault;
       fillPresetPick();
       state.instances = instData.instances || [];
       if (!state.instances.length) {
@@ -1294,6 +1340,13 @@
       if (el.model.value) overrides.model = el.model.value;
       if (el.useTemp.value === "1") overrides.temperature = Number(el.temp.value);
       overrides.historyMode = el.historyMode.value === "full" ? "full" : "tail";
+      const rawEvery = el.compressEvery ? el.compressEvery.value.trim() : "";
+      if (rawEvery !== "" && Number.isFinite(Number(rawEvery))) {
+        overrides.compressEvery = Number(rawEvery);
+      }
+      // Day09: predict BEFORE the optimistic user-message push — the server
+      // counts on the pre-send thread with the same formula.
+      const willCompress = predictAutoCompress();
 
       el.input.value = "";
       const controller = new AbortController();
@@ -1306,6 +1359,8 @@
 
       let askingEl = null;
       let typingEl = null;
+      let compressEl = null;
+      let compressPoll = null;
       const empty = el.messages.querySelector(".empty");
       if (empty) empty.remove();
 
@@ -1339,15 +1394,75 @@
           content: text,
           agentId: state.agentId,
         });
-        typingEl = appendTypingIndicator();
+
+        // Day09 phases: «Сжимаю историю…» (if predicted) → «Печатает…» → ответ.
+        if (willCompress) {
+          compressEl = appendCompressIndicator();
+          const messagesUrl =
+            "/api/instances/" + state.instanceId + "/agents/" + state.agentId + "/messages";
+          const knownSummaryIds = new Set(
+            state.messages.filter((m) => m.role === "system").map((m) => m.id),
+          );
+          const pollStarted = Date.now();
+          compressPoll = setInterval(async () => {
+            if (!state.busy || controller.signal.aborted) {
+              clearInterval(compressPoll);
+              compressPoll = null;
+              return;
+            }
+            // Terminal fallback (D-5): no summary in 20s — «Печатает…» until the
+            // run ends; never regress the phase back to compressing.
+            if (Date.now() - pollStarted > 20000) {
+              clearInterval(compressPoll);
+              compressPoll = null;
+              if (compressEl) {
+                removeTyping(compressEl);
+                compressEl = null;
+                typingEl = appendTypingIndicator();
+              }
+              return;
+            }
+            try {
+              const snap = await api(messagesUrl);
+              const fresh = (snap.messages || []).some(
+                (m) => m.role === "system" && !knownSummaryIds.has(m.id),
+              );
+              if (fresh && compressEl) {
+                clearInterval(compressPoll);
+                compressPoll = null;
+                removeTyping(compressEl);
+                compressEl = null;
+                typingEl = appendTypingIndicator();
+              }
+            } catch (_) {
+              /* transient poll errors — the run response is the source of truth */
+            }
+          }, 1000);
+        } else {
+          typingEl = appendTypingIndicator();
+        }
 
         const data = await runPromise;
+        if (compressPoll) { clearInterval(compressPoll); compressPoll = null; }
+        if (compressEl) { removeTyping(compressEl); compressEl = null; }
         removeTyping(typingEl);
         typingEl = null;
         state.session.requests += 1;
         state.session.tokens += data.usage?.total_tokens || 0;
         state.session.cost_rub += data.message?.cost_rub ?? displayRub(data.usage);
+        if (data.autoCompression) {
+          state.session.tokens += data.autoCompression.compression.usage?.total_tokens || 0;
+          state.session.cost_rub += data.autoCompression.compression.cost_rub || 0;
+        }
         if (data.totals) state.usage = { ...state.usage, ...data.totals };
+        if (data.autoCompression) {
+          state.compressInfo = {
+            messageId: data.autoCompression.summaryId,
+            beforeTokens: data.autoCompression.before.tokensEstimate,
+            afterTokens: data.autoCompression.after.tokensEstimate,
+            costRub: data.autoCompression.compression.cost_rub,
+          };
+        }
         await loadUsage();
         await loadMessages();
         let tkHint = "";
@@ -1364,6 +1479,12 @@
             );
           }
         }
+        if (data.autoCompression) {
+          tkHint +=
+            " · автосжатие ~" + fmtTok(data.autoCompression.before.tokensEstimate) +
+            " → ~" + fmtTok(data.autoCompression.after.tokensEstimate) +
+            " (" + fmtRub(data.autoCompression.compression.cost_rub) + ")";
+        }
         const echo = data.agent?.overridesApplied
           ? " · overrides model=" + data.agent.overridesApplied.model +
             " T=" + data.agent.overridesApplied.temperature
@@ -1378,6 +1499,15 @@
             : "";
         setStatus("ok · " + data.agent.label + echo + tkHint + budHint);
       } catch (err) {
+        if (compressPoll) { clearInterval(compressPoll); compressPoll = null; }
+        if (compressEl) {
+          if (isAbortError(err)) {
+            replaceTypingWithError(compressEl, "Остановлено");
+          } else {
+            replaceTypingWithError(compressEl, err.message || String(err));
+          }
+          compressEl = null;
+        }
         if (askingEl) {
           if (isAbortError(err)) {
             replaceTypingWithError(askingEl, "Остановлено");
@@ -1408,6 +1538,7 @@
           setStatus(err.message || String(err), true);
         }
       } finally {
+        if (compressPoll) clearInterval(compressPoll);
         state.busy = false;
         state.abort = null;
         el.send.disabled = false;

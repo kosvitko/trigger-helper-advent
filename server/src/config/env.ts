@@ -34,6 +34,11 @@ const envSchema = z.object({
    */
   DEMO_CONTEXT_LIMIT: z.coerce.number().int().nonnegative().default(0),
   /**
+   * Day09: auto-compress the thread every M dialogue messages (beyond the
+   * keepLast tail) before answering. 0 = off. Per-request Lab override wins.
+   */
+  AGENT_COMPRESS_EVERY: z.coerce.number().int().nonnegative().default(10),
+  /**
    * Per-IP rate limit for costly POSTs (ask / compare / agent / spawn / create).
    * 0 = off. Needs trustProxy behind nginx so req.ip = client, not 127.0.0.1.
    */

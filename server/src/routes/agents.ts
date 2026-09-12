@@ -18,6 +18,7 @@ import {
   AGENT_HISTORY_CAPS,
   AgentPolicyError,
   ContextLimitError,
+  shouldAutoCompress,
   type LlmAgent,
 } from "../services/agent/llm-agent.js";
 import {
@@ -55,6 +56,8 @@ export async function registerAgentRoutes(
       maxInstances: deps.env.MAX_INSTANCES,
       maxAgentsPerInstance: deps.env.MAX_AGENTS_PER_INSTANCE,
     },
+    /** Day09: Lab placeholder default (0 = off). */
+    autoCompress: { defaultEvery: deps.env.AGENT_COMPRESS_EVERY },
   }));
 
   app.get("/api/instances", async () => {
@@ -314,61 +317,16 @@ export async function registerAgentRoutes(
         return reply.status(404).send({ error: "Instance or agent not found" });
       }
 
-      const history = deps.threads.list(id, agentId);
-      const before = sumThreadTokens(history);
-
       try {
-        const result = await deps.llmAgent.compress({
-          history,
+        // Day09: persist+billing moved into compressAndPersist() — same body,
+        // same response shape (C-6: manual «Сжать» behavior unchanged).
+        return await compressAndPersist(deps, {
+          instanceId: id,
+          agentId,
+          label: found.agent.label,
           keepLast: parsed.data.keepLast,
           model: parsed.data.model,
         });
-
-        const draft = deps.threads.createMessage({
-          role: "system",
-          content: result.summary,
-          agentId,
-          label: found.agent.label,
-          model: result.model,
-          latency_ms: result.latency_ms,
-          usage: result.usage,
-          cost_rub: result.cost_rub,
-        });
-        // Day08: estimate delta is the compression payoff, stored on the
-        // summary so thread totals keep the saving after restarts.
-        const savedTokens = Math.max(
-          0,
-          before.tokensEstimate -
-            sumThreadTokens([draft, ...result.keptMessages]).tokensEstimate,
-        );
-        const summary: AgentMessage = { ...draft, saved_tokens: savedTokens };
-        const thread = [summary, ...result.keptMessages];
-        deps.threads.replace(id, agentId, thread);
-        const totals = await deps.usageLedger.record(result.usage, {
-          countExpensive: OPEN_TASK_MODE === "public",
-        });
-        const after = sumThreadTokens(thread);
-
-        const body: CompressThreadResponse = {
-          summary,
-          before: { count: before.count, tokensEstimate: before.tokensEstimate },
-          after: { count: after.count, tokensEstimate: after.tokensEstimate },
-          compression: {
-            model: result.model,
-            latency_ms: result.latency_ms,
-            cost_rub: result.cost_rub,
-            savedTokens: Math.max(
-              0,
-              before.tokensEstimate - after.tokensEstimate,
-            ),
-            summarizedMessages: result.summarizedCount,
-            keptMessages: result.keptMessages.length,
-            usage: result.usage,
-          },
-          thread,
-          totals,
-        };
-        return body;
       } catch (error) {
         if (error instanceof ContextLimitError) {
           return sendContextLimit(reply, error);
@@ -492,10 +450,40 @@ export async function registerAgentRoutes(
     const history = deps.threads.list(instanceId, agentId);
 
     try {
+      // Day09: synchronous auto-compress before the LLM call (C-3) — the
+      // answer goes out on the compressed context. compressEvery=0 disables
+      // entirely; failure is opportunistic (D-4): answer without compression.
+      const compressEvery =
+        overrides?.compressEvery ?? deps.env.AGENT_COMPRESS_EVERY;
+      let autoCompression: AgentRunResponse["autoCompression"];
+      let runHistory = history;
+      if (compressEvery > 0 && shouldAutoCompress(history, compressEvery)) {
+        try {
+          const compressed = await compressAndPersist(deps, {
+            instanceId,
+            agentId,
+            label: agent.label,
+          });
+          autoCompression = {
+            summaryId: compressed.summary.id,
+            before: compressed.before,
+            after: compressed.after,
+            compression: compressed.compression,
+          };
+          // Re-read the thread — the only source of truth after replace.
+          runHistory = deps.threads.list(instanceId, agentId);
+        } catch (error) {
+          request.log.warn(
+            { err: error, instanceId, agentId, compressEvery },
+            "auto-compress failed; answering without compression",
+          );
+        }
+      }
+
       const result = await deps.llmAgent.run(
         agent,
         input,
-        history,
+        runHistory,
         overrides ?? {},
       );
 
@@ -548,6 +536,7 @@ export async function registerAgentRoutes(
         usage: result.usage,
         latency_ms: result.latency_ms,
         tokens,
+        autoCompression,
         totals,
       };
       return body;
@@ -568,6 +557,77 @@ export async function registerAgentRoutes(
       });
     }
   });
+}
+
+/**
+ * Day09: compress the thread and persist + bill it — the shared path for the
+ * manual compress handler and the auto-compress step of run (D-3). Error
+ * mapping stays with the callers.
+ */
+async function compressAndPersist(
+  deps: AgentRouteDeps,
+  params: {
+    instanceId: string;
+    agentId: string;
+    label: string;
+    keepLast?: number;
+    model?: string;
+  },
+): Promise<CompressThreadResponse> {
+  const { instanceId, agentId } = params;
+  const history = deps.threads.list(instanceId, agentId);
+  const before = sumThreadTokens(history);
+
+  const result = await deps.llmAgent.compress({
+    history,
+    keepLast: params.keepLast,
+    model: params.model,
+  });
+
+  const draft = deps.threads.createMessage({
+    role: "system",
+    content: result.summary,
+    agentId,
+    label: params.label,
+    model: result.model,
+    latency_ms: result.latency_ms,
+    usage: result.usage,
+    cost_rub: result.cost_rub,
+  });
+  // Day08: estimate delta is the compression payoff, stored on the
+  // summary so thread totals keep the saving after restarts.
+  const savedTokens = Math.max(
+    0,
+    before.tokensEstimate -
+      sumThreadTokens([draft, ...result.keptMessages]).tokensEstimate,
+  );
+  const summary: AgentMessage = { ...draft, saved_tokens: savedTokens };
+  const thread = [summary, ...result.keptMessages];
+  deps.threads.replace(instanceId, agentId, thread);
+  const totals = await deps.usageLedger.record(result.usage, {
+    countExpensive: OPEN_TASK_MODE === "public",
+  });
+  const after = sumThreadTokens(thread);
+
+  return {
+    summary,
+    before: { count: before.count, tokensEstimate: before.tokensEstimate },
+    after: { count: after.count, tokensEstimate: after.tokensEstimate },
+    compression: {
+      model: result.model,
+      latency_ms: result.latency_ms,
+      cost_rub: result.cost_rub,
+      savedTokens: Math.max(
+        0,
+        before.tokensEstimate - after.tokensEstimate,
+      ),
+      summarizedMessages: result.summarizedCount,
+      keptMessages: result.keptMessages.length,
+      usage: result.usage,
+    },
+    thread,
+    totals,
+  };
 }
 
 function sendContextLimit(

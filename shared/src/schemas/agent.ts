@@ -125,10 +125,25 @@ export const AgentRunRequestSchema = z.object({
       model: z.string().min(1).optional(),
       temperature: z.number().min(0).max(2).optional(),
       historyMode: AgentHistoryModeSchema.optional(),
+      /** Day09: auto-compress every M dialogue messages. Absent = server default (env); 0 = off. */
+      compressEvery: z.number().int().nonnegative().max(100).optional(),
     })
     .optional(),
 });
 export type AgentRunRequest = z.infer<typeof AgentRunRequestSchema>;
+
+/** Day09: compression facts — shared by manual compress and autoCompression in run. */
+export const CompressionInfoSchema = z.object({
+  model: z.string(),
+  latency_ms: z.number().int().nonnegative(),
+  cost_rub: z.number().nonnegative(),
+  /** before.tokensEstimate - after.tokensEstimate. */
+  savedTokens: z.number().int().nonnegative(),
+  summarizedMessages: z.number().int().nonnegative(),
+  keptMessages: z.number().int().nonnegative(),
+  usage: LlmUsageSchema,
+});
+export type CompressionInfo = z.infer<typeof CompressionInfoSchema>;
 
 export const AgentRunResponseSchema = z.object({
   reply: z.string(),
@@ -156,6 +171,22 @@ export const AgentRunResponseSchema = z.object({
   latency_ms: z.number().int().nonnegative(),
   /** Day08: request size (estimate) + context limit + thread totals. */
   tokens: AgentRunTokensSchema.optional(),
+  /** Day09: auto-compression performed before this run. Absent — none happened. */
+  autoCompression: z
+    .object({
+      /** id of the system summary now in the thread (for the UI badge). */
+      summaryId: z.string(),
+      before: z.object({
+        count: z.number().int().nonnegative(),
+        tokensEstimate: z.number().int().nonnegative(),
+      }),
+      after: z.object({
+        count: z.number().int().nonnegative(),
+        tokensEstimate: z.number().int().nonnegative(),
+      }),
+      compression: CompressionInfoSchema,
+    })
+    .optional(),
   totals: z.unknown().optional(),
 });
 export type AgentRunResponse = z.infer<typeof AgentRunResponseSchema>;
@@ -181,16 +212,7 @@ export const CompressThreadResponseSchema = z.object({
     count: z.number().int().nonnegative(),
     tokensEstimate: z.number().int().nonnegative(),
   }),
-  compression: z.object({
-    model: z.string(),
-    latency_ms: z.number().int().nonnegative(),
-    cost_rub: z.number().nonnegative(),
-    /** before.tokensEstimate - after.tokensEstimate. */
-    savedTokens: z.number().int().nonnegative(),
-    summarizedMessages: z.number().int().nonnegative(),
-    keptMessages: z.number().int().nonnegative(),
-    usage: LlmUsageSchema,
-  }),
+  compression: CompressionInfoSchema,
   thread: z.array(AgentMessageSchema),
   totals: z.unknown().optional(),
 });

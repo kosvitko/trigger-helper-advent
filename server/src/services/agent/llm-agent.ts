@@ -184,6 +184,31 @@ function historyToChat(
   return out;
 }
 
+/** Day09: dialogue messages after the latest system summary (thread tail). */
+export function dialogueSinceLastSummary(messages: AgentMessage[]): number {
+  let count = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "system") break;
+    count++;
+  }
+  return count;
+}
+
+/**
+ * Day09: auto-compress trigger. Counts only what would go into the summary —
+ * dialogue after the last summary minus the keepLast tail (the tail stays
+ * verbatim and must not speed up the rhythm). Fires at `>= every`; derived
+ * from the thread alone, so restarts never shift it.
+ */
+export function shouldAutoCompress(
+  history: AgentMessage[],
+  every: number,
+  keepLast: number = COMPRESS_KEEP_LAST,
+): boolean {
+  if (!(every > 0)) return false;
+  return dialogueSinceLastSummary(history) - keepLast >= every;
+}
+
 /**
  * LlmAgent — entity for day06 (name avoids clash with undici.Agent).
  * Owns config + light I/O policies + 3 context layers + run().
