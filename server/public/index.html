@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Agent · day8</title>
+  <title>Trigger Helper — Agent · day9</title>
   <style>
     :root {
       color-scheme: light;
@@ -524,7 +524,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day8</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day9</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -1563,7 +1563,14 @@
       try {
         const data = await api(
           "/api/instances/" + state.instanceId + "/agents/" + state.agentId + "/compress",
-          { method: "POST", body: JSON.stringify({ keepLast: 4 }) },
+          {
+            method: "POST",
+            // Day09: сжатие — той же моделью, что выбрана в комбобоксе чата
+            body: JSON.stringify({
+              keepLast: 4,
+              model: el.model.value || undefined,
+            }),
+          },
         );
         state.compressInfo = {
           messageId: data.summary.id,

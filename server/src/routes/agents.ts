@@ -463,6 +463,9 @@ export async function registerAgentRoutes(
             instanceId,
             agentId,
             label: agent.label,
+            // Day09: суммаризатор — той же моделью, что выбрана в комбобоксе
+            // чата (иначе авто-сжатие ходит на серверный дефолт в обход выбора)
+            model: overrides?.model,
           });
           autoCompression = {
             summaryId: compressed.summary.id,
