@@ -1,24 +1,32 @@
 import {
   AddAgentRequestSchema,
   AgentRunRequestSchema,
+  BranchCheckpointRequestSchema,
+  BranchSwitchRequestSchema,
   CompressThreadRequestSchema,
   CreateInstanceRequestSchema,
+  FACT_KEYS,
   OPEN_TASK_MODE,
   RestoreAgentRequestSchema,
   RestoreInstanceRequestSchema,
   SpawnRequestSchema,
+  type AgentContextStrategy,
+  type AgentRunContext,
   type AgentRunResponse,
   type AgentRunTokensDto,
-   type CompressThreadResponse,
-   type AgentMessage,
- } from "@trigger-helper/shared";
+  type CompressThreadResponse,
+  type AgentMessage,
+  type FactsMap,
+} from "@trigger-helper/shared";
 import type { FastifyInstance } from "fastify";
 import type { Env } from "../config/env.js";
+import type { Day10StateStore } from "../services/agent/day10-state.js";
 import {
   AGENT_HISTORY_CAPS,
   AgentPolicyError,
   ContextLimitError,
   shouldAutoCompress,
+  type ExtractFactsResult,
   type LlmAgent,
 } from "../services/agent/llm-agent.js";
 import {
@@ -44,7 +52,10 @@ type AgentRouteDeps = {
   llmAgent: LlmAgent;
   usageLedger: UsageLedgerService;
   env: Env;
+  day10State: Day10StateStore;
 };
+
+const CONTEXT_STRATEGIES = ["sliding", "facts", "branching"] as const;
 
 export async function registerAgentRoutes(
   app: FastifyInstance,
@@ -58,6 +69,10 @@ export async function registerAgentRoutes(
     },
     /** Day09: Lab placeholder default (0 = off). */
     autoCompress: { defaultEvery: deps.env.AGENT_COMPRESS_EVERY },
+    /** Day10 Lab meta. */
+    contextStrategies: [...CONTEXT_STRATEGIES],
+    factKeys: [...FACT_KEYS],
+    historyCaps: AGENT_HISTORY_CAPS,
   }));
 
   app.get("/api/instances", async () => {
@@ -114,7 +129,8 @@ export async function registerAgentRoutes(
     try {
       const messages = deps.threads.list(id, agentId);
       const agent = deps.registry.removeAgent(id, agentId);
-      deps.threads.clearAgent(id, agentId);
+      deps.threads.clearAgentTree(id, agentId);
+      deps.day10State.clearAgent(id, agentId);
       return { agent, messages };
     } catch (error) {
       return sendRegistryError(reply, error);
@@ -159,6 +175,9 @@ export async function registerAgentRoutes(
         id,
         removed.agents.map((a) => a.id),
       );
+      for (const agent of removed.agents) {
+        deps.day10State.clearAgent(id, agent.id);
+      }
       return { instance: removed, threads };
     } catch (error) {
       return sendRegistryError(reply, error);
@@ -243,10 +262,26 @@ export async function registerAgentRoutes(
       if (!found) {
         return reply.status(404).send({ error: "Instance or agent not found" });
       }
+      const contextStrategy = deps.day10State.getStrategy(id, agentId);
+      const threadAgentId = deps.day10State.resolveThreadAgentId(
+        id,
+        agentId,
+        contextStrategy,
+      );
+      const branchMeta = deps.day10State.getBranching(id, agentId);
+      const facts = deps.day10State.getFacts(id, agentId);
       return {
         instanceId: id,
         agentId,
-        messages: deps.threads.list(id, agentId),
+        threadAgentId,
+        messages: deps.threads.list(id, threadAgentId),
+        facts,
+        branch: {
+          forked: branchMeta?.forked ?? false,
+          activeBranchId: branchMeta?.activeBranchId ?? null,
+          checkpointCount: branchMeta?.checkpointCount ?? 0,
+        },
+        contextStrategy: contextStrategy ?? null,
       };
     },
   );
@@ -264,7 +299,13 @@ export async function registerAgentRoutes(
         return reply.status(404).send({ error: "Instance or agent not found" });
       }
 
-      const messages = deps.threads.list(id, agentId);
+      const strategy = deps.day10State.getStrategy(id, agentId);
+      const threadAgentId = deps.day10State.resolveThreadAgentId(
+        id,
+        agentId,
+        strategy,
+      );
+      const messages = deps.threads.list(id, threadAgentId);
       const model = found.agent.defaultModel ?? deps.env.DEEPSEEK_MODEL;
 
       let cumTokens = 0;
@@ -288,6 +329,7 @@ export async function registerAgentRoutes(
       return {
         instanceId: id,
         agentId,
+        threadAgentId,
         model,
         limit: deps.llmAgent.contextLimit(model),
         caps: AGENT_HISTORY_CAPS,
@@ -317,12 +359,19 @@ export async function registerAgentRoutes(
         return reply.status(404).send({ error: "Instance or agent not found" });
       }
 
+      const strategy = deps.day10State.getStrategy(id, agentId);
+      const threadAgentId = deps.day10State.resolveThreadAgentId(
+        id,
+        agentId,
+        strategy,
+      );
+
       try {
         // Day09: persist+billing moved into compressAndPersist() — same body,
         // same response shape (C-6: manual «Сжать» behavior unchanged).
         return await compressAndPersist(deps, {
           instanceId: id,
-          agentId,
+          agentId: threadAgentId,
           label: found.agent.label,
           keepLast: parsed.data.keepLast,
           model: parsed.data.model,
@@ -366,7 +415,13 @@ export async function registerAgentRoutes(
         return reply.status(404).send({ error: "Instance or agent not found" });
       }
 
-      const history = deps.threads.list(id, agentId);
+      const strategy = deps.day10State.getStrategy(id, agentId);
+      const threadAgentId = deps.day10State.resolveThreadAgentId(
+        id,
+        agentId,
+        strategy,
+      );
+      const history = deps.threads.list(id, threadAgentId);
       try {
         const probe = await deps.llmAgent.probeCompressEconomics({
           agent: found.agent,
@@ -447,12 +502,22 @@ export async function registerAgentRoutes(
       return;
     }
 
-    const history = deps.threads.list(instanceId, agentId);
+    const strategy = overrides?.contextStrategy;
+    if (strategy) {
+      deps.day10State.setStrategy(instanceId, agentId, strategy);
+    }
+    const threadAgentId = deps.day10State.resolveThreadAgentId(
+      instanceId,
+      agentId,
+      strategy,
+    );
+    const history = deps.threads.list(instanceId, threadAgentId);
 
     try {
       // Day09: synchronous auto-compress before the LLM call (C-3) — the
       // answer goes out on the compressed context. compressEvery=0 disables
       // entirely; failure is opportunistic (D-4): answer without compression.
+      // Day10: compress the active thread key (branch after fork).
       const compressEvery =
         overrides?.compressEvery ?? deps.env.AGENT_COMPRESS_EVERY;
       let autoCompression: AgentRunResponse["autoCompression"];
@@ -461,7 +526,7 @@ export async function registerAgentRoutes(
         try {
           const compressed = await compressAndPersist(deps, {
             instanceId,
-            agentId,
+            agentId: threadAgentId,
             label: agent.label,
             // Day09: суммаризатор — той же моделью, что выбрана в комбобоксе
             // чата (иначе авто-сжатие ходит на серверный дефолт в обход выбора)
@@ -474,21 +539,61 @@ export async function registerAgentRoutes(
             compression: compressed.compression,
           };
           // Re-read the thread — the only source of truth after replace.
-          runHistory = deps.threads.list(instanceId, agentId);
+          runHistory = deps.threads.list(instanceId, threadAgentId);
         } catch (error) {
           request.log.warn(
-            { err: error, instanceId, agentId, compressEvery },
+            { err: error, instanceId, agentId, threadAgentId, compressEvery },
             "auto-compress failed; answering without compression",
           );
         }
       }
 
-      const result = await deps.llmAgent.run(
-        agent,
-        input,
-        runHistory,
-        overrides ?? {},
-      );
+      let extractInfo: AgentRunContext["extract"];
+      let factsForRun: FactsMap | undefined;
+      if (strategy === "facts") {
+        const existing = deps.day10State.getFacts(instanceId, agentId);
+        let extracted: ExtractFactsResult;
+        try {
+          extracted = await deps.llmAgent.extractFacts({
+            userText: input,
+            historyTail: runHistory,
+            existingFacts: existing,
+            model: deps.env.DEEPSEEK_MODEL,
+          });
+        } catch (error) {
+          request.log.warn(
+            { err: error, instanceId, agentId },
+            "facts extract threw; fail-open",
+          );
+          extracted = { ok: false, facts: existing };
+        }
+        extractInfo = {
+          ok: extracted.ok,
+          ...(extracted.usage ? { usage: extracted.usage } : {}),
+          ...(extracted.latency_ms !== undefined
+            ? { latency_ms: extracted.latency_ms }
+            : {}),
+        };
+        if (extracted.ok) {
+          deps.day10State.setFacts(instanceId, agentId, extracted.facts);
+          if (extracted.usage) {
+            await deps.usageLedger.record(extracted.usage, { countExpensive });
+          }
+        }
+        factsForRun = deps.day10State.getFacts(instanceId, agentId);
+      }
+
+      const effectiveHistoryMode =
+        strategy === "sliding" || strategy === "facts"
+          ? "tail"
+          : (overrides?.historyMode ?? "tail");
+
+      const result = await deps.llmAgent.run(agent, input, runHistory, {
+        ...(overrides ?? {}),
+        historyMode: effectiveHistoryMode,
+        contextStrategy: strategy,
+        ...(strategy === "facts" ? { facts: factsForRun } : {}),
+      });
 
       const userMsg = deps.threads.createMessage({
         role: "user",
@@ -496,7 +601,7 @@ export async function registerAgentRoutes(
         agentId: agent.id,
         label: agent.label,
       });
-      deps.threads.append(instanceId, agentId, userMsg);
+      deps.threads.append(instanceId, threadAgentId, userMsg);
 
       const assistantMsg = deps.threads.createMessage({
         role: "assistant",
@@ -508,7 +613,7 @@ export async function registerAgentRoutes(
         usage: result.usage,
         cost_rub: result.cost_rub,
       });
-      deps.threads.append(instanceId, agentId, assistantMsg);
+      deps.threads.append(instanceId, threadAgentId, assistantMsg);
 
       const totals = await deps.usageLedger.record(result.usage, {
         countExpensive,
@@ -516,7 +621,30 @@ export async function registerAgentRoutes(
 
       const tokens: AgentRunTokensDto = {
         ...result.tokens,
-        thread: sumThreadTokens(deps.threads.list(instanceId, agentId)),
+        historyMode: effectiveHistoryMode,
+        estimate: {
+          ...result.tokens.estimate,
+          ...(extractInfo?.ok && extractInfo.usage
+            ? { extract: extractInfo.usage.total_tokens }
+            : {}),
+        },
+        thread: sumThreadTokens(
+          deps.threads.list(instanceId, threadAgentId),
+        ),
+      };
+
+      const context: AgentRunContext = {
+        strategy,
+        historyMessages: result.historyChat.map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
+        ...(strategy === "facts"
+          ? {
+              facts: factsForRun ?? {},
+              extract: extractInfo,
+            }
+          : {}),
       };
 
       const body: AgentRunResponse = {
@@ -540,6 +668,7 @@ export async function registerAgentRoutes(
         latency_ms: result.latency_ms,
         tokens,
         autoCompression,
+        context,
         totals,
       };
       return body;
@@ -560,6 +689,172 @@ export async function registerAgentRoutes(
       });
     }
   });
+
+  // --- Day10 branching endpoints ---
+
+  app.get(
+    "/api/instances/:id/agents/:agentId/branch",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const found = deps.registry.getAgent(id, agentId);
+      if (!found) {
+        return reply.status(404).send({ error: "Instance or agent not found" });
+      }
+      const meta = deps.day10State.getBranching(id, agentId);
+      const forked = meta?.forked ?? false;
+      return {
+        forked,
+        activeBranchId: meta?.activeBranchId ?? null,
+        branches: forked ? (["a", "b"] as const) : [],
+        checkpointCount: meta?.checkpointCount ?? 0,
+      };
+    },
+  );
+
+  app.post(
+    "/api/instances/:id/agents/:agentId/branch/checkpoint",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const parsed = BranchCheckpointRequestSchema.safeParse(
+        request.body ?? {},
+      );
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const found = deps.registry.getAgent(id, agentId);
+      if (!found) {
+        return reply.status(404).send({ error: "Instance or agent not found" });
+      }
+
+      const prev = deps.day10State.getBranching(id, agentId);
+      const strategy: AgentContextStrategy =
+        deps.day10State.getStrategy(id, agentId) ?? "branching";
+      const threadAgentId = deps.day10State.resolveThreadAgentId(
+        id,
+        agentId,
+        strategy,
+      );
+      const list = deps.threads.list(id, threadAgentId);
+      let checkpointCount = list.length;
+      if (parsed.data.messageId) {
+        const idx = list.findIndex((m) => m.id === parsed.data.messageId);
+        if (idx < 0) {
+          return reply.status(400).send({
+            error: "messageId not in thread",
+            message: "Указанное сообщение не найдено в активном треде",
+          });
+        }
+        checkpointCount = idx + 1;
+      }
+
+      deps.day10State.setStrategy(id, agentId, "branching");
+      deps.day10State.setBranching(id, agentId, {
+        forked: prev?.forked ?? false,
+        activeBranchId: prev?.activeBranchId ?? null,
+        checkpointCount,
+      });
+
+      return { agentId, checkpointCount };
+    },
+  );
+
+  app.post(
+    "/api/instances/:id/agents/:agentId/branch/fork",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const found = deps.registry.getAgent(id, agentId);
+      if (!found) {
+        return reply.status(404).send({ error: "Instance or agent not found" });
+      }
+
+      const meta = deps.day10State.getBranching(id, agentId);
+      const checkpointCount = meta?.checkpointCount ?? 0;
+      if (!(checkpointCount > 0)) {
+        return reply.status(400).send({
+          error: "Checkpoint required",
+          message: "Сначала сделайте checkpoint перед fork",
+        });
+      }
+
+      // Prefix from base agent thread (archive) unless already forked — then active.
+      const sourceId =
+        meta?.forked && meta.activeBranchId
+          ? `${agentId}#${meta.activeBranchId}`
+          : agentId;
+      const list = deps.threads.list(id, sourceId);
+      const n = Math.min(checkpointCount, list.length);
+      if (n <= 0) {
+        return reply.status(400).send({
+          error: "Empty prefix",
+          message: "Нет сообщений для ветвления",
+        });
+      }
+      const prefix = list.slice(0, n);
+      deps.threads.replace(id, `${agentId}#a`, prefix);
+      deps.threads.replace(id, `${agentId}#b`, prefix);
+      deps.day10State.setStrategy(id, agentId, "branching");
+      deps.day10State.setBranching(id, agentId, {
+        forked: true,
+        activeBranchId: "a",
+        checkpointCount,
+      });
+
+      return {
+        branches: ["a", "b"],
+        activeBranchId: "a",
+        prefixCount: n,
+      };
+    },
+  );
+
+  app.post(
+    "/api/instances/:id/agents/:agentId/branch/switch",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const parsed = BranchSwitchRequestSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const found = deps.registry.getAgent(id, agentId);
+      if (!found) {
+        return reply.status(404).send({ error: "Instance or agent not found" });
+      }
+
+      const meta = deps.day10State.getBranching(id, agentId);
+      if (!meta?.forked) {
+        return reply.status(400).send({
+          error: "Not forked",
+          message: "Сначала выполните fork",
+        });
+      }
+
+      deps.day10State.setStrategy(id, agentId, "branching");
+      deps.day10State.setBranching(id, agentId, {
+        ...meta,
+        activeBranchId: parsed.data.branchId,
+      });
+
+      return { activeBranchId: parsed.data.branchId };
+    },
+  );
 }
 
 /**

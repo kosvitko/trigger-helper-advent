@@ -1,8 +1,11 @@
 import type {
   AgentInstance,
   AgentMessage,
+  AgentContextStrategy,
+  FactsMap,
   LlmUsage,
 } from "@trigger-helper/shared";
+import { FACT_KEYS } from "@trigger-helper/shared";
 import type {
   ChatMessage,
   ChatResult,
@@ -17,7 +20,7 @@ import {
   type TokenBreakdown,
 } from "./token-estimate.js";
 
-const HISTORY_TAIL = 10;
+export const HISTORY_TAIL = 10;
 /** Day08 full mode: whole thread up to the day07 persisted tail. */
 const HISTORY_FULL_CAP = 100;
 const AGENT_MAX_TOKENS = 1_200;
@@ -26,6 +29,10 @@ export const COMPRESS_KEEP_LAST = 4;
 const COMPRESS_MAX_TOKENS = 700;
 /** Per-message slice when building the compression transcript. */
 const COMPRESS_MESSAGE_CHAR_CAP = 4_000;
+/** Day10 facts extract. */
+const EXTRACT_MAX_TOKENS = 350;
+const EXTRACT_TEMPERATURE = 0.1;
+const EXTRACT_HISTORY_TAIL = 6;
 
 const COMPRESS_SYSTEM_PROMPT = [
   "Ты — сервис сжатия истории диалога ассистента самопомощи (зона боли, триггерные точки, упражнения).",
@@ -35,6 +42,13 @@ const COMPRESS_SYSTEM_PROMPT = [
   "3) важные ограничения и договорённости (в т.ч. «при остром — к врачу»);",
   "4) открытые вопросы.",
   "Только факты из переписки, максимум смысла на минимум слов: без выдумок, без воды, без формул вежливости и без обращений к пользователю.",
+].join("\n");
+
+const EXTRACT_SYSTEM_PROMPT = [
+  "Извлеки или обнови факты из реплики пользователя и краткого хвоста диалога самопомощи (зона боли, триггерные точки, техники, ограничения).",
+  `Ответь ТОЛЬКО JSON-объектом с ключами из списка: ${FACT_KEYS.join(", ")}.`,
+  "Пустые ключи не включай. Не выдумывай факты, которых нет в тексте.",
+  "Значения — короткие строки на русском.",
 ].join("\n");
 
 /** Day08: `tail` — sliding window, `full` — вся история (cap 100). */
@@ -51,6 +65,10 @@ export type AgentRunOverrides = {
   temperature?: number;
   /** Default `tail` — last HISTORY_TAIL messages only. */
   historyMode?: AgentHistoryMode;
+  /** Day10: strategy echo (optional; inject uses `facts`). */
+  contextStrategy?: AgentContextStrategy;
+  /** Day10 sticky facts to inject as a second system message. */
+  facts?: FactsMap;
 };
 
 /** Request-size facts for the day08 UI (estimate; API usage is the fact). */
@@ -71,7 +89,25 @@ export type AgentRunOk = {
   cost_rub: number;
   overridesApplied: { model: boolean; temperature: boolean };
   tokens: AgentRunTokens;
+  /** Day10: history portion actually sent (for context.historyMessages). */
+  historyChat: ChatMessage[];
 };
+
+export type ExtractFactsOk = {
+  ok: true;
+  facts: FactsMap;
+  usage: LlmUsage;
+  latency_ms: number;
+};
+
+export type ExtractFactsFail = {
+  ok: false;
+  facts: FactsMap;
+  usage?: LlmUsage;
+  latency_ms?: number;
+};
+
+export type ExtractFactsResult = ExtractFactsOk | ExtractFactsFail;
 
 /** Day08 compress result — caller persists and bills it. */
 export type CompressOk = {
@@ -184,6 +220,37 @@ function historyToChat(
   return out;
 }
 
+/** Day10: second system message — sticky facts (not stored in ThreadStore). */
+function stickyFactsMessage(facts: FactsMap): ChatMessage | null {
+  const lines = FACT_KEYS.filter((k) => facts[k]?.trim()).map(
+    (k) => `- ${k}: ${facts[k]!.trim()}`,
+  );
+  if (lines.length === 0) return null;
+  return {
+    role: "system",
+    content: `## Sticky facts\n${lines.join("\n")}`,
+  };
+}
+
+/** Merge allowlist-only non-empty strings into existing facts. */
+export function mergeFactsAllowlist(
+  existing: FactsMap,
+  patch: unknown,
+): FactsMap {
+  const out: FactsMap = { ...existing };
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    return out;
+  }
+  const raw = patch as Record<string, unknown>;
+  for (const key of FACT_KEYS) {
+    const val = raw[key];
+    if (typeof val === "string" && val.trim()) {
+      out[key] = val.trim();
+    }
+  }
+  return out;
+}
+
 /** Day09: dialogue messages after the latest system summary (thread tail). */
 export function dialogueSinceLastSummary(messages: AgentMessage[]): number {
   let count = 0;
@@ -242,14 +309,21 @@ export class LlmAgent {
 
     const systemPrompt = buildSystemPrompt(agent);
     const historyChat = historyToChat(history, historyMode);
+    const sticky = overrides.facts
+      ? stickyFactsMessage(overrides.facts)
+      : null;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
+      ...(sticky ? [sticky] : []),
       ...historyChat,
       { role: "user", content: input },
     ];
 
+    const systemForEstimate = sticky
+      ? `${systemPrompt}\n\n${sticky.content}`
+      : systemPrompt;
     const estimate = estimateMessagesBreakdown({
-      system: systemPrompt,
+      system: systemForEstimate,
       history: historyChat,
       user: input,
     });
@@ -319,7 +393,65 @@ export class LlmAgent {
         temperature: overrides.temperature !== undefined,
       },
       tokens,
+      historyChat,
     };
+  }
+
+  /**
+   * Day10 F1: extract sticky facts (allowlist only) before the main reply.
+   * Always uses the server default model (not chat combo). Fail-open on error.
+   */
+  async extractFacts(params: {
+    userText: string;
+    historyTail: AgentMessage[];
+    existingFacts: FactsMap;
+    model?: string;
+  }): Promise<ExtractFactsResult> {
+    const existing = { ...params.existingFacts };
+    const model = params.model ?? this.defaultModel;
+    const tail = params.historyTail
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-EXTRACT_HISTORY_TAIL);
+    const transcript = [
+      ...tail.map((m) => `${m.role === "user" ? "Пользователь" : "Агент"}: ${m.content}`),
+      `Пользователь: ${params.userText.trim()}`,
+      `Текущие факты (JSON): ${JSON.stringify(existing)}`,
+    ].join("\n\n");
+
+    try {
+      const result = await this.deepSeek.chat(
+        [
+          { role: "system", content: EXTRACT_SYSTEM_PROMPT },
+          { role: "user", content: transcript },
+        ],
+        {
+          maxTokens: EXTRACT_MAX_TOKENS,
+          temperature: EXTRACT_TEMPERATURE,
+          model,
+          jsonMode: true,
+        },
+      );
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(result.reply);
+      } catch {
+        return {
+          ok: false,
+          facts: existing,
+          usage: result.usage,
+          latency_ms: result.latency_ms,
+        };
+      }
+      const merged = mergeFactsAllowlist(existing, parsed);
+      return {
+        ok: true,
+        facts: merged,
+        usage: result.usage,
+        latency_ms: result.latency_ms,
+      };
+    } catch {
+      return { ok: false, facts: existing };
+    }
   }
 
   /**

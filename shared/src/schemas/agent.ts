@@ -86,6 +86,29 @@ export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 export const AgentHistoryModeSchema = z.enum(["tail", "full"]);
 export type AgentHistoryMode = z.infer<typeof AgentHistoryModeSchema>;
 
+/** Day10: context assembly strategy (primary Lab switch). */
+export const AgentContextStrategySchema = z.enum([
+  "sliding",
+  "facts",
+  "branching",
+]);
+export type AgentContextStrategy = z.infer<typeof AgentContextStrategySchema>;
+
+/** Day10 sticky-facts allowlist only (M-1). */
+export const FACT_KEYS = [
+  "цель",
+  "ограничения",
+  "предпочтения",
+  "решения",
+  "договорённости",
+] as const;
+export const FactKeySchema = z.enum(FACT_KEYS);
+export type FactKey = z.infer<typeof FactKeySchema>;
+export const FactsMapSchema = z
+  .record(FactKeySchema, z.string().min(1))
+  .default({});
+export type FactsMap = z.infer<typeof FactsMapSchema>;
+
 /** Request-size estimate split (heuristic; API usage stays the fact). */
 export const TokenBreakdownSchema = z.object({
   system: z.number().int().nonnegative(),
@@ -93,6 +116,8 @@ export const TokenBreakdownSchema = z.object({
   user: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
   historyMessages: z.number().int().nonnegative(),
+  /** Day10: extract call tokens when known before estimate assembly. */
+  extract: z.number().int().nonnegative().optional(),
 });
 export type TokenBreakdownDto = z.infer<typeof TokenBreakdownSchema>;
 
@@ -127,10 +152,61 @@ export const AgentRunRequestSchema = z.object({
       historyMode: AgentHistoryModeSchema.optional(),
       /** Day09: auto-compress every M dialogue messages. Absent = server default (env); 0 = off. */
       compressEvery: z.number().int().nonnegative().max(100).optional(),
+      /** Day10 primary: context assembly strategy. Absent = day09 (historyMode only). */
+      contextStrategy: AgentContextStrategySchema.optional(),
     })
     .optional(),
 });
 export type AgentRunRequest = z.infer<typeof AgentRunRequestSchema>;
+
+/** Day10: what actually went into the LLM (frame evidence). */
+export const AgentRunContextSchema = z.object({
+  strategy: AgentContextStrategySchema.optional(),
+  /** History messages sent to the LLM (without the agent system prompt). */
+  historyMessages: z.array(
+    z.object({
+      role: z.enum(["user", "assistant", "system"]),
+      content: z.string(),
+    }),
+  ),
+  facts: FactsMapSchema.optional(),
+  extract: z
+    .object({
+      ok: z.boolean(),
+      usage: LlmUsageSchema.optional(),
+      latency_ms: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+});
+export type AgentRunContext = z.infer<typeof AgentRunContextSchema>;
+
+/** Day10 branching meta (GET /branch and messages hydrate). */
+export const BranchStateSchema = z.object({
+  forked: z.boolean(),
+  activeBranchId: z.enum(["a", "b"]).nullable(),
+  branches: z.array(z.enum(["a", "b"])),
+  checkpointCount: z.number().int().nonnegative().optional(),
+});
+export type BranchState = z.infer<typeof BranchStateSchema>;
+
+export const BranchCheckpointRequestSchema = z.object({
+  messageId: z.string().min(1).optional(),
+});
+export type BranchCheckpointRequest = z.infer<
+  typeof BranchCheckpointRequestSchema
+>;
+
+export const BranchForkResponseSchema = z.object({
+  branches: z.array(z.enum(["a", "b"])),
+  activeBranchId: z.enum(["a", "b"]),
+  prefixCount: z.number().int().nonnegative(),
+});
+export type BranchForkResponse = z.infer<typeof BranchForkResponseSchema>;
+
+export const BranchSwitchRequestSchema = z.object({
+  branchId: z.enum(["a", "b"]),
+});
+export type BranchSwitchRequest = z.infer<typeof BranchSwitchRequestSchema>;
 
 /** Day09: compression facts — shared by manual compress and autoCompression in run. */
 export const CompressionInfoSchema = z.object({
@@ -187,6 +263,8 @@ export const AgentRunResponseSchema = z.object({
       compression: CompressionInfoSchema,
     })
     .optional(),
+  /** Day10: strategy frame — history sent + optional facts/extract. */
+  context: AgentRunContextSchema.optional(),
   totals: z.unknown().optional(),
 });
 export type AgentRunResponse = z.infer<typeof AgentRunResponseSchema>;

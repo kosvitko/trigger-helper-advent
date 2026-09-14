@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Agent · day9</title>
+  <title>Trigger Helper — Агент · day10</title>
   <style>
     :root {
       color-scheme: light;
@@ -410,6 +410,68 @@
     }
     .token-actions button:hover { border-color: var(--accent); color: var(--accent-hover); }
     .token-actions button:disabled { opacity: 0.55; cursor: wait; }
+    .compress-chrome {
+      flex: 0 0 auto;
+      font-size: 0.62rem;
+      color: var(--muted);
+    }
+    .compress-chrome > summary { cursor: pointer; user-select: none; }
+    .compress-chrome .token-actions { display: inline-flex; gap: 4px; margin-top: 4px; }
+    .ctx-panel {
+      flex-shrink: 0;
+      margin: 4px 12px 0;
+      padding: 4px 8px;
+      font-size: 0.66rem;
+      color: var(--muted);
+      background: var(--surface-muted);
+      border-bottom: 1px solid var(--border);
+      line-height: 1.45;
+      font-variant-numeric: tabular-nums;
+    }
+    .ctx-panel[hidden] { display: none !important; }
+    .ctx-panel .ctx-title { color: var(--text); font-weight: 600; margin-right: 6px; }
+    .payload-list { margin: 2px 0 0; padding: 0; list-style: none; }
+    .payload-list li {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+    .facts-kv {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1px 8px;
+      margin: 2px 0 0;
+    }
+    .facts-kv dt { color: var(--muted); }
+    .facts-kv dd { margin: 0; color: var(--text); }
+    .branch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .branch-bar button {
+      font-size: 0.66rem;
+      height: 22px;
+      padding: 0 8px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .branch-bar button:hover { border-color: var(--accent); color: var(--accent-hover); }
+    .branch-bar button.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent-hover);
+      font-weight: 600;
+    }
+    .branch-bar button:disabled { opacity: 0.55; cursor: wait; }
+    .lab-lock {
+      flex-direction: row !important;
+      align-items: center;
+      gap: 4px !important;
+      align-self: flex-end;
+      padding-bottom: 2px;
+    }
+    .lab-lock input { margin: 0; }
     .msg.system { align-self: center; max-width: 96%; }
     .msg.system .bubble {
       background: var(--surface-muted);
@@ -524,7 +586,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day9</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day10</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -560,6 +622,9 @@
 
     <div class="ctx-banner" id="ctx-banner" hidden></div>
     <div class="probe-result" id="probe-result" hidden></div>
+    <div class="ctx-panel" id="payload-panel" hidden></div>
+    <div class="ctx-panel" id="facts-panel" hidden></div>
+    <div class="ctx-panel branch-bar" id="branch-bar" hidden></div>
     <div class="messages" id="messages" aria-live="polite"></div>
 
     <div class="composer">
@@ -567,14 +632,29 @@
         <span class="token-line" id="token-line">История: —</span>
         <span class="ctx-bar" id="ctx-bar" title="оценка запроса / лимит контекста"><span id="ctx-fill"></span></span>
         <svg class="tok-spark" id="tok-spark" viewBox="0 0 120 22" preserveAspectRatio="none" aria-label="prompt-токены по запросам"></svg>
-        <span class="token-actions">
-          <button type="button" id="btn-compress" title="Сжать старую историю в сводку (дешёвая модель)">Сжать</button>
-          <button type="button" id="btn-probe" title="Холостой замер: сколько стоил бы этот вопрос до и после сжатия (4 вызова, тред не меняется)">Измерить экономию</button>
-        </span>
+        <details class="compress-chrome" id="compress-chrome">
+          <summary>Сжатие / probe (day09)</summary>
+          <span class="token-actions">
+            <button type="button" id="btn-compress" title="Сжать старую историю в сводку (дешёвая модель)">Сжать</button>
+            <button type="button" id="btn-probe" title="Холостой замер: сколько стоил бы этот вопрос до и после сжатия (4 вызова, тред не меняется)">Измерить экономию</button>
+          </span>
+        </details>
       </div>
       <details class="lab-details" id="lab-details">
-        <summary>Lab · model / T overrides (echo на run)</summary>
+        <summary>Lab · model / T / strategy overrides (echo на run)</summary>
         <div class="lab-row">
+          <label>Стратегия
+            <select id="context-strategy" title="day10: sliding | facts | branching · пусто = как day09 (historyMode)">
+              <option value="">(как historyMode)</option>
+              <option value="sliding">Sliding</option>
+              <option value="facts">Facts</option>
+              <option value="branching">Branching</option>
+            </select>
+          </label>
+          <label class="lab-lock" title="зафиксировать стратегию для демо сравнения">
+            <input type="checkbox" id="strategy-lock" />
+            lock strategy
+          </label>
           <label>T override
             <input type="range" id="temp" min="0" max="1.2" step="0.1" value="0.7" />
           </label>
@@ -592,7 +672,7 @@
           </label>
           <label>Автосжатие
             <input type="number" id="compress-every" min="0" max="100" step="1" placeholder="10"
-              title="автосжатие каждые M диалоговых сообщений · пусто = default сервера · 0 = выкл" />
+              title="автосжатие каждые M диалоговых сообщений · пусто = default сервера · 0 = выкл · при strategy day10 — предпочтительно 0" />
           </label>
         </div>
       </details>
@@ -633,7 +713,21 @@
       compressInfo: null,
       /** Day09: server default for the auto-compress threshold (GET /api/agents). */
       autoCompressDefault: 10,
+      /** Day10: Lab / hydrate strategy. */
+      contextStrategy: null,
+      facts: {},
+      branch: { forked: false, activeBranchId: null },
+      strategyLock: false,
+      lastPayloadMessages: [],
     };
+
+    const FACT_KEYS = [
+      "цель",
+      "ограничения",
+      "предпочтения",
+      "решения",
+      "договорённости",
+    ];
 
     const el = {
       status: document.getElementById("status"),
@@ -664,6 +758,11 @@
       probeResult: document.getElementById("probe-result"),
       historyMode: document.getElementById("history-mode"),
       compressEvery: document.getElementById("compress-every"),
+      contextStrategy: document.getElementById("context-strategy"),
+      strategyLock: document.getElementById("strategy-lock"),
+      payloadPanel: document.getElementById("payload-panel"),
+      factsPanel: document.getElementById("facts-panel"),
+      branchBar: document.getElementById("branch-bar"),
       ctxBanner: document.getElementById("ctx-banner"),
       undoToast: document.getElementById("undo-toast"),
       undoToastText: document.getElementById("undo-toast-text"),
@@ -787,14 +886,15 @@
       });
     }
 
-    function appendTypingIndicator() {
+    function appendTypingIndicator(label) {
       const empty = el.messages.querySelector(".empty");
       if (empty) empty.remove();
       const node = document.createElement("div");
       node.className = "msg assistant";
       node.dataset.typing = "1";
+      const text = label || "Печатает…";
       node.innerHTML =
-        '<div class="bubble typing">Печатает… <span class="typing-timer">0:00</span>' +
+        '<div class="bubble typing">' + text + ' <span class="typing-timer">0:00</span>' +
         '<button type="button" class="typing-stop">Остановить</button></div>';
       const timerEl = node.querySelector(".typing-timer");
       const started = Date.now();
@@ -1202,6 +1302,202 @@
       el.ctxBanner.textContent = "";
     }
 
+    /** Day10: strategy name from agent tab label (lock only — not hydrate source). */
+    function strategyFromAgentLabel(agent) {
+      const label = agent?.label || "";
+      if (/Sliding/i.test(label)) return "sliding";
+      if (/Facts/i.test(label)) return "facts";
+      if (/Branching/i.test(label)) return "branching";
+      return null;
+    }
+
+    function effectiveContextStrategy() {
+      if (state.strategyLock && state.contextStrategy) return state.contextStrategy;
+      const v = el.contextStrategy ? el.contextStrategy.value : "";
+      return v || null;
+    }
+
+    function updateStrategyLockUI() {
+      if (!el.contextStrategy || !el.strategyLock) return;
+      const fromLabel = strategyFromAgentLabel(currentAgent());
+      // Label lock for comparison tabs; checkbox for manual lock.
+      if (fromLabel && !el.contextStrategy.value) {
+        el.contextStrategy.value = fromLabel;
+        state.contextStrategy = fromLabel;
+      } else if (fromLabel && el.contextStrategy.value) {
+        state.contextStrategy = el.contextStrategy.value;
+      }
+      const locked = Boolean(state.strategyLock || fromLabel);
+      el.contextStrategy.disabled = locked;
+      el.strategyLock.checked = Boolean(state.strategyLock);
+    }
+
+    function truncatePayload(text, n) {
+      const s = String(text || "").replace(/\s+/g, " ").trim();
+      if (s.length <= n) return s;
+      return s.slice(0, n) + "…";
+    }
+
+    function renderPayloadPanel() {
+      const msgs = state.lastPayloadMessages || [];
+      if (!msgs.length) {
+        el.payloadPanel.hidden = true;
+        el.payloadPanel.innerHTML = "";
+        return;
+      }
+      const items = msgs
+        .map(
+          (m) =>
+            "<li><b>" +
+            (m.role || "?") +
+            "</b>: " +
+            truncatePayload(m.content, 60) +
+            "</li>",
+        )
+        .join("");
+      el.payloadPanel.innerHTML =
+        '<span class="ctx-title">В запрос: ' +
+        msgs.length +
+        "</span>" +
+        '<ul class="payload-list">' +
+        items +
+        "</ul>";
+      el.payloadPanel.hidden = false;
+    }
+
+    function factsNonEmpty(facts) {
+      if (!facts || typeof facts !== "object") return false;
+      return FACT_KEYS.some((k) => facts[k]);
+    }
+
+    function renderFactsPanel() {
+      const strategy = effectiveContextStrategy() || state.contextStrategy;
+      const facts = state.facts || {};
+      const show = strategy === "facts" || factsNonEmpty(facts);
+      if (!show) {
+        el.factsPanel.hidden = true;
+        el.factsPanel.innerHTML = "";
+        return;
+      }
+      const rows = FACT_KEYS.map((k) => {
+        const v = facts[k];
+        return (
+          "<dt>" +
+          k +
+          "</dt><dd>" +
+          (v ? truncatePayload(v, 80) : "—") +
+          "</dd>"
+        );
+      }).join("");
+      el.factsPanel.innerHTML =
+        '<span class="ctx-title">Facts</span><dl class="facts-kv">' + rows + "</dl>";
+      el.factsPanel.hidden = false;
+    }
+
+    function renderBranchBar() {
+      const strategy = effectiveContextStrategy() || state.contextStrategy;
+      if (strategy !== "branching") {
+        el.branchBar.hidden = true;
+        el.branchBar.innerHTML = "";
+        return;
+      }
+      const br = state.branch || {};
+      const active = br.activeBranchId;
+      const forked = Boolean(br.forked);
+      el.branchBar.innerHTML =
+        '<span class="ctx-title">Ветки</span>' +
+        '<button type="button" id="btn-checkpoint">Checkpoint</button>' +
+        '<button type="button" id="btn-fork"' +
+        (forked ? " disabled" : "") +
+        ">2 ветки</button>" +
+        '<button type="button" class="branch-toggle' +
+        (active === "a" ? " active" : "") +
+        '" data-branch="a"' +
+        (forked ? "" : " disabled") +
+        ">A</button>" +
+        '<button type="button" class="branch-toggle' +
+        (active === "b" ? " active" : "") +
+        '" data-branch="b"' +
+        (forked ? "" : " disabled") +
+        ">B</button>" +
+        (forked
+          ? '<span>active: ' + (active || "?") + "</span>"
+          : "");
+      el.branchBar.hidden = false;
+      el.branchBar.querySelector("#btn-checkpoint").addEventListener("click", () => {
+        branchCheckpoint().catch((e) => setStatus(e.message, true));
+      });
+      el.branchBar.querySelector("#btn-fork").addEventListener("click", () => {
+        branchFork().catch((e) => setStatus(e.message, true));
+      });
+      el.branchBar.querySelectorAll("[data-branch]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          branchSwitch(btn.dataset.branch).catch((e) => setStatus(e.message, true));
+        });
+      });
+    }
+
+    function renderDay10Panels() {
+      renderPayloadPanel();
+      renderFactsPanel();
+      renderBranchBar();
+      updateStrategyLockUI();
+    }
+
+    function branchUrl(suffix) {
+      return (
+        "/api/instances/" +
+        state.instanceId +
+        "/agents/" +
+        state.agentId +
+        "/branch" +
+        (suffix || "")
+      );
+    }
+
+    async function branchCheckpoint() {
+      if (state.busy || !state.instanceId || !state.agentId) return;
+      const data = await api(branchUrl("/checkpoint"), {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      setStatus("checkpoint · " + (data.checkpointCount ?? "?") + " сообщ");
+      await loadMessages();
+    }
+
+    async function branchFork() {
+      if (state.busy || !state.instanceId || !state.agentId) return;
+      const data = await api(branchUrl("/fork"), {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      state.branch = {
+        forked: true,
+        activeBranchId: data.activeBranchId || "a",
+      };
+      setStatus(
+        "fork · ветки " +
+          (data.branches || ["a", "b"]).join("/") +
+          " · active " +
+          state.branch.activeBranchId,
+      );
+      await loadMessages();
+    }
+
+    async function branchSwitch(branchId) {
+      if (state.busy || !state.instanceId || !state.agentId) return;
+      const data = await api(branchUrl("/switch"), {
+        method: "POST",
+        body: JSON.stringify({ branchId }),
+      });
+      state.branch = {
+        forked: true,
+        activeBranchId: data.activeBranchId || branchId,
+      };
+      setStatus("ветка " + state.branch.activeBranchId);
+      await loadMessages();
+    }
+
     async function loadModels() {
       const data = await api("/api/models");
       state.models = data.models || [];
@@ -1270,16 +1566,43 @@
       if (!state.instanceId || !state.agentId) {
         state.messages = [];
         state.tokens = null;
+        state.facts = {};
+        state.branch = { forked: false, activeBranchId: null };
+        state.lastPayloadMessages = [];
         renderMessages();
         renderTokens();
+        renderDay10Panels();
         return;
       }
       const data = await api(
         "/api/instances/" + state.instanceId + "/agents/" + state.agentId + "/messages",
       );
       state.messages = data.messages || [];
+      // M-4: hydrate strategy/facts/branch from server — not from tab label alone.
+      if (data.facts && typeof data.facts === "object") {
+        state.facts = data.facts;
+      } else {
+        state.facts = {};
+      }
+      if (data.branch && typeof data.branch === "object") {
+        state.branch = {
+          forked: Boolean(data.branch.forked),
+          activeBranchId: data.branch.activeBranchId || null,
+        };
+      } else {
+        state.branch = { forked: false, activeBranchId: null };
+      }
+      if (Object.prototype.hasOwnProperty.call(data, "contextStrategy")) {
+        state.contextStrategy = data.contextStrategy || null;
+        if (el.contextStrategy && !state.strategyLock) {
+          el.contextStrategy.value = data.contextStrategy || "";
+        } else if (el.contextStrategy && state.strategyLock && state.contextStrategy) {
+          el.contextStrategy.value = state.contextStrategy;
+        }
+      }
       renderMessages();
       el.policy.textContent = policyLine(currentAgent());
+      renderDay10Panels();
       await loadTokens();
     }
 
@@ -1344,9 +1667,26 @@
       if (rawEvery !== "" && Number.isFinite(Number(rawEvery))) {
         overrides.compressEvery = Number(rawEvery);
       }
+      // Day10: strategy from Lab; lock forces last locked value.
+      let strategy = null;
+      if (state.strategyLock && state.contextStrategy) {
+        strategy = state.contextStrategy;
+      } else if (el.contextStrategy && el.contextStrategy.value) {
+        strategy = el.contextStrategy.value;
+        state.contextStrategy = strategy;
+      }
+      if (strategy) {
+        overrides.contextStrategy = strategy;
+        // Day10 comparison: prefer compressEvery=0 when Lab field empty.
+        if (rawEvery === "") overrides.compressEvery = 0;
+      }
       // Day09: predict BEFORE the optimistic user-message push — the server
       // counts on the pre-send thread with the same formula.
-      const willCompress = predictAutoCompress();
+      // When day10 forces compressEvery=0, skip compress-poll UI.
+      const willCompress =
+        strategy && rawEvery === "" ? false : predictAutoCompress();
+      const typingLabel =
+        strategy === "facts" ? "Обновляю факты и отвечаю…" : undefined;
 
       el.input.value = "";
       const controller = new AbortController();
@@ -1396,6 +1736,7 @@
         });
 
         // Day09 phases: «Сжимаю историю…» (if predicted) → «Печатает…» → ответ.
+        // Day10: when strategy absent, compress poll path unchanged.
         if (willCompress) {
           compressEl = appendCompressIndicator();
           const messagesUrl =
@@ -1418,7 +1759,7 @@
               if (compressEl) {
                 removeTyping(compressEl);
                 compressEl = null;
-                typingEl = appendTypingIndicator();
+                typingEl = appendTypingIndicator(typingLabel);
               }
               return;
             }
@@ -1432,14 +1773,14 @@
                 compressPoll = null;
                 removeTyping(compressEl);
                 compressEl = null;
-                typingEl = appendTypingIndicator();
+                typingEl = appendTypingIndicator(typingLabel);
               }
             } catch (_) {
               /* transient poll errors — the run response is the source of truth */
             }
           }, 1000);
         } else {
-          typingEl = appendTypingIndicator();
+          typingEl = appendTypingIndicator(typingLabel);
         }
 
         const data = await runPromise;
@@ -1463,8 +1804,30 @@
             costRub: data.autoCompression.compression.cost_rub,
           };
         }
+        // Day10: capture context before hydrate; re-apply payload after loadMessages.
+        let extractHint = "";
+        const runHistoryMessages = Array.isArray(data.context?.historyMessages)
+          ? data.context.historyMessages
+          : null;
+        if (data.context) {
+          if (data.context.facts && typeof data.context.facts === "object") {
+            state.facts = data.context.facts;
+          }
+          if (data.context.strategy) {
+            state.contextStrategy = data.context.strategy;
+          }
+          if (data.context.extract) {
+            extractHint = data.context.extract.ok
+              ? " · extract ok"
+              : " · extract fail";
+          }
+        }
         await loadUsage();
         await loadMessages();
+        if (runHistoryMessages) {
+          state.lastPayloadMessages = runHistoryMessages;
+        }
+        renderDay10Panels();
         let tkHint = "";
         if (data.tokens) {
           const est = data.tokens.estimate.total;
@@ -1497,7 +1860,10 @@
               "/" +
               bud.limit_rub
             : "";
-        setStatus("ok · " + data.agent.label + echo + tkHint + budHint);
+        const stratHint = strategy ? " · " + strategy : "";
+        setStatus(
+          "ok · " + data.agent.label + echo + stratHint + extractHint + tkHint + budHint,
+        );
       } catch (err) {
         if (compressPoll) { clearInterval(compressPoll); compressPoll = null; }
         if (compressEl) {
@@ -1692,6 +2058,8 @@
       state.instanceId = t.dataset.instance;
       const inst = currentInstance();
       state.agentId = inst?.agents[0]?.id || null;
+      state.lastPayloadMessages = [];
+      state.strategyLock = false;
       renderTabs();
       await loadMessages();
     });
@@ -1710,6 +2078,8 @@
       if (!t) return;
       if (state.busy && state.abort) state.abort.abort();
       state.agentId = t.dataset.agent;
+      state.lastPayloadMessages = [];
+      state.strategyLock = false;
       renderTabs();
       await loadMessages();
     });
@@ -1740,6 +2110,30 @@
         send();
       }
     });
+    if (el.strategyLock) {
+      el.strategyLock.addEventListener("change", () => {
+        state.strategyLock = el.strategyLock.checked;
+        if (state.strategyLock) {
+          const v = el.contextStrategy.value || state.contextStrategy;
+          if (v) {
+            state.contextStrategy = v;
+            el.contextStrategy.value = v;
+          }
+        }
+        updateStrategyLockUI();
+        renderFactsPanel();
+        renderBranchBar();
+      });
+    }
+    if (el.contextStrategy) {
+      el.contextStrategy.addEventListener("change", () => {
+        state.contextStrategy = el.contextStrategy.value || null;
+        if (state.strategyLock && state.contextStrategy) {
+          /* keep lock value in sync */
+        }
+        renderDay10Panels();
+      });
+    }
     document.getElementById("btn-x3").addEventListener("click", () => {
       setStatus("×3 не always-on — backlog / не must дня");
     });

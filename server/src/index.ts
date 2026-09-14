@@ -10,6 +10,7 @@ import { registerHealthRoutes } from "./routes/health.js";
 import { registerUsageRoutes } from "./routes/usage.js";
 import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";
 import { createInstanceRegistry } from "./services/agent/instance-registry.js";
+import { createDay10StateStore } from "./services/agent/day10-state.js";
 import { createLlmAgent } from "./services/agent/llm-agent.js";
 import {
   AGENT_STATE_VERSION,
@@ -54,6 +55,14 @@ async function main(): Promise<void> {
   });
   const threads = createThreadStore({ onChange: () => agentState.scheduleSave() });
   threads.loadThreads(savedState.threads);
+  const day10State = createDay10StateStore({
+    onChange: () => agentState.scheduleSave(),
+  });
+  day10State.load({
+    facts: savedState.facts,
+    branching: savedState.branching,
+    strategyByAgent: savedState.strategyByAgent,
+  });
   const llmAgent = createLlmAgent(
     deepSeekService,
     env.DEEPSEEK_MODEL,
@@ -61,6 +70,7 @@ async function main(): Promise<void> {
   );
   agentState.setSnapshotProvider((): AgentStateSnapshot => {
     const state = registry.snapshotState();
+    const day10 = day10State.snapshot();
     return {
       version: AGENT_STATE_VERSION,
       saved_at: new Date().toISOString(),
@@ -68,6 +78,9 @@ async function main(): Promise<void> {
       agent_seq: state.agentSeqByInstance,
       instances: state.instances,
       threads: threads.snapshotThreads(),
+      facts: day10.facts,
+      branching: day10.branching,
+      strategyByAgent: day10.strategyByAgent,
     };
   });
 
@@ -87,6 +100,7 @@ async function main(): Promise<void> {
     llmAgent,
     usageLedger,
     env,
+    day10State,
   });
 
   await app.register(fastifyStatic, {

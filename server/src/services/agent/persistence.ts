@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 import {
   AgentMessageSchema,
   InstanceSchema,
+  type AgentContextStrategy,
   type AgentMessage,
+  type FactsMap,
   type Instance,
 } from "@trigger-helper/shared";
 import { z } from "zod";
@@ -16,7 +18,7 @@ const repoRoot = path.resolve(
 
 export const AGENT_STATE_VERSION = 1;
 
-/** Day07 on-disk shape: registry + threads in one JSON snapshot. */
+/** Day07 on-disk shape: registry + threads in one JSON snapshot. Day10 adds maps. */
 export type AgentStateSnapshot = {
   version: typeof AGENT_STATE_VERSION;
   saved_at: string;
@@ -24,7 +26,26 @@ export type AgentStateSnapshot = {
   agent_seq: Record<string, number>;
   instances: Instance[];
   threads: Record<string, AgentMessage[]>;
+  /** Day10 sticky facts — key `${instanceId}|${agentId}`. */
+  facts?: Record<string, FactsMap>;
+  /** Day10 branching meta — same key shape. */
+  branching?: Record<
+    string,
+    {
+      forked: boolean;
+      activeBranchId: "a" | "b" | null;
+      checkpointCount: number;
+    }
+  >;
+  /** Day10 last Lab strategy per agent (hydrate after restart). */
+  strategyByAgent?: Record<string, AgentContextStrategy>;
 };
+
+const BranchMetaSchema = z.object({
+  forked: z.boolean(),
+  activeBranchId: z.enum(["a", "b"]).nullable(),
+  checkpointCount: z.number().int().nonnegative(),
+});
 
 const SnapshotSchema = z.object({
   version: z.number(),
@@ -33,6 +54,11 @@ const SnapshotSchema = z.object({
   agent_seq: z.record(z.string(), z.number()).catch({}),
   instances: z.array(z.unknown()).catch([]),
   threads: z.record(z.string(), z.array(z.unknown())).catch({}),
+  facts: z.record(z.string(), z.record(z.string(), z.string())).catch({}),
+  branching: z.record(z.string(), BranchMetaSchema).catch({}),
+  strategyByAgent: z
+    .record(z.string(), z.enum(["sliding", "facts", "branching"]))
+    .catch({}),
 });
 
 const SAVE_DEBOUNCE_MS = 150;
@@ -45,6 +71,9 @@ function emptySnapshot(): AgentStateSnapshot {
     agent_seq: {},
     instances: [],
     threads: {},
+    facts: {},
+    branching: {},
+    strategyByAgent: {},
   };
 }
 
@@ -105,6 +134,9 @@ export class AgentStateStore {
         agent_seq: parsed.agent_seq,
         instances,
         threads,
+        facts: parsed.facts as Record<string, FactsMap>,
+        branching: parsed.branching,
+        strategyByAgent: parsed.strategyByAgent,
       };
     } catch (error) {
       console.error(

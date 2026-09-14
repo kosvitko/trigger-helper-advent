@@ -42,6 +42,14 @@ export class ThreadStore {
     this.onChange?.();
   }
 
+  /** Day10: purge base + `#a` / `#b` thread keys (M-2). */
+  clearAgentTree(instanceId: string, agentId: string): void {
+    this.threads.delete(key(instanceId, agentId));
+    this.threads.delete(key(instanceId, `${agentId}#a`));
+    this.threads.delete(key(instanceId, `${agentId}#b`));
+    this.onChange?.();
+  }
+
   /** Replace thread contents (undo restore). */
   replace(
     instanceId: string,
@@ -54,7 +62,7 @@ export class ThreadStore {
 
   clearInstance(instanceId: string, agentIds: string[]): void {
     for (const agentId of agentIds) {
-      this.clearAgent(instanceId, agentId);
+      this.clearAgentTree(instanceId, agentId);
     }
   }
 
