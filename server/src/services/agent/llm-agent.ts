@@ -2,8 +2,11 @@ import type {
   AgentInstance,
   AgentMessage,
   AgentContextStrategy,
+  FactRow,
   FactsMap,
   LlmUsage,
+  MemoryClassifyItem,
+  MemoryLayer,
 } from "@trigger-helper/shared";
 import { FACT_KEYS } from "@trigger-helper/shared";
 import type {
@@ -13,6 +16,7 @@ import type {
 } from "../deepseek.js";
 import { contextLimitForModel } from "../model-cost-tier.js";
 import { costRubFromUsage } from "../pricing.js";
+import { heuristicSuggestedLayer } from "./memory-state.js";
 import { buildSystemPrompt } from "./presets.js";
 import {
   estimateMessagesBreakdown,
@@ -29,10 +33,18 @@ export const COMPRESS_KEEP_LAST = 4;
 const COMPRESS_MAX_TOKENS = 700;
 /** Per-message slice when building the compression transcript. */
 const COMPRESS_MESSAGE_CHAR_CAP = 4_000;
-/** Day10 facts extract. */
-const EXTRACT_MAX_TOKENS = 350;
+/** Day10/11 classify extract. */
+const EXTRACT_MAX_TOKENS = 400;
 const EXTRACT_TEMPERATURE = 0.1;
-const EXTRACT_HISTORY_TAIL = 6;
+/** Classify sliding-window size (messages) — also the tombstone lifetime for deleted facts. */
+export const EXTRACT_HISTORY_TAIL = 6;
+
+const MEMORY_CAP: Record<MemoryLayer, number> = {
+  long: 8,
+  working: 6,
+  short: 6,
+};
+const MEMORY_CHAR_BUDGET = 2_500;
 
 const COMPRESS_SYSTEM_PROMPT = [
   "Ты — сервис сжатия истории диалога ассистента самопомощи (зона боли, триггерные точки, упражнения).",
@@ -44,11 +56,14 @@ const COMPRESS_SYSTEM_PROMPT = [
   "Только факты из переписки, максимум смысла на минимум слов: без выдумок, без воды, без формул вежливости и без обращений к пользователю.",
 ].join("\n");
 
-const EXTRACT_SYSTEM_PROMPT = [
-  "Извлеки или обнови факты из реплики пользователя и краткого хвоста диалога самопомощи (зона боли, триггерные точки, техники, ограничения).",
-  `Ответь ТОЛЬКО JSON-объектом с ключами из списка: ${FACT_KEYS.join(", ")}.`,
-  "Пустые ключи не включай. Не выдумывай факты, которых нет в тексте.",
-  "Значения — короткие строки на русском.",
+const CLASSIFY_SYSTEM_PROMPT = [
+  "Из реплики пользователя и хвоста диалога самопомощи (зона боли, триггерные точки, техники, ограничения) извлеки факты.",
+  "Ответь ТОЛЬКО JSON-массивом объектов {\"text\",\"key?\",\"suggestedLayer\"}.",
+  "suggestedLayer ∈ short|working|long:",
+  "- short — деталь только этой сессии / свежая реплика;",
+  "- working — данные текущей задачи (зона, точка, шаг «сейчас»);",
+  "- long — стиль, ограничения, предпочтения, устойчивые решения.",
+  "key — короткий ярлык на русском (опционально). Не выдумывай. Без персональных данных. Пустой массив OK.",
 ].join("\n");
 
 /** Day08: `tail` — sliding window, `full` — вся история (cap 100). */
@@ -69,6 +84,8 @@ export type AgentRunOverrides = {
   contextStrategy?: AgentContextStrategy;
   /** Day10 sticky facts to inject as a second system message. */
   facts?: FactsMap;
+  /** Day11 layered memory facts (current layers). */
+  memoryFacts?: FactRow[];
 };
 
 /** Request-size facts for the day08 UI (estimate; API usage is the fact). */
@@ -78,6 +95,12 @@ export type AgentRunTokens = {
   historyMode: AgentHistoryMode;
   /** History messages actually put into the request. */
   historySent: number;
+};
+
+export type MemoryInjectBlocks = {
+  long: string[];
+  working: string[];
+  short: string[];
 };
 
 export type AgentRunOk = {
@@ -91,23 +114,33 @@ export type AgentRunOk = {
   tokens: AgentRunTokens;
   /** Day10: history portion actually sent (for context.historyMessages). */
   historyChat: ChatMessage[];
+  /** Day11: strings injected per layer (for UI evidence). */
+  memoryInject?: MemoryInjectBlocks;
 };
 
-export type ExtractFactsOk = {
+export type ClassifyMemoryOk = {
   ok: true;
-  facts: FactsMap;
+  items: MemoryClassifyItem[];
   usage: LlmUsage;
   latency_ms: number;
 };
 
-export type ExtractFactsFail = {
+export type ClassifyMemoryFail = {
   ok: false;
-  facts: FactsMap;
+  items: MemoryClassifyItem[];
   usage?: LlmUsage;
   latency_ms?: number;
 };
 
-export type ExtractFactsResult = ExtractFactsOk | ExtractFactsFail;
+export type ClassifyMemoryResult = ClassifyMemoryOk | ClassifyMemoryFail;
+
+/** @deprecated day10 type alias — sticky now via stickyFromClassifyItems */
+export type ExtractFactsResult = {
+  ok: boolean;
+  facts: FactsMap;
+  usage?: LlmUsage;
+  latency_ms?: number;
+};
 
 /** Day08 compress result — caller persists and bills it. */
 export type CompressOk = {
@@ -232,6 +265,51 @@ function stickyFactsMessage(facts: FactsMap): ChatMessage | null {
   };
 }
 
+const LAYER_TITLES: Record<MemoryLayer, string> = {
+  long: "## Long-term memory",
+  working: "## Working memory",
+  short: "## Short-term memory",
+};
+
+/** Cap facts per layer and total char budget; return inject strings + system msgs. */
+export function buildMemoryInject(facts: FactRow[]): {
+  blocks: MemoryInjectBlocks;
+  messages: ChatMessage[];
+} {
+  const byLayer: Record<MemoryLayer, FactRow[]> = {
+    long: [],
+    working: [],
+    short: [],
+  };
+  for (const f of facts) {
+    byLayer[f.layer].push(f);
+  }
+  const blocks: MemoryInjectBlocks = { long: [], working: [], short: [] };
+  const messages: ChatMessage[] = [];
+  let used = 0;
+
+  for (const layer of ["long", "working", "short"] as const) {
+    const rows = byLayer[layer].slice(-MEMORY_CAP[layer]);
+    const lines: string[] = [];
+    for (const f of rows) {
+      if (used >= MEMORY_CHAR_BUDGET) break;
+      const line = f.key ? `${f.key}: ${f.text}` : f.text;
+      const clipped =
+        line.length > 400 ? `${line.slice(0, 397)}…` : line;
+      used += clipped.length;
+      lines.push(`- ${clipped}`);
+    }
+    blocks[layer] = lines.map((l) => l.replace(/^- /, ""));
+    if (lines.length > 0) {
+      messages.push({
+        role: "system",
+        content: `${LAYER_TITLES[layer]}\n${lines.join("\n")}`,
+      });
+    }
+  }
+  return { blocks, messages };
+}
+
 /** Merge allowlist-only non-empty strings into existing facts. */
 export function mergeFactsAllowlist(
   existing: FactsMap,
@@ -249,6 +327,21 @@ export function mergeFactsAllowlist(
     }
   }
   return out;
+}
+
+/** Day11 classify items → day10 sticky FactsMap (FACT_KEYS only). */
+export function stickyFromClassifyItems(
+  existing: FactsMap,
+  items: MemoryClassifyItem[],
+): FactsMap {
+  const patch: Record<string, string> = {};
+  for (const item of items) {
+    const key = item.key?.trim();
+    if (key && (FACT_KEYS as readonly string[]).includes(key) && item.text.trim()) {
+      patch[key] = item.text.trim();
+    }
+  }
+  return mergeFactsAllowlist(existing, patch);
 }
 
 /** Day09: dialogue messages after the latest system summary (thread tail). */
@@ -309,18 +402,26 @@ export class LlmAgent {
 
     const systemPrompt = buildSystemPrompt(agent);
     const historyChat = historyToChat(history, historyMode);
+    const memoryBuilt = overrides.memoryFacts?.length
+      ? buildMemoryInject(overrides.memoryFacts)
+      : { blocks: { long: [], working: [], short: [] }, messages: [] };
     const sticky = overrides.facts
       ? stickyFactsMessage(overrides.facts)
       : null;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
+      ...memoryBuilt.messages,
       ...(sticky ? [sticky] : []),
       ...historyChat,
       { role: "user", content: input },
     ];
 
-    const systemForEstimate = sticky
-      ? `${systemPrompt}\n\n${sticky.content}`
+    const extraSystem = [
+      ...memoryBuilt.messages.map((m) => m.content),
+      ...(sticky ? [sticky.content] : []),
+    ].join("\n\n");
+    const systemForEstimate = extraSystem
+      ? `${systemPrompt}\n\n${extraSystem}`
       : systemPrompt;
     const estimate = estimateMessagesBreakdown({
       system: systemForEstimate,
@@ -394,34 +495,35 @@ export class LlmAgent {
       },
       tokens,
       historyChat,
+      memoryInject: memoryBuilt.blocks,
     };
   }
 
   /**
-   * Day10 F1: extract sticky facts (allowlist only) before the main reply.
-   * Always uses the server default model (not chat combo). Fail-open on error.
+   * Day11: classify facts + suggestedLayer (JSON array). One LLM call / turn.
+   * Fail-open → heuristic items or empty; never throws to caller for chat block.
    */
-  async extractFacts(params: {
+  async classifyMemoryFacts(params: {
     userText: string;
     historyTail: AgentMessage[];
-    existingFacts: FactsMap;
     model?: string;
-  }): Promise<ExtractFactsResult> {
-    const existing = { ...params.existingFacts };
+  }): Promise<ClassifyMemoryResult> {
     const model = params.model ?? this.defaultModel;
     const tail = params.historyTail
       .filter((m) => m.role === "user" || m.role === "assistant")
       .slice(-EXTRACT_HISTORY_TAIL);
     const transcript = [
-      ...tail.map((m) => `${m.role === "user" ? "Пользователь" : "Агент"}: ${m.content}`),
+      ...tail.map(
+        (m) =>
+          `${m.role === "user" ? "Пользователь" : "Агент"}: ${m.content}`,
+      ),
       `Пользователь: ${params.userText.trim()}`,
-      `Текущие факты (JSON): ${JSON.stringify(existing)}`,
     ].join("\n\n");
 
     try {
       const result = await this.deepSeek.chat(
         [
-          { role: "system", content: EXTRACT_SYSTEM_PROMPT },
+          { role: "system", content: CLASSIFY_SYSTEM_PROMPT },
           { role: "user", content: transcript },
         ],
         {
@@ -437,21 +539,43 @@ export class LlmAgent {
       } catch {
         return {
           ok: false,
-          facts: existing,
+          items: heuristicItemsFromUser(params.userText),
           usage: result.usage,
           latency_ms: result.latency_ms,
         };
       }
-      const merged = mergeFactsAllowlist(existing, parsed);
+      const items = normalizeClassifyItems(parsed);
+      if (items.length === 0) {
+        return {
+          ok: true,
+          items: [],
+          usage: result.usage,
+          latency_ms: result.latency_ms,
+        };
+      }
       return {
         ok: true,
-        facts: merged,
+        items,
         usage: result.usage,
         latency_ms: result.latency_ms,
       };
     } catch {
-      return { ok: false, facts: existing };
+      return {
+        ok: false,
+        items: heuristicItemsFromUser(params.userText),
+      };
     }
+  }
+
+  /**
+   * @deprecated Day10 path — prefer classifyMemoryFacts + stickyFromClassifyItems.
+   * Kept as thin local merge helper for tests; no network.
+   */
+  extractFactsFromObject(
+    existing: FactsMap,
+    patch: unknown,
+  ): FactsMap {
+    return mergeFactsAllowlist(existing, patch);
   }
 
   /**
@@ -622,6 +746,51 @@ export class LlmAgent {
       },
     };
   }
+}
+
+const LAYERS = new Set<MemoryLayer>(["short", "working", "long"]);
+
+function normalizeClassifyItems(parsed: unknown): MemoryClassifyItem[] {
+  const arr = Array.isArray(parsed)
+    ? parsed
+    : parsed &&
+        typeof parsed === "object" &&
+        Array.isArray((parsed as { facts?: unknown }).facts)
+      ? (parsed as { facts: unknown[] }).facts
+      : null;
+  if (!arr) return [];
+  const out: MemoryClassifyItem[] = [];
+  for (const raw of arr) {
+    if (!raw || typeof raw !== "object") continue;
+    const o = raw as Record<string, unknown>;
+    const text = typeof o.text === "string" ? o.text.trim() : "";
+    if (!text) continue;
+    const key =
+      typeof o.key === "string" && o.key.trim() ? o.key.trim() : undefined;
+    let suggested = o.suggestedLayer;
+    if (typeof suggested !== "string" || !LAYERS.has(suggested as MemoryLayer)) {
+      suggested = heuristicSuggestedLayer(text, key);
+    }
+    out.push({
+      text,
+      ...(key ? { key } : {}),
+      suggestedLayer: suggested as MemoryLayer,
+    });
+  }
+  return out;
+}
+
+function heuristicItemsFromUser(userText: string): MemoryClassifyItem[] {
+  const text = userText.trim();
+  if (!text || text.length < 8) return [];
+  // Single coarse fact so UI still shows auto-write on fail-open.
+  const snippet = text.length > 160 ? `${text.slice(0, 157)}…` : text;
+  return [
+    {
+      text: snippet,
+      suggestedLayer: heuristicSuggestedLayer(snippet),
+    },
+  ];
 }
 
 export function createLlmAgent(

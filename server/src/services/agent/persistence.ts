@@ -4,10 +4,12 @@ import { fileURLToPath } from "node:url";
 import {
   AgentMessageSchema,
   InstanceSchema,
+  FactRowSchema,
   type AgentContextStrategy,
   type AgentMessage,
   type FactsMap,
   type Instance,
+  type AgentMemorySlice,
 } from "@trigger-helper/shared";
 import { z } from "zod";
 
@@ -18,7 +20,7 @@ const repoRoot = path.resolve(
 
 export const AGENT_STATE_VERSION = 1;
 
-/** Day07 on-disk shape: registry + threads in one JSON snapshot. Day10 adds maps. */
+/** Day07 on-disk shape: registry + threads in one JSON snapshot. Day10/11 add maps. */
 export type AgentStateSnapshot = {
   version: typeof AGENT_STATE_VERSION;
   saved_at: string;
@@ -39,6 +41,8 @@ export type AgentStateSnapshot = {
   >;
   /** Day10 last Lab strategy per agent (hydrate after restart). */
   strategyByAgent?: Record<string, AgentContextStrategy>;
+  /** Day11 layered memory registry. */
+  memory?: Record<string, AgentMemorySlice>;
 };
 
 const BranchMetaSchema = z.object({
@@ -59,6 +63,14 @@ const SnapshotSchema = z.object({
   strategyByAgent: z
     .record(z.string(), z.enum(["sliding", "facts", "branching"]))
     .catch({}),
+  memory: z
+    .record(
+      z.string(),
+      z.object({
+        facts: z.array(FactRowSchema).catch([]),
+      }),
+    )
+    .catch({}),
 });
 
 const SAVE_DEBOUNCE_MS = 150;
@@ -74,6 +86,7 @@ function emptySnapshot(): AgentStateSnapshot {
     facts: {},
     branching: {},
     strategyByAgent: {},
+    memory: {},
   };
 }
 
@@ -137,6 +150,7 @@ export class AgentStateStore {
         facts: parsed.facts as Record<string, FactsMap>,
         branching: parsed.branching,
         strategyByAgent: parsed.strategyByAgent,
+        memory: parsed.memory as Record<string, AgentMemorySlice>,
       };
     } catch (error) {
       console.error(

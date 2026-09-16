@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day10</title>
+  <title>Trigger Helper — Агент · day11</title>
   <style>
     :root {
       color-scheme: light;
@@ -32,7 +32,8 @@
       display: flex;
       flex-direction: column;
       height: 100dvh;
-      max-width: 820px;
+      /* 260916 side layout: чат + правый док диагностики (proposals 260916, pick A) */
+      max-width: 1240px;
       margin: 0 auto;
       background: var(--surface);
       border-left: 1px solid var(--border);
@@ -252,6 +253,7 @@
     .messages {
       flex: 1 1 auto;
       min-height: 0;
+      min-width: 0;
       overflow-y: auto;
       overscroll-behavior: contain;
       padding: 10px 12px;
@@ -259,6 +261,41 @@
       flex-direction: column;
       gap: 8px;
       background: var(--bg);
+    }
+    .main-row {
+      flex: 1 1 auto;
+      min-height: 0;
+      min-width: 0;
+      display: flex;
+    }
+    .side {
+      flex: 0 0 400px;
+      min-height: 0;
+      overflow-y: auto;
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px 10px;
+      background: var(--bg);
+    }
+    /* единственный скролл колонки — .side; панели не капим */
+    .side .ctx-panel { margin: 0; }
+    .side-empty {
+      color: var(--muted);
+      font-size: 0.75rem;
+      line-height: 1.5;
+      padding: 4px 2px;
+    }
+    .side:has(.ctx-panel:not([hidden])) .side-empty { display: none; }
+    @media (max-width: 1080px) {
+      .main-row { flex-direction: column; }
+      .side {
+        flex: 0 0 auto;
+        max-height: 32vh;
+        border-left: none;
+        border-top: 1px solid var(--border);
+      }
     }
     .msg {
       max-width: 92%;
@@ -419,6 +456,7 @@
     .compress-chrome .token-actions { display: inline-flex; gap: 4px; margin-top: 4px; }
     .ctx-panel {
       flex-shrink: 0;
+      /* caps не нужны в доке (скролл на .side); для узких окон ≤1080px капится сама .side */
       margin: 4px 12px 0;
       padding: 4px 8px;
       font-size: 0.66rem;
@@ -430,6 +468,50 @@
     }
     .ctx-panel[hidden] { display: none !important; }
     .ctx-panel .ctx-title { color: var(--text); font-weight: 600; margin-right: 6px; }
+    .memory-table .fact-del {
+      border: none;
+      background: none;
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.8rem;
+      line-height: 1;
+      padding: 0 3px;
+    }
+    .memory-table .fact-del:hover { color: var(--error, #b33); }
+    .memory-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+      margin-top: 6px;
+    }
+    .memory-table th,
+    .memory-table td {
+      border-bottom: 1px solid var(--border, #333);
+      padding: 4px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .memory-table th.col-layer,
+    .memory-table td.col-layer {
+      text-align: center;
+      width: 2.4rem;
+    }
+    .memory-table .fact-text { max-width: 28rem; word-break: break-word; }
+    .memory-table .sug {
+      color: var(--muted);
+      font-size: 0.75rem;
+      white-space: nowrap;
+    }
+    .memory-table .sug.diff { color: #c9a227; }
+    .memory-inject {
+      margin-top: 6px;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+    .memory-inject b { color: var(--text); }
+    .payload-details { margin-top: 2px; }
+    .payload-details summary { cursor: pointer; user-select: none; }
     .payload-list { margin: 2px 0 0; padding: 0; list-style: none; }
     .payload-list li {
       white-space: nowrap;
@@ -586,7 +668,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day10</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day11</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -622,10 +704,20 @@
 
     <div class="ctx-banner" id="ctx-banner" hidden></div>
     <div class="probe-result" id="probe-result" hidden></div>
-    <div class="ctx-panel" id="payload-panel" hidden></div>
-    <div class="ctx-panel" id="facts-panel" hidden></div>
-    <div class="ctx-panel branch-bar" id="branch-bar" hidden></div>
-    <div class="messages" id="messages" aria-live="polite"></div>
+
+    <div class="main-row">
+      <div class="messages" id="messages" aria-live="polite"></div>
+      <aside class="side" aria-label="Диагностика">
+        <div class="side-empty">
+          Панели появятся после первого запроса: memory (day11) · payload ·
+          day10 facts · branching.
+        </div>
+        <div class="ctx-panel" id="payload-panel" hidden></div>
+        <div class="ctx-panel" id="memory-panel" hidden></div>
+        <div class="ctx-panel" id="facts-panel" hidden></div>
+        <div class="ctx-panel branch-bar" id="branch-bar" hidden></div>
+      </aside>
+    </div>
 
     <div class="composer">
       <div class="token-panel" id="token-panel">
@@ -716,6 +808,9 @@
       /** Day10: Lab / hydrate strategy. */
       contextStrategy: null,
       facts: {},
+      /** Day11 memory registry rows. */
+      memoryFacts: [],
+      memoryInject: { long: [], working: [], short: [] },
       branch: { forked: false, activeBranchId: null },
       strategyLock: false,
       lastPayloadMessages: [],
@@ -761,6 +856,7 @@
       contextStrategy: document.getElementById("context-strategy"),
       strategyLock: document.getElementById("strategy-lock"),
       payloadPanel: document.getElementById("payload-panel"),
+      memoryPanel: document.getElementById("memory-panel"),
       factsPanel: document.getElementById("facts-panel"),
       branchBar: document.getElementById("branch-bar"),
       ctxBanner: document.getElementById("ctx-banner"),
@@ -1340,34 +1436,197 @@
 
     function renderPayloadPanel() {
       const msgs = state.lastPayloadMessages || [];
-      if (!msgs.length) {
+      const inj = state.memoryInject || {};
+      const hasInj =
+        (inj.long && inj.long.length) ||
+        (inj.working && inj.working.length) ||
+        (inj.short && inj.short.length);
+      if (!msgs.length && !hasInj) {
         el.payloadPanel.hidden = true;
         el.payloadPanel.innerHTML = "";
         return;
       }
-      const items = msgs
-        .map(
-          (m) =>
-            "<li><b>" +
-            (m.role || "?") +
-            "</b>: " +
-            truncatePayload(m.content, 60) +
-            "</li>",
-        )
-        .join("");
-      el.payloadPanel.innerHTML =
-        '<span class="ctx-title">В запрос: ' +
-        msgs.length +
-        "</span>" +
-        '<ul class="payload-list">' +
-        items +
-        "</ul>";
+      let html = "";
+      if (hasInj) {
+        html +=
+          '<span class="ctx-title">Memory inject</span>' +
+          '<div class="memory-inject">' +
+          "<div><b>Long</b>: " +
+          (inj.long && inj.long.length
+            ? inj.long.map((s) => truncatePayload(s, 50)).join(" · ")
+            : "—") +
+          "</div>" +
+          "<div><b>Working</b>: " +
+          (inj.working && inj.working.length
+            ? inj.working.map((s) => truncatePayload(s, 50)).join(" · ")
+            : "—") +
+          "</div>" +
+          "<div><b>Short</b>: " +
+          (inj.short && inj.short.length
+            ? inj.short.map((s) => truncatePayload(s, 50)).join(" · ")
+            : "—") +
+          "</div></div>";
+      }
+      if (msgs.length) {
+        const items = msgs
+          .map(
+            (m) =>
+              "<li><b>" +
+              (m.role || "?") +
+              "</b>: " +
+              truncatePayload(m.content, 60) +
+              "</li>",
+          )
+          .join("");
+        // Список по строке на сообщение съедает ленту ответов — сворачиваем
+        html +=
+          '<details class="payload-details">' +
+          '<summary class="ctx-title">В запрос: ' +
+          msgs.length +
+          " сообщ.</summary>" +
+          '<ul class="payload-list">' +
+          items +
+          "</ul>" +
+          "</details>";
+      }
+      el.payloadPanel.innerHTML = html;
       el.payloadPanel.hidden = false;
     }
 
     function factsNonEmpty(facts) {
       if (!facts || typeof facts !== "object") return false;
       return FACT_KEYS.some((k) => facts[k]);
+    }
+
+    function renderMemoryPanel() {
+      const facts = state.memoryFacts || [];
+      if (!facts.length) {
+        el.memoryPanel.hidden = true;
+        el.memoryPanel.innerHTML = "";
+        return;
+      }
+      const layers = ["short", "working", "long"];
+      const labels = { short: "S", working: "W", long: "L" };
+      const rows = facts
+        .map((f) => {
+          const radios = layers
+            .map((L) => {
+              const checked = f.layer === L ? " checked" : "";
+              return (
+                '<td class="col-layer"><input type="radio" name="mem-' +
+                f.id +
+                '" data-fact="' +
+                f.id +
+                '" data-layer="' +
+                L +
+                '"' +
+                checked +
+                " /></td>"
+              );
+            })
+            .join("");
+          const sugDiff = f.suggestedLayer !== f.layer;
+          return (
+            "<tr>" +
+            '<td class="fact-text">' +
+            (f.key ? "<b>" + f.key + "</b>: " : "") +
+            truncatePayload(f.text, 100) +
+            "</td>" +
+            radios +
+            '<td class="sug' +
+            (sugDiff ? " diff" : "") +
+            '">sug=' +
+            (labels[f.suggestedLayer] || f.suggestedLayer) +
+            (sugDiff ? " ≠" : "") +
+            "</td>" +
+            '<td class="col-layer"><button type="button" class="fact-del" data-fact="' +
+            f.id +
+            '" title="Удалить факт (не вернётся, пока его источник не уйдёт из окна classify)">✕</button></td>' +
+            "</tr>"
+          );
+        })
+        .join("");
+      el.memoryPanel.innerHTML =
+        '<span class="ctx-title">Memory (day11)</span>' +
+        '<table class="memory-table"><thead><tr>' +
+        "<th>Факт</th><th class=\"col-layer\">S</th><th class=\"col-layer\">W</th><th class=\"col-layer\">L</th><th>suggested</th><th class=\"col-layer\"></th>" +
+        "</tr></thead><tbody>" +
+        rows +
+        "</tbody></table>";
+      el.memoryPanel.hidden = false;
+      el.memoryPanel.querySelectorAll('input[type="radio"]').forEach((inp) => {
+        inp.addEventListener("change", () => {
+          if (!inp.checked) return;
+          patchMemoryLayer(inp.dataset.fact, inp.dataset.layer).catch((e) =>
+            setStatus(e.message, true),
+          );
+        });
+      });
+      el.memoryPanel.querySelectorAll("button.fact-del").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          deleteMemoryFact(btn.dataset.fact).catch((e) =>
+            setStatus(e.message, true),
+          );
+        });
+      });
+    }
+
+    async function deleteMemoryFact(factId) {
+      if (!state.instanceId || !state.agentId) return;
+      const data = await api(
+        "/api/instances/" +
+          encodeURIComponent(state.instanceId) +
+          "/agents/" +
+          encodeURIComponent(state.agentId) +
+          "/memory/facts/" +
+          encodeURIComponent(factId),
+        { method: "DELETE" },
+      );
+      if (data.memory && Array.isArray(data.memory.facts)) {
+        state.memoryFacts = data.memory.facts;
+      }
+      renderMemoryPanel();
+      setStatus("memory: факт удалён");
+    }
+
+    async function patchMemoryLayer(factId, layer) {
+      if (!state.instanceId || !state.agentId) return;
+      const data = await api(
+        "/api/instances/" +
+          encodeURIComponent(state.instanceId) +
+          "/agents/" +
+          encodeURIComponent(state.agentId) +
+          "/memory/facts/" +
+          encodeURIComponent(factId),
+        { method: "PATCH", body: JSON.stringify({ layer }) },
+      );
+      if (data.memory && Array.isArray(data.memory.facts)) {
+        state.memoryFacts = data.memory.facts;
+      }
+      renderMemoryPanel();
+      setStatus("memory layer → " + layer + " · suggested сохранён");
+    }
+
+    async function loadMemory() {
+      if (!state.instanceId || !state.agentId) {
+        state.memoryFacts = [];
+        return;
+      }
+      try {
+        const data = await api(
+          "/api/instances/" +
+            encodeURIComponent(state.instanceId) +
+            "/agents/" +
+            encodeURIComponent(state.agentId) +
+            "/memory",
+        );
+        state.memoryFacts =
+          data.memory && Array.isArray(data.memory.facts)
+            ? data.memory.facts
+            : [];
+      } catch {
+        /* ignore hydrate errors */
+      }
     }
 
     function renderFactsPanel() {
@@ -1390,7 +1649,7 @@
         );
       }).join("");
       el.factsPanel.innerHTML =
-        '<span class="ctx-title">Facts</span><dl class="facts-kv">' + rows + "</dl>";
+        '<span class="ctx-title">Facts (day10 Lab)</span><dl class="facts-kv">' + rows + "</dl>";
       el.factsPanel.hidden = false;
     }
 
@@ -1439,6 +1698,7 @@
 
     function renderDay10Panels() {
       renderPayloadPanel();
+      renderMemoryPanel();
       renderFactsPanel();
       renderBranchBar();
       updateStrategyLockUI();
@@ -1567,6 +1827,8 @@
         state.messages = [];
         state.tokens = null;
         state.facts = {};
+        state.memoryFacts = [];
+        state.memoryInject = { long: [], working: [], short: [] };
         state.branch = { forked: false, activeBranchId: null };
         state.lastPayloadMessages = [];
         renderMessages();
@@ -1578,6 +1840,7 @@
         "/api/instances/" + state.instanceId + "/agents/" + state.agentId + "/messages",
       );
       state.messages = data.messages || [];
+      await loadMemory();
       // M-4: hydrate strategy/facts/branch from server — not from tab label alone.
       if (data.facts && typeof data.facts === "object") {
         state.facts = data.facts;
@@ -1820,6 +2083,19 @@
             extractHint = data.context.extract.ok
               ? " · extract ok"
               : " · extract fail";
+          }
+          if (data.context.memory) {
+            if (Array.isArray(data.context.memory.facts)) {
+              state.memoryFacts = data.context.memory.facts;
+            }
+            if (data.context.memory.inject) {
+              state.memoryInject = data.context.memory.inject;
+            }
+            if (data.context.memory.classify) {
+              extractHint += data.context.memory.classify.ok
+                ? " · mem classify ok"
+                : " · mem classify fail";
+            }
           }
         }
         await loadUsage();

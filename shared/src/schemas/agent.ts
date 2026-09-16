@@ -109,6 +109,59 @@ export const FactsMapSchema = z
   .default({});
 export type FactsMap = z.infer<typeof FactsMapSchema>;
 
+/** Day11: memory layer placement (short / working / long). */
+export const MemoryLayerSchema = z.enum(["short", "working", "long"]);
+export type MemoryLayer = z.infer<typeof MemoryLayerSchema>;
+
+export const FactSourceSchema = z.enum(["classify", "manual"]);
+export type FactSource = z.infer<typeof FactSourceSchema>;
+
+export const FactRowSchema = z.object({
+  id: z.string().min(1),
+  text: z.string().min(1),
+  key: z.string().min(1).optional(),
+  layer: MemoryLayerSchema,
+  suggestedLayer: MemoryLayerSchema,
+  source: FactSourceSchema,
+  overridden: z.boolean().optional(),
+  updatedAt: z.string().min(1),
+});
+export type FactRow = z.infer<typeof FactRowSchema>;
+
+/** Self-expiring suppressor: a deleted fact cannot be re-added while its source
+ *  may still sit in the classify sliding window (untilSeq = thread length + window). */
+export const FactTombstoneSchema = z.object({
+  norm: z.string().min(1),
+  untilSeq: z.number().int().nonnegative(),
+});
+export type FactTombstone = z.infer<typeof FactTombstoneSchema>;
+
+/** Day11 memory slice — facts only (S0′: no speculative FSM stubs). */
+export const AgentMemorySliceSchema = z.object({
+  facts: z.array(FactRowSchema).default([]),
+  deleted: z.array(FactTombstoneSchema).default([]),
+});
+export type AgentMemorySlice = z.infer<typeof AgentMemorySliceSchema>;
+
+export const MemoryClassifyItemSchema = z.object({
+  text: z.string().min(1),
+  key: z.string().min(1).optional(),
+  suggestedLayer: MemoryLayerSchema,
+});
+export type MemoryClassifyItem = z.infer<typeof MemoryClassifyItemSchema>;
+export const MemoryClassifyListSchema = z.array(MemoryClassifyItemSchema);
+
+export const MemoryFactPatchSchema = z.object({
+  layer: MemoryLayerSchema,
+});
+export type MemoryFactPatch = z.infer<typeof MemoryFactPatchSchema>;
+
+export const MemoryFactCreateSchema = z.object({
+  text: z.string().min(1).max(2_000),
+  layer: MemoryLayerSchema.optional(),
+});
+export type MemoryFactCreate = z.infer<typeof MemoryFactCreateSchema>;
+
 /** Request-size estimate split (heuristic; API usage stays the fact). */
 export const TokenBreakdownSchema = z.object({
   system: z.number().int().nonnegative(),
@@ -175,6 +228,24 @@ export const AgentRunContextSchema = z.object({
       ok: z.boolean(),
       usage: LlmUsageSchema.optional(),
       latency_ms: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+  /** Day11: layered memory frame (registry + inject evidence). */
+  memory: z
+    .object({
+      facts: z.array(FactRowSchema),
+      inject: z.object({
+        long: z.array(z.string()),
+        working: z.array(z.string()),
+        short: z.array(z.string()),
+      }),
+      classify: z
+        .object({
+          ok: z.boolean(),
+          usage: LlmUsageSchema.optional(),
+          latency_ms: z.number().int().nonnegative().optional(),
+        })
+        .optional(),
     })
     .optional(),
 });

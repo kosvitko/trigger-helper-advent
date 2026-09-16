@@ -6,6 +6,8 @@ import {
   CompressThreadRequestSchema,
   CreateInstanceRequestSchema,
   FACT_KEYS,
+  MemoryFactCreateSchema,
+  MemoryFactPatchSchema,
   OPEN_TASK_MODE,
   RestoreAgentRequestSchema,
   RestoreInstanceRequestSchema,
@@ -21,12 +23,14 @@ import {
 import type { FastifyInstance } from "fastify";
 import type { Env } from "../config/env.js";
 import type { Day10StateStore } from "../services/agent/day10-state.js";
+import type { MemoryStateStore } from "../services/agent/memory-state.js";
 import {
   AGENT_HISTORY_CAPS,
   AgentPolicyError,
   ContextLimitError,
+  EXTRACT_HISTORY_TAIL,
   shouldAutoCompress,
-  type ExtractFactsResult,
+  stickyFromClassifyItems,
   type LlmAgent,
 } from "../services/agent/llm-agent.js";
 import {
@@ -53,6 +57,7 @@ type AgentRouteDeps = {
   usageLedger: UsageLedgerService;
   env: Env;
   day10State: Day10StateStore;
+  memoryState: MemoryStateStore;
 };
 
 const CONTEXT_STRATEGIES = ["sliding", "facts", "branching"] as const;
@@ -72,6 +77,7 @@ export async function registerAgentRoutes(
     /** Day10 Lab meta. */
     contextStrategies: [...CONTEXT_STRATEGIES],
     factKeys: [...FACT_KEYS],
+    memoryLayers: ["short", "working", "long"],
     historyCaps: AGENT_HISTORY_CAPS,
   }));
 
@@ -131,6 +137,7 @@ export async function registerAgentRoutes(
       const agent = deps.registry.removeAgent(id, agentId);
       deps.threads.clearAgentTree(id, agentId);
       deps.day10State.clearAgent(id, agentId);
+      deps.memoryState.clearAgent(id, agentId);
       return { agent, messages };
     } catch (error) {
       return sendRegistryError(reply, error);
@@ -177,6 +184,7 @@ export async function registerAgentRoutes(
       );
       for (const agent of removed.agents) {
         deps.day10State.clearAgent(id, agent.id);
+        deps.memoryState.clearAgent(id, agent.id);
       }
       return { instance: removed, threads };
     } catch (error) {
@@ -550,38 +558,58 @@ export async function registerAgentRoutes(
 
       let extractInfo: AgentRunContext["extract"];
       let factsForRun: FactsMap | undefined;
+      let classifyInfo: NonNullable<AgentRunContext["memory"]>["classify"];
+
+      // Day11: one classify LLM call every user-turn (dual-consumer with day10 sticky).
+      let classified: Awaited<
+        ReturnType<LlmAgent["classifyMemoryFacts"]>
+      >;
+      try {
+        classified = await deps.llmAgent.classifyMemoryFacts({
+          userText: input,
+          historyTail: runHistory,
+          model: deps.env.DEEPSEEK_MODEL,
+        });
+      } catch (error) {
+        request.log.warn(
+          { err: error, instanceId, agentId },
+          "memory classify threw; fail-open",
+        );
+        classified = { ok: false, items: [] };
+      }
+      classifyInfo = {
+        ok: classified.ok,
+        ...(classified.usage ? { usage: classified.usage } : {}),
+        ...(classified.latency_ms !== undefined
+          ? { latency_ms: classified.latency_ms }
+          : {}),
+      };
+      if (classified.usage) {
+        await deps.usageLedger.record(classified.usage, { countExpensive });
+      }
+      if (classified.items.length > 0) {
+        deps.memoryState.upsertFromClassify(instanceId, agentId, classified.items, {
+          historySeq: runHistory.length,
+        });
+      }
+
       if (strategy === "facts") {
         const existing = deps.day10State.getFacts(instanceId, agentId);
-        let extracted: ExtractFactsResult;
-        try {
-          extracted = await deps.llmAgent.extractFacts({
-            userText: input,
-            historyTail: runHistory,
-            existingFacts: existing,
-            model: deps.env.DEEPSEEK_MODEL,
-          });
-        } catch (error) {
-          request.log.warn(
-            { err: error, instanceId, agentId },
-            "facts extract threw; fail-open",
-          );
-          extracted = { ok: false, facts: existing };
+        if (classified.ok) {
+          const merged = stickyFromClassifyItems(existing, classified.items);
+          deps.day10State.setFacts(instanceId, agentId, merged);
         }
         extractInfo = {
-          ok: extracted.ok,
-          ...(extracted.usage ? { usage: extracted.usage } : {}),
-          ...(extracted.latency_ms !== undefined
-            ? { latency_ms: extracted.latency_ms }
+          ok: classified.ok,
+          ...(classified.usage ? { usage: classified.usage } : {}),
+          ...(classified.latency_ms !== undefined
+            ? { latency_ms: classified.latency_ms }
             : {}),
         };
-        if (extracted.ok) {
-          deps.day10State.setFacts(instanceId, agentId, extracted.facts);
-          if (extracted.usage) {
-            await deps.usageLedger.record(extracted.usage, { countExpensive });
-          }
-        }
         factsForRun = deps.day10State.getFacts(instanceId, agentId);
       }
+
+      const memorySlice = deps.memoryState.get(instanceId, agentId);
 
       const effectiveHistoryMode =
         strategy === "sliding" || strategy === "facts"
@@ -592,6 +620,7 @@ export async function registerAgentRoutes(
         ...(overrides ?? {}),
         historyMode: effectiveHistoryMode,
         contextStrategy: strategy,
+        memoryFacts: memorySlice.facts,
         ...(strategy === "facts" ? { facts: factsForRun } : {}),
       });
 
@@ -624,8 +653,8 @@ export async function registerAgentRoutes(
         historyMode: effectiveHistoryMode,
         estimate: {
           ...result.tokens.estimate,
-          ...(extractInfo?.ok && extractInfo.usage
-            ? { extract: extractInfo.usage.total_tokens }
+          ...(classifyInfo?.ok && classifyInfo.usage
+            ? { extract: classifyInfo.usage.total_tokens }
             : {}),
         },
         thread: sumThreadTokens(
@@ -639,6 +668,15 @@ export async function registerAgentRoutes(
           role: m.role,
           content: m.content,
         })),
+        memory: {
+          facts: memorySlice.facts,
+          inject: result.memoryInject ?? {
+            long: [],
+            working: [],
+            short: [],
+          },
+          classify: classifyInfo,
+        },
         ...(strategy === "facts"
           ? {
               facts: factsForRun ?? {},
@@ -689,6 +727,126 @@ export async function registerAgentRoutes(
       });
     }
   });
+
+  // --- Day11 memory endpoints ---
+
+  app.get(
+    "/api/instances/:id/agents/:agentId/memory",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      return { memory: deps.memoryState.get(id, agentId) };
+    },
+  );
+
+  app.patch(
+    "/api/instances/:id/agents/:agentId/memory/facts/:factId",
+    async (request, reply) => {
+      const { id, agentId, factId } = request.params as {
+        id: string;
+        agentId: string;
+        factId: string;
+      };
+      const parsed = MemoryFactPatchSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      const updated = deps.memoryState.setLayer(
+        id,
+        agentId,
+        factId,
+        parsed.data.layer,
+      );
+      if (!updated) {
+        return reply.status(404).send({ error: "Fact not found" });
+      }
+      return {
+        fact: updated,
+        memory: deps.memoryState.get(id, agentId),
+      };
+    },
+  );
+
+  app.delete(
+    "/api/instances/:id/agents/:agentId/memory/facts/:factId",
+    async (request, reply) => {
+      const { id, agentId, factId } = request.params as {
+        id: string;
+        agentId: string;
+        factId: string;
+      };
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      const threadAgentId = deps.day10State.resolveThreadAgentId(id, agentId);
+      const historySeq = deps.threads.list(id, threadAgentId).length;
+      const removed = deps.memoryState.removeFact(id, agentId, factId, {
+        historySeq,
+        windowSize: EXTRACT_HISTORY_TAIL,
+      });
+      if (!removed) {
+        return reply.status(404).send({ error: "Fact not found" });
+      }
+      return { removed: true, memory: deps.memoryState.get(id, agentId) };
+    },
+  );
+
+  app.post(
+    "/api/instances/:id/agents/:agentId/memory/facts",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const parsed = MemoryFactCreateSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      const fact = deps.memoryState.addManual(
+        id,
+        agentId,
+        parsed.data.text,
+        parsed.data.layer ?? "working",
+      );
+      return reply.status(201).send({
+        fact,
+        memory: deps.memoryState.get(id, agentId),
+      });
+    },
+  );
 
   // --- Day10 branching endpoints ---
 

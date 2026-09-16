@@ -11,6 +11,7 @@ import { registerUsageRoutes } from "./routes/usage.js";
 import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";
 import { createInstanceRegistry } from "./services/agent/instance-registry.js";
 import { createDay10StateStore } from "./services/agent/day10-state.js";
+import { createMemoryStateStore } from "./services/agent/memory-state.js";
 import { createLlmAgent } from "./services/agent/llm-agent.js";
 import {
   AGENT_STATE_VERSION,
@@ -63,6 +64,10 @@ async function main(): Promise<void> {
     branching: savedState.branching,
     strategyByAgent: savedState.strategyByAgent,
   });
+  const memoryState = createMemoryStateStore({
+    onChange: () => agentState.scheduleSave(),
+  });
+  memoryState.load(savedState.memory);
   const llmAgent = createLlmAgent(
     deepSeekService,
     env.DEEPSEEK_MODEL,
@@ -81,6 +86,7 @@ async function main(): Promise<void> {
       facts: day10.facts,
       branching: day10.branching,
       strategyByAgent: day10.strategyByAgent,
+      memory: memoryState.snapshot(),
     };
   });
 
@@ -101,6 +107,7 @@ async function main(): Promise<void> {
     usageLedger,
     env,
     day10State,
+    memoryState,
   });
 
   await app.register(fastifyStatic, {

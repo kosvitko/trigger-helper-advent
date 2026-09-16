@@ -1,80 +1,68 @@
-# AI Advent Challenge #9 — Week 02, Day 10
+# AI Advent Challenge #9 — Week 03, Day 11
 
-**Задание:** минимум три стратегии контекста **без summary** + переключатель: Sliding Window / Sticky Facts / Branching. Один сценарий × все три; сравнить качество, стабильность, токены, удобство. Сдача: видео + код.
+**Задание:** описать и реализовать модель памяти агента: ≥3 типа (краткосрочная / рабочая / долговременная), хранятся раздельно; сохранение явное — видно, куда попало, и можно поправить. Проверить данные по слоям и влияние на ответы. Сдача: видео + код.
 
-Trigger Helper (day10): три режима сборки контекста поверх агента day06–09. **Sliding** — в LLM уходят только последние N сообщений (`HISTORY_TAIL=10`, user+assistant суммарно); полная лента остаётся в UI/store. **Facts** — LLM-extract sticky KV (allowlist: цель, ограничения, предпочтения, решения, договорённости) + хвост окна. **Branching** — checkpoint → fork двух веток (`agentId#a` / `#b`) → switch без смешения хвостов. Переключатель в Lab; в кадре — payload (`historySent`) и панель facts.
+Trigger Helper (day11): трёхслойная память поверх агента day06–10. На каждом ходе пользователя один дешёвый LLM-вызов классифицирует факты реплики в `{text, key?, suggestedLayer: short|working|long}` и **сам** кладёт их в реестр `facts[]` и в store (fail-open: сбой classify не блокирует чат). В UI — таблица памяти: строка на факт, радио S/W/L для переноса между слоями (перенос сохраняет `suggestedLayer` — задел под тюнинг классификатора), ✕ для удаления. В каждый запрос память инжектится блоками Long → Working → Short отдельным system-сообщением. Day11′-хотфиксы после VPS-демо: fuzzy-дедуп фактов (Jaccard ≥ 0.7 по токенам — LLM любит перефразировать), удаление факта с самогаснущим tombstone (удалённое не возвращается, пока его источник может быть в окне классификатора), и layout «чат + правый док диагностики», чтобы ответы и память были читаемы в одном кадре.
 
-**Live demo:** http://91.188.212.10/ · **Tag:** [`week02-day10`](https://github.com/kosvitko/trigger-helper-advent/tree/week02-day10)
+**Live demo:** http://91.188.212.10/ · **Tag:** [`week03-day11`](https://github.com/kosvitko/trigger-helper-advent/tree/week03-day11)
 
-Модель в демо — дефолтная дешёвая (DeepSeek chat), одна, без ×3. Автосжатие в сценарии выключено (`compressEvery=0`).
+## Demo на видео (~73s)
 
-## Demo на видео (~4 мин)
-
-Один продуктовый сценарий (зона/точка/техника/ограничения) в трёх чатах:
+Диалог самопомощи (8 ходов) в одном чате; Lab: `История = tail·10`, автосжатие выключено:
 
 | | |
 |:--|:--|
-| **Sliding** | 6 ходов → ≥12 сообщений в ленте → probes к якорям **msg1** (уже вне окна N=10) и **msg5** (ещё в окне); `historySent` ≤ 10 |
-| **Facts** | тот же build + те же probes; KV в кадре; facts уходят в запрос вместе с хвостом |
-| **Branching** | префикс → checkpoint → fork → ветка изометрия / ветка растяжка → switch; хвосты не смешиваются |
+| **Классификация** | строки появляются в таблице сами после ходов; слои S/W; дедуп перефразов («не наклонять шею» / «шею не наклонять» → одна строка) |
+| **Явность + правка** | радио S/W/L: перенос строки между слоями, `suggested` в кадре не меняется (`sug=W ≠`); ✕ удаляет факт |
+| **Tombstone** | после удаления контрольный ход классификатора — удалённый факт не возвращается |
+| **Rescue-probe** | вопрос «что беспокоило в самом первом сообщении?» при 16 сообщениях в треде и ~1.5k токенов окна — первое сообщение давно вне `tail·10`, ответ восстановлен из памяти: «Шея справа после долгой работы за компьютером» |
 
 ## Выводы
 
-- **Sliding window** приводит к «забыванию» фактов — что ожидаемо: ранние реплики просто не попадают в очередной запрос к модели (окно N=10 суммарно user+assistant).
-- **Facts** несколько увеличивает латентность и бюджет (отдельный extract). При сопоставимом объёме диалога модель отвечает суше и структурнее — на вход в основном структурированные факты, а не длинный «сырой» хвост.
-- **Ветвление** по сути добавляет часть диалога как условный «системный» префикс ветки. Близко к работе с файлами проекта (общий префикс) и к моделям с разными ролями (аналитик, архитектор и т.п.): общий ствол → разные продолжения без смешения.
+- **Память даёт возможность сохранять важные факты, оптимизируя размер контекста.** Достаточно ~1.5k токенов «сырого» хвоста: то, что ушло из sliding-окна, продолжает работать в ответах через компактные инжект-блоки (rescue-probe ответ верный при вытесненном источнике).
+- **Явность дешевле confirm-gate:** авто-запись + видимая колонка слоя + радио-override дают управляемость без лишнего шага на каждый ход; сохранение `suggestedLayer` рядом с текущим слоем — бесплатный датасет для тюнинга классификатора.
+- **Дедуп надёжнее делать в коде:** классификатор на каждом ходе перефразирует те же факты, точный матч не ловит; token-set Jaccard в `upsert` убрал дубли (11 → 6–8 строк на том же диалоге) без единого дополнительного вызова.
+- **Удаление ≠ забвение, пока источник в окне:** классификатор заново извлекает факт из истории, поэтому tombstone с горизонтом «длина треда + окно классификатора» — самогаснущий: вечных списков нет, а «удалить» означает «удалить».
 
 ## Что где реализовано
 
 | Требование | Где |
 |:-----------|:----|
-| Переключатель стратегии | `overrides.contextStrategy`: `sliding` \| `facts` \| `branching` · Lab UI (`#context-strategy` + lock) · persist в `var/agent-state.json` |
-| Sliding = LLM-окно | `server/src/services/agent/llm-agent.ts` — `historyToChat(…, "tail")`, `HISTORY_TAIL=10`; store/UI не режутся |
-| Sticky facts (F1) | extract → allowlist merge → system «Sticky facts» в запросе; fail-open при сбое extract |
-| Payload в кадре | `context.historyMessages` + `tokens.historySent`; панель `#payload-panel` |
-| Facts KV в кадре | `context.facts` + `#facts-panel` |
-| Branching | `agentId#a` / `#b` · `POST …/branch/checkpoint\|fork\|switch` · UI Checkpoint/Fork/tabs |
-| Схемы | `shared/src/schemas/agent.ts` — strategy, facts, branch meta, context в ответе run |
+| Классификация фактов | `server/src/services/agent/llm-agent.ts` — `classifyMemoryFacts()` (JSON-массив, fail-open → эвристика слоя) |
+| Реестр 3 слоёв | `server/src/services/agent/memory-state.ts` — `MemoryStateStore`: upsert + fuzzy-дедуп, `setLayer`, `removeFact` + tombstones, `addManual` |
+| Раздельное хранение | `layer` в строке факта; inject по слоям L→W→S (`buildMemoryInject`), блоки в `context.memory.inject` |
+| Явность + правка | таблица памяти в UI (радио S/W/L, `suggested` сохраняется, ✕) · `PATCH/DELETE/POST …/memory/facts[/:factId]` |
+| Влияние на ответы | `context.memory.facts/inject` в ответе run; probe-вопросы на видео опираются на текущие слои |
+| Схемы | `shared/src/schemas/agent.ts` — `FactRow`, `MemoryLayer`, `AgentMemorySlice` (+ tombstones), `MemoryClassifyItem` |
 
 ## Быстрый старт
 
 ```bash
 git clone https://github.com/kosvitko/trigger-helper-advent.git
 cd trigger-helper-advent
-git checkout week02-day10
+git checkout week03-day11
 cp .env.example .env   # DEEPSEEK_API_KEY=...
 npm install
-npm run dev            # http://127.0.0.1:3000 — Agent UI · title «Агент · day10»
+npm run dev            # http://127.0.0.1:3000 — Agent UI · title «Агент · day11»
 ```
 
 ## Demo через API
 
 ```bash
-# инстанс + агент
+# инстанс + агент (пресет care)
 curl -X POST http://127.0.0.1:3000/api/instances -H "Content-Type: application/json" -d '{"seedPresetIds":["care"]}'
 
-# Sliding: хвост ≤ N в context.historyMessages
-curl -X POST http://127.0.0.1:3000/api/agent/run -H "Content-Type: application/json" \
-  -d '{"instanceId":"<iid>","agentId":"<aid>","input":"Зона: шея. Ограничение: при остром — к врачу.","overrides":{"contextStrategy":"sliding","compressEvery":0}}'
+# ход агента — факты классифицируются сами; память в ответе: context.memory.facts + inject
+curl -X POST http://127.0.0.1:3000/api/instances/<iid>/agents/<aid>/run -H "Content-Type: application/json" \
+  -d '{"input":"Беспокоит шея справа после долгой работы за компьютером."}'
 
-# Facts: extract + KV в ответе
-curl -X POST http://127.0.0.1:3000/api/agent/run -H "Content-Type: application/json" \
-  -d '{"instanceId":"<iid>","agentId":"<aid>","input":"Цель: снять напряжение. Предпочтения: короткая изометрия.","overrides":{"contextStrategy":"facts","compressEvery":0}}'
+# реестр памяти
+curl http://127.0.0.1:3000/api/instances/<iid>/agents/<aid>/memory
 
-# Branching: checkpoint → fork → run на #a / #b
-curl -X POST http://127.0.0.1:3000/api/instances/<iid>/agents/<aid>/branch/checkpoint
-curl -X POST http://127.0.0.1:3000/api/instances/<iid>/agents/<aid>/branch/fork
-curl -X POST http://127.0.0.1:3000/api/agent/run -H "Content-Type: application/json" \
-  -d '{"instanceId":"<iid>","agentId":"<aid>#a","input":"Ветка: изометрия.","overrides":{"contextStrategy":"branching"}}'
+# перенести факт в long (suggested сохраняется)
+curl -X PATCH http://127.0.0.1:3000/api/instances/<iid>/agents/<aid>/memory/facts/<factId> \
+  -H "Content-Type: application/json" -d '{"layer":"long"}'
+
+# удалить факт (tombstone не даст вернуть его, пока источник в окне классификатора)
+curl -X DELETE http://127.0.0.1:3000/api/instances/<iid>/agents/<aid>/memory/facts/<factId>
 ```
-
-## Структура репозитория
-
-```
-server/   API (agents / run / branch / messages / tokens) + Agent UI
-shared/   Zod: contextStrategy, facts, branch, context payload
-data/     точки для grounded-режима
-var/      снапшот (agent-state.json) — вне git
-```
-
-Ключ API только в env на сервере, не в клиенте и не в git.
