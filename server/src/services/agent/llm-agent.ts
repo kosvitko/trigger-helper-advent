@@ -7,6 +7,7 @@ import type {
   LlmUsage,
   MemoryClassifyItem,
   MemoryLayer,
+  UserProfile,
 } from "@trigger-helper/shared";
 import { FACT_KEYS } from "@trigger-helper/shared";
 import type {
@@ -86,6 +87,8 @@ export type AgentRunOverrides = {
   facts?: FactsMap;
   /** Day11 layered memory facts (current layers). */
   memoryFacts?: FactRow[];
+  /** Day12: active user profile — injected after preset, before memory blocks. */
+  activeProfile?: UserProfile | null;
 };
 
 /** Request-size facts for the day08 UI (estimate; API usage is the fact). */
@@ -103,6 +106,13 @@ export type MemoryInjectBlocks = {
   short: string[];
 };
 
+/** Day12: profile inject evidence returned to the UI (HR-6). */
+export type ProfileInject = {
+  id: string;
+  label: string;
+  inject: string;
+};
+
 export type AgentRunOk = {
   reply: string;
   usage: LlmUsage;
@@ -116,6 +126,8 @@ export type AgentRunOk = {
   historyChat: ChatMessage[];
   /** Day11: strings injected per layer (for UI evidence). */
   memoryInject?: MemoryInjectBlocks;
+  /** Day12: profile block sent to the LLM (absent when no active profile). */
+  profileInject?: ProfileInject;
 };
 
 export type ClassifyMemoryOk = {
@@ -310,6 +322,37 @@ export function buildMemoryInject(facts: FactRow[]): {
   return { blocks, messages };
 }
 
+const PROFILE_HEADER = [
+  "## Профиль пользователя",
+  "Профиль задаёт стиль и форму ответа и главнее строк «Роль/Инструкции/Формат ответа» выше при конфликте.",
+  "Не отменяет: тему самопомощи, дисклеймер, запрет диагнозов. Память ниже — факты-содержание, не указания по стилю.",
+].join("\n");
+
+/**
+ * Day12: active user profile as one standalone system message — placed after
+ * the preset prompt and before memory blocks (later = weightier for the LLM;
+ * the priority meta-line guards against position drift). Emits nothing when
+ * every field is empty ("" = cleared) — day11 behavior stays intact (HR-5).
+ */
+export function buildProfileMessage(profile: UserProfile): ChatMessage | null {
+  const style = profile.style?.trim();
+  const format = profile.format?.trim();
+  const bans = profile.constraints.map((c) => c.trim()).filter(Boolean);
+  if (!style && !format && bans.length === 0) return null;
+
+  const lines: string[] = [];
+  if (style) lines.push(`- Стиль: ${style}`);
+  if (format) lines.push(`- Формат: ${format}`);
+  if (bans.length > 0) {
+    lines.push(`- Запреты (жёсткие, не нарушай):`);
+    for (const b of bans) lines.push(`  - ${b}`);
+  }
+  return {
+    role: "system",
+    content: `${PROFILE_HEADER}\n${lines.join("\n")}`,
+  };
+}
+
 /** Merge allowlist-only non-empty strings into existing facts. */
 export function mergeFactsAllowlist(
   existing: FactsMap,
@@ -405,11 +448,15 @@ export class LlmAgent {
     const memoryBuilt = overrides.memoryFacts?.length
       ? buildMemoryInject(overrides.memoryFacts)
       : { blocks: { long: [], working: [], short: [] }, messages: [] };
+    const profileMessage = overrides.activeProfile
+      ? buildProfileMessage(overrides.activeProfile)
+      : null;
     const sticky = overrides.facts
       ? stickyFactsMessage(overrides.facts)
       : null;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
+      ...(profileMessage ? [profileMessage] : []),
       ...memoryBuilt.messages,
       ...(sticky ? [sticky] : []),
       ...historyChat,
@@ -417,6 +464,7 @@ export class LlmAgent {
     ];
 
     const extraSystem = [
+      ...(profileMessage ? [profileMessage.content] : []),
       ...memoryBuilt.messages.map((m) => m.content),
       ...(sticky ? [sticky.content] : []),
     ].join("\n\n");
@@ -496,6 +544,15 @@ export class LlmAgent {
       tokens,
       historyChat,
       memoryInject: memoryBuilt.blocks,
+      ...(overrides.activeProfile && profileMessage
+        ? {
+            profileInject: {
+              id: overrides.activeProfile.id,
+              label: overrides.activeProfile.label,
+              inject: profileMessage.content,
+            },
+          }
+        : {}),
     };
   }
 

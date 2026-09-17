@@ -12,6 +12,7 @@ import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";
 import { createInstanceRegistry } from "./services/agent/instance-registry.js";
 import { createDay10StateStore } from "./services/agent/day10-state.js";
 import { createMemoryStateStore } from "./services/agent/memory-state.js";
+import { createProfileStateStore } from "./services/agent/profile-state.js";
 import { createLlmAgent } from "./services/agent/llm-agent.js";
 import {
   AGENT_STATE_VERSION,
@@ -68,6 +69,11 @@ async function main(): Promise<void> {
     onChange: () => agentState.scheduleSave(),
   });
   memoryState.load(savedState.memory);
+  // Day12: instance-level personalization (profiles + active router).
+  const profileState = createProfileStateStore({
+    onChange: () => agentState.scheduleSave(),
+  });
+  profileState.load(savedState.profiles);
   const llmAgent = createLlmAgent(
     deepSeekService,
     env.DEEPSEEK_MODEL,
@@ -87,6 +93,7 @@ async function main(): Promise<void> {
       branching: day10.branching,
       strategyByAgent: day10.strategyByAgent,
       memory: memoryState.snapshot(),
+      profiles: profileState.snapshot(),
     };
   });
 
@@ -108,6 +115,7 @@ async function main(): Promise<void> {
     env,
     day10State,
     memoryState,
+    profileState,
   });
 
   await app.register(fastifyStatic, {

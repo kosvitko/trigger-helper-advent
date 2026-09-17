@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day11</title>
+  <title>Trigger Helper — Агент · day12</title>
   <style>
     :root {
       color-scheme: light;
@@ -510,6 +510,34 @@
       color: var(--muted);
     }
     .memory-inject b { color: var(--text); }
+    .profile-panel .profile-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .profile-panel select { flex: 1; min-width: 0; }
+    .profile-panel .profile-fields {
+      display: grid;
+      gap: 3px;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+    .profile-panel .profile-fields label { display: grid; gap: 1px; }
+    .profile-panel .profile-fields input,
+    .profile-panel .profile-fields textarea {
+      width: 100%;
+      font: inherit;
+      font-size: 0.78rem;
+      color: var(--text);
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 4px;
+    }
+    .profile-panel .profile-fields textarea { resize: vertical; }
+    .profile-panel .profile-del:hover { color: var(--error, #b33); }
+    .msg-meta .badge.profile { color: #6fa8c9; }
     .payload-details { margin-top: 2px; }
     .payload-details summary { cursor: pointer; user-select: none; }
     .payload-list { margin: 2px 0 0; padding: 0; list-style: none; }
@@ -668,7 +696,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day11</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day12</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -708,9 +736,10 @@
     <div class="main-row">
       <div class="messages" id="messages" aria-live="polite"></div>
       <aside class="side" aria-label="Диагностика">
+        <div class="ctx-panel profile-panel" id="profile-panel" hidden></div>
         <div class="side-empty">
-          Панели появятся после первого запроса: memory (day11) · payload ·
-          day10 facts · branching.
+          Профиль появится после выбора инстанса; memory (day11) · payload ·
+          day10 facts · branching — после первого запроса.
         </div>
         <div class="ctx-panel" id="payload-panel" hidden></div>
         <div class="ctx-panel" id="memory-panel" hidden></div>
@@ -811,6 +840,12 @@
       /** Day11 memory registry rows. */
       memoryFacts: [],
       memoryInject: { long: [], working: [], short: [] },
+      /** Day12: instance profiles + router state. */
+      profileState: { profiles: [], activeProfileId: null },
+      profileDirty: false,
+      /** Day12: live-run badge source + inject evidence (null = no profile). */
+      profileInfo: null,
+      profileInject: null,
       branch: { forked: false, activeBranchId: null },
       strategyLock: false,
       lastPayloadMessages: [],
@@ -856,6 +891,7 @@
       contextStrategy: document.getElementById("context-strategy"),
       strategyLock: document.getElementById("strategy-lock"),
       payloadPanel: document.getElementById("payload-panel"),
+      profilePanel: document.getElementById("profile-panel"),
       memoryPanel: document.getElementById("memory-panel"),
       factsPanel: document.getElementById("facts-panel"),
       branchBar: document.getElementById("branch-bar"),
@@ -890,24 +926,44 @@
       return usd * DEEPSEEK_FX;
     }
 
+    // data-demo-idle: body помечен «1» когда все api()-запросы завершены.
+    // Детерминированный сигнал для рекордера (day12+): waitForIdle вместо эвристик по баблам.
+    let apiInflight = 0;
+    function setDemoIdle(idle) {
+      if (idle) document.body.setAttribute("data-demo-idle", "1");
+      else document.body.removeAttribute("data-demo-idle");
+    }
+    if (document.body) setDemoIdle(true);
+    else document.addEventListener("DOMContentLoaded", () => setDemoIdle(true));
+
     async function api(path, opts) {
-      const res = await fetch(path, {
-        ...opts,
-        headers: {
-          // Fastify: "Body cannot be empty when content-type is set" —
-          // DELETE без тела не должен нести application/json
-          ...(opts && opts.body ? { "Content-Type": "application/json" } : {}),
-          ...(opts && opts.headers),
-        },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const msg = data.message || data.error || res.statusText;
-        const err = new Error(msg);
-        err.status = res.status;
-        throw err;
+      apiInflight += 1;
+      setDemoIdle(false);
+      try {
+        const res = await fetch(path, {
+          ...opts,
+          headers: {
+            // Fastify: "Body cannot be empty when content-type is set" —
+            // DELETE без тела не должен нести application/json
+            ...(opts && opts.body ? { "Content-Type": "application/json" } : {}),
+            ...(opts && opts.headers),
+          },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = data.message || data.error || res.statusText;
+          const err = new Error(msg);
+          err.status = res.status;
+          throw err;
+        }
+        return data;
+      } finally {
+        apiInflight -= 1;
+        if (apiInflight <= 0) {
+          apiInflight = 0;
+          setDemoIdle(true);
+        }
       }
-      return data;
     }
 
     function isAbortError(err) {
@@ -1221,6 +1277,7 @@
       }
       renderTabs();
       await loadMessages();
+      await loadProfiles();
       const snap = {
         kind: "instance",
         instance: data.instance,
@@ -1291,6 +1348,9 @@
             <div class="bubble"></div>
             <div class="msg-meta">
               <span class="badge agent">${m.label || m.agentId || "?"}</span>
+              ${state.profileInfo && state.profileInfo.messageId === m.id
+                ? '<span class="badge profile">' + state.profileInfo.label + "</span>"
+                : ""}
               <span class="badge">${m.model || "?"}</span>
               <span class="badge">${m.latency_ms != null ? m.latency_ms + " ms" : "—"}</span>
               <span class="badge">${tok} tok</span>
@@ -1437,16 +1497,27 @@
     function renderPayloadPanel() {
       const msgs = state.lastPayloadMessages || [];
       const inj = state.memoryInject || {};
+      const prof = state.profileInfo || null;
+      const profInject = state.profileInject || null;
       const hasInj =
         (inj.long && inj.long.length) ||
         (inj.working && inj.working.length) ||
         (inj.short && inj.short.length);
-      if (!msgs.length && !hasInj) {
+      if (!msgs.length && !hasInj && !prof) {
         el.payloadPanel.hidden = true;
         el.payloadPanel.innerHTML = "";
         return;
       }
       let html = "";
+      if (prof) {
+        html +=
+          '<div class="memory-inject"><div><b class="badge profile">Профиль</b>: ' +
+          prof.label +
+          (profInject
+            ? " — " + truncatePayload(profInject, 70)
+            : " — полей нет, блок не отправлялся") +
+          "</div></div>";
+      }
       if (hasInj) {
         html +=
           '<span class="ctx-title">Memory inject</span>' +
@@ -1627,6 +1698,182 @@
       } catch {
         /* ignore hydrate errors */
       }
+    }
+
+    /* Day12: instance-level personalization — profiles + manual router. */
+
+    function profileUrl(suffix) {
+      return (
+        "/api/instances/" +
+        encodeURIComponent(state.instanceId) +
+        "/profiles" +
+        (suffix || "")
+      );
+    }
+
+    function activeProfile() {
+      const ps = state.profileState || {};
+      return (ps.profiles || []).find((p) => p.id === ps.activeProfileId) || null;
+    }
+
+    async function loadProfiles() {
+      if (!state.instanceId) {
+        state.profileState = { profiles: [], activeProfileId: null };
+        renderProfilePanel();
+        return;
+      }
+      try {
+        // GET is also the one-shot seed point for a fresh instance (server D-2).
+        state.profileState = await api(profileUrl());
+      } catch {
+        /* instance may be gone — keep previous */
+      }
+      renderProfilePanel();
+    }
+
+    function renderProfilePanel() {
+      const ps = state.profileState || {};
+      const profiles = ps.profiles || [];
+      if (!state.instanceId || !profiles.length) {
+        el.profilePanel.hidden = true;
+        el.profilePanel.innerHTML = "";
+        return;
+      }
+      const cur = activeProfile();
+      const options =
+        '<option value=""' + (cur ? "" : " selected") + ">— без профиля —</option>" +
+        profiles
+          .map(
+            (p) =>
+              '<option value="' + p.id + '"' + (cur && cur.id === p.id ? " selected" : "") + ">" +
+              p.label + "</option>",
+          )
+          .join("");
+      const fields = cur
+        ? '<div class="profile-fields">' +
+          "<label>Название<input maxlength=\"120\" data-pf=\"label\" value=\"" +
+          String(cur.label).replace(/"/g, "&quot;") + "\" /></label>" +
+          "<label>Стиль<input maxlength=\"200\" data-pf=\"style\" placeholder=\"тон, обращение…\" value=\"" +
+          String(cur.style || "").replace(/"/g, "&quot;") + "\" /></label>" +
+          "<label>Формат<input maxlength=\"200\" data-pf=\"format\" placeholder=\"списки / абзацы / длина…\" value=\"" +
+          String(cur.format || "").replace(/"/g, "&quot;") + "\" /></label>" +
+          "<label>Запреты (строка = запрет, ≤5)<textarea rows=\"2\" data-pf=\"constraints\">" +
+          (cur.constraints || []).join("\n") + "</textarea></label>" +
+          "</div>"
+        : '<div class="profile-fields" style="color:var(--muted)">Активного профиля нет — ответам день12-блок не добавляется.</div>';
+      el.profilePanel.innerHTML =
+        '<span class="ctx-title">Профиль (day12)</span>' +
+        '<div class="profile-row">' +
+        '<select id="profile-select"' + (state.profileDirty ? " disabled" : "") + ">" +
+        options +
+        "</select>" +
+        '<button type="button" id="profile-add" title="Новый профиль">+</button>' +
+        '<button type="button" class="profile-del" id="profile-del" title="Удалить активный профиль"' +
+        (cur ? "" : " disabled") + ">✕</button>" +
+        "</div>" +
+        fields;
+      el.profilePanel.hidden = false;
+
+      el.profilePanel.querySelector("#profile-select").addEventListener("change", (e) => {
+        activateProfile(e.target.value || null).catch((err) =>
+          setStatus(err.message, true),
+        );
+      });
+      el.profilePanel.querySelector("#profile-add").addEventListener("click", () => {
+        createProfile().catch((err) => setStatus(err.message, true));
+      });
+      el.profilePanel.querySelector("#profile-del").addEventListener("click", () => {
+        deleteProfile().catch((err) => setStatus(err.message, true));
+      });
+      el.profilePanel.querySelectorAll("[data-pf]").forEach((inp) => {
+        const save = () => patchProfileField(inp.dataset.pf, inp.value).catch((err) =>
+          setStatus(err.message, true),
+        );
+        inp.addEventListener("blur", save);
+        inp.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && inp.tagName !== "TEXTAREA") {
+            inp.blur();
+          }
+        });
+        inp.addEventListener("input", () => {
+          state.profileDirty = true;
+        });
+      });
+    }
+
+    async function activateProfile(profileId) {
+      if (!state.instanceId) return;
+      const data = await api(profileUrl("/activate"), {
+        method: "POST",
+        body: JSON.stringify({ profileId }),
+      });
+      state.profileState.activeProfileId = data.activeProfileId ?? null;
+      renderProfilePanel();
+      const cur = activeProfile();
+      setStatus(cur ? "профиль → " + cur.label : "профиль деактивирован");
+    }
+
+    async function patchProfileField(field, rawValue) {
+      const cur = activeProfile();
+      if (!state.instanceId || !cur) {
+        state.profileDirty = false;
+        return;
+      }
+      let body;
+      if (field === "constraints") {
+        const list = String(rawValue)
+          .split("\n")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        if (JSON.stringify(list) === JSON.stringify(cur.constraints || [])) {
+          state.profileDirty = false;
+          renderProfilePanel();
+          return;
+        }
+        body = { constraints: list };
+      } else {
+        if (String(rawValue) === String(cur[field] || "")) {
+          state.profileDirty = false;
+          renderProfilePanel();
+          return;
+        }
+        if (field === "label" && !String(rawValue).trim()) {
+          setStatus("название профиля не может быть пустым", true);
+          renderProfilePanel();
+          return;
+        }
+        body = { [field]: String(rawValue) };
+      }
+      const data = await api(profileUrl("/" + cur.id), {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      state.profileState.profiles = data.profiles ||
+        state.profileState.profiles.map((p) => (p.id === data.profile.id ? data.profile : p));
+      state.profileDirty = false;
+      renderProfilePanel();
+      setStatus("профиль сохранён · " + data.profile.label);
+    }
+
+    async function createProfile() {
+      if (!state.instanceId) return;
+      const data = await api(profileUrl(), {
+        method: "POST",
+        body: JSON.stringify({ label: "Новый профиль" }),
+      });
+      state.profileState.profiles = [...state.profileState.profiles, data.profile];
+      renderProfilePanel();
+      setStatus("профиль создан (не активен) — заполните поля и включите");
+    }
+
+    async function deleteProfile() {
+      const cur = activeProfile();
+      if (!state.instanceId || !cur) return;
+      const data = await api(profileUrl("/" + cur.id), { method: "DELETE" });
+      state.profileState.profiles = data.profiles || [];
+      state.profileState.activeProfileId = data.activeProfileId ?? null;
+      renderProfilePanel();
+      setStatus("профиль удалён");
     }
 
     function renderFactsPanel() {
@@ -1819,6 +2066,7 @@
       }
       renderTabs();
       await loadMessages();
+      await loadProfiles();
       setStatus("ok · F5 hydrate");
     }
 
@@ -1879,6 +2127,7 @@
       state.agentId = data.instance.agents[0]?.id || null;
       renderTabs();
       await loadMessages();
+      await loadProfiles();
     }
 
     async function addAgent() {
@@ -2096,6 +2345,17 @@
                 ? " · mem classify ok"
                 : " · mem classify fail";
             }
+          }
+          // Day12: profile badge for this live-run reply + inject evidence.
+          if (data.context.profile) {
+            state.profileInfo = {
+              messageId: data.message?.id,
+              label: data.context.profile.label,
+            };
+            state.profileInject = data.context.profile.inject || null;
+          } else {
+            state.profileInfo = null;
+            state.profileInject = null;
           }
         }
         await loadUsage();
@@ -2335,9 +2595,12 @@
       const inst = currentInstance();
       state.agentId = inst?.agents[0]?.id || null;
       state.lastPayloadMessages = [];
+      state.profileInfo = null;
+      state.profileInject = null;
       state.strategyLock = false;
       renderTabs();
       await loadMessages();
+      await loadProfiles();
     });
 
     el.agentTabs.addEventListener("click", async (e) => {
@@ -2411,6 +2674,7 @@
       });
     }
     document.getElementById("btn-x3").addEventListener("click", () => {
+      // @deprecated (day05 legacy): заглушка с day06; удалить post-Advent (мера 6 ревью 260916)
       setStatus("×3 не always-on — backlog / не must дня");
     });
     el.toggle.addEventListener("click", () => {

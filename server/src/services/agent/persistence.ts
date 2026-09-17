@@ -5,11 +5,13 @@ import {
   AgentMessageSchema,
   InstanceSchema,
   FactRowSchema,
+  ProfileStateSchema,
   type AgentContextStrategy,
   type AgentMessage,
   type FactsMap,
   type Instance,
   type AgentMemorySlice,
+  type ProfileState,
 } from "@trigger-helper/shared";
 import { z } from "zod";
 
@@ -43,6 +45,8 @@ export type AgentStateSnapshot = {
   strategyByAgent?: Record<string, AgentContextStrategy>;
   /** Day11 layered memory registry. */
   memory?: Record<string, AgentMemorySlice>;
+  /** Day12 user profiles — key instanceId (personalization router state). */
+  profiles?: Record<string, ProfileState>;
 };
 
 const BranchMetaSchema = z.object({
@@ -71,6 +75,8 @@ const SnapshotSchema = z.object({
       }),
     )
     .catch({}),
+  /** Day12: records parsed per-key in load() (safeParse + warn) — not silently. */
+  profiles: z.record(z.string(), z.unknown()).catch({}),
 });
 
 const SAVE_DEBOUNCE_MS = 150;
@@ -87,6 +93,7 @@ function emptySnapshot(): AgentStateSnapshot {
     branching: {},
     strategyByAgent: {},
     memory: {},
+    profiles: {},
   };
 }
 
@@ -140,6 +147,19 @@ export class AgentStateStore {
           threads[key] = messages;
         }
       }
+      // Day12: per-key safeParse + warn — a corrupt profile record drops alone
+      // (lesson of the day11 memory schema that silently ate tombstones).
+      const profiles: Record<string, ProfileState> = {};
+      for (const [key, raw] of Object.entries(parsed.profiles)) {
+        const checked = ProfileStateSchema.safeParse(raw);
+        if (checked.success) {
+          profiles[key] = checked.data;
+        } else {
+          console.warn(
+            `agent-state: profiles[${key}] повреждена — запись пропущена`,
+          );
+        }
+      }
       return {
         version: AGENT_STATE_VERSION,
         saved_at: parsed.saved_at ?? new Date(0).toISOString(),
@@ -151,6 +171,7 @@ export class AgentStateStore {
         branching: parsed.branching,
         strategyByAgent: parsed.strategyByAgent,
         memory: parsed.memory as Record<string, AgentMemorySlice>,
+        profiles,
       };
     } catch (error) {
       console.error(

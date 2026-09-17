@@ -9,9 +9,12 @@ import {
   MemoryFactCreateSchema,
   MemoryFactPatchSchema,
   OPEN_TASK_MODE,
+  ProfileActivateSchema,
   RestoreAgentRequestSchema,
   RestoreInstanceRequestSchema,
   SpawnRequestSchema,
+  UserProfileCreateSchema,
+  UserProfilePatchSchema,
   type AgentContextStrategy,
   type AgentRunContext,
   type AgentRunResponse,
@@ -24,6 +27,7 @@ import type { FastifyInstance } from "fastify";
 import type { Env } from "../config/env.js";
 import type { Day10StateStore } from "../services/agent/day10-state.js";
 import type { MemoryStateStore } from "../services/agent/memory-state.js";
+import type { ProfileStateStore } from "../services/agent/profile-state.js";
 import {
   AGENT_HISTORY_CAPS,
   AgentPolicyError,
@@ -58,6 +62,7 @@ type AgentRouteDeps = {
   env: Env;
   day10State: Day10StateStore;
   memoryState: MemoryStateStore;
+  profileState: ProfileStateStore;
 };
 
 const CONTEXT_STRATEGIES = ["sliding", "facts", "branching"] as const;
@@ -186,6 +191,8 @@ export async function registerAgentRoutes(
         deps.day10State.clearAgent(id, agent.id);
         deps.memoryState.clearAgent(id, agent.id);
       }
+      // Day12: profiles are instance-level — one cleanup, outside the agent loop.
+      deps.profileState.clearInstance(id);
       return { instance: removed, threads };
     } catch (error) {
       return sendRegistryError(reply, error);
@@ -610,6 +617,8 @@ export async function registerAgentRoutes(
       }
 
       const memorySlice = deps.memoryState.get(instanceId, agentId);
+      // Day12: instance-level router state — resolved here (server key), not client.
+      const activeProfile = deps.profileState.getActiveProfile(instanceId);
 
       const effectiveHistoryMode =
         strategy === "sliding" || strategy === "facts"
@@ -621,6 +630,7 @@ export async function registerAgentRoutes(
         historyMode: effectiveHistoryMode,
         contextStrategy: strategy,
         memoryFacts: memorySlice.facts,
+        activeProfile,
         ...(strategy === "facts" ? { facts: factsForRun } : {}),
       });
 
@@ -668,6 +678,14 @@ export async function registerAgentRoutes(
           role: m.role,
           content: m.content,
         })),
+        // Day12: explicit null (not omission) — schema allows both, design §3.4.
+        profile: activeProfile
+          ? {
+              id: activeProfile.id,
+              label: activeProfile.label,
+              inject: result.profileInject?.inject ?? null,
+            }
+          : null,
         memory: {
           facts: memorySlice.facts,
           inject: result.memoryInject ?? {
@@ -847,6 +865,111 @@ export async function registerAgentRoutes(
       });
     },
   );
+
+  // --- Day12 profile endpoints (instance-level personalization) ---
+
+  /** GET also seeds the two contrast profiles once for a fresh instance (D-2);
+   *  an emptied record stays empty — the seed never resurrects deletions. */
+  app.get("/api/instances/:id/profiles", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!deps.registry.get(id)) {
+      return reply.status(404).send({ error: "Instance not found" });
+    }
+    const state = deps.profileState.ensureSeed(id);
+    return state;
+  });
+
+  app.post("/api/instances/:id/profiles", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = UserProfileCreateSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Invalid request body",
+        details: parsed.error.flatten(),
+      });
+    }
+    if (!deps.registry.get(id)) {
+      return reply.status(404).send({ error: "Instance not found" });
+    }
+    // No auto-activation: the router is strictly manual (design §3.4).
+    const profile = deps.profileState.create(id, parsed.data);
+    return reply
+      .status(201)
+      .send({ profile, activeProfileId: deps.profileState.get(id).activeProfileId });
+  });
+
+  app.patch(
+    "/api/instances/:id/profiles/:profileId",
+    async (request, reply) => {
+      const { id, profileId } = request.params as {
+        id: string;
+        profileId: string;
+      };
+      const parsed = UserProfilePatchSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      if (!deps.registry.get(id)) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      const updated = deps.profileState.update(id, profileId, parsed.data);
+      if (!updated) {
+        return reply.status(404).send({ error: "Profile not found" });
+      }
+      return {
+        profile: updated,
+        activeProfileId: deps.profileState.get(id).activeProfileId,
+      };
+    },
+  );
+
+  app.delete(
+    "/api/instances/:id/profiles/:profileId",
+    async (request, reply) => {
+      const { id, profileId } = request.params as {
+        id: string;
+        profileId: string;
+      };
+      if (!deps.registry.get(id)) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      const removed = deps.profileState.remove(id, profileId);
+      if (removed === "not_found") {
+        return reply.status(404).send({ error: "Profile not found" });
+      }
+      if (removed === "active") {
+        return reply.status(409).send({
+          error: "Profile is active",
+          message: "Сначала деактивируйте или переключите профиль",
+        });
+      }
+      const state = deps.profileState.get(id);
+      return { removed: true, profiles: state.profiles, activeProfileId: state.activeProfileId };
+    },
+  );
+
+  /** Manual router: profileId=null = explicit deactivation (D-5). */
+  app.post("/api/instances/:id/profiles/activate", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = ProfileActivateSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Invalid request body",
+        details: parsed.error.flatten(),
+      });
+    }
+    if (!deps.registry.get(id)) {
+      return reply.status(404).send({ error: "Instance not found" });
+    }
+    const state = deps.profileState.activate(id, parsed.data.profileId);
+    if (!state) {
+      return reply.status(404).send({ error: "Profile not found" });
+    }
+    return { activeProfileId: state.activeProfileId };
+  });
 
   // --- Day10 branching endpoints ---
 

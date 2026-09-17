@@ -162,6 +162,46 @@ export const MemoryFactCreateSchema = z.object({
 });
 export type MemoryFactCreate = z.infer<typeof MemoryFactCreateSchema>;
 
+/** Day12: user personalization profile (instance-level; active one injects into every request). */
+export const UserProfileSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1).max(120),
+  style: z.string().max(200).optional(),
+  format: z.string().max(200).optional(),
+  constraints: z.array(z.string().min(1).max(80)).max(5).default([]),
+  updatedAt: z.string().min(1),
+});
+export type UserProfile = z.infer<typeof UserProfileSchema>;
+
+export const UserProfileCreateSchema = z.object({
+  label: z.string().min(1).max(120),
+  style: z.string().max(200).optional(),
+  format: z.string().max(200).optional(),
+  constraints: z.array(z.string().min(1).max(80)).max(5).default([]),
+});
+export type UserProfileCreate = z.infer<typeof UserProfileCreateSchema>;
+
+export const UserProfilePatchSchema = z.object({
+  label: z.string().min(1).max(120).optional(),
+  style: z.string().max(200).optional(),
+  format: z.string().max(200).optional(),
+  constraints: z.array(z.string().min(1).max(80)).max(5).optional(),
+});
+export type UserProfilePatch = z.infer<typeof UserProfilePatchSchema>;
+
+export const ProfileActivateSchema = z.object({
+  /** null = явная деактивация: инжект-блока нет, day11-поведение. */
+  profileId: z.string().min(1).nullable(),
+});
+export type ProfileActivate = z.infer<typeof ProfileActivateSchema>;
+
+/** Day12 instance-level profile state: list + manual router (activeProfileId). */
+export const ProfileStateSchema = z.object({
+  profiles: z.array(UserProfileSchema).default([]),
+  activeProfileId: z.string().min(1).nullable().default(null),
+});
+export type ProfileState = z.infer<typeof ProfileStateSchema>;
+
 /** Request-size estimate split (heuristic; API usage stays the fact). */
 export const TokenBreakdownSchema = z.object({
   system: z.number().int().nonnegative(),
@@ -229,6 +269,16 @@ export const AgentRunContextSchema = z.object({
       usage: LlmUsageSchema.optional(),
       latency_ms: z.number().int().nonnegative().optional(),
     })
+    .optional(),
+  /** Day12: personalization frame — active profile + inject evidence (null = no profile). */
+  profile: z
+    .object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      /** Текст system-блока, ушедшего в запрос (null — все поля пустые). */
+      inject: z.string().nullable(),
+    })
+    .nullable()
     .optional(),
   /** Day11: layered memory frame (registry + inject evidence). */
   memory: z
