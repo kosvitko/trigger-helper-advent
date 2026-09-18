@@ -13,6 +13,7 @@ import { createInstanceRegistry } from "./services/agent/instance-registry.js";
 import { createDay10StateStore } from "./services/agent/day10-state.js";
 import { createMemoryStateStore } from "./services/agent/memory-state.js";
 import { createProfileStateStore } from "./services/agent/profile-state.js";
+import { createTaskStateStore } from "./services/agent/task-state.js";
 import { createLlmAgent } from "./services/agent/llm-agent.js";
 import {
   AGENT_STATE_VERSION,
@@ -74,6 +75,11 @@ async function main(): Promise<void> {
     onChange: () => agentState.scheduleSave(),
   });
   profileState.load(savedState.profiles);
+  // Day13: per-agent task state machine (stage/step/expected action).
+  const taskStateStore = createTaskStateStore({
+    onChange: () => agentState.scheduleSave(),
+  });
+  taskStateStore.load(savedState.taskStates);
   const llmAgent = createLlmAgent(
     deepSeekService,
     env.DEEPSEEK_MODEL,
@@ -94,6 +100,7 @@ async function main(): Promise<void> {
       strategyByAgent: day10.strategyByAgent,
       memory: memoryState.snapshot(),
       profiles: profileState.snapshot(),
+      taskStates: taskStateStore.snapshot(),
     };
   });
 
@@ -116,6 +123,7 @@ async function main(): Promise<void> {
     day10State,
     memoryState,
     profileState,
+    taskStateStore,
   });
 
   await app.register(fastifyStatic, {

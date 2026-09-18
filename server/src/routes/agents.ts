@@ -13,6 +13,9 @@ import {
   RestoreAgentRequestSchema,
   RestoreInstanceRequestSchema,
   SpawnRequestSchema,
+  TaskCreateSchema,
+  TaskPatchSchema,
+  TaskTransitionSchema,
   UserProfileCreateSchema,
   UserProfilePatchSchema,
   type AgentContextStrategy,
@@ -22,12 +25,15 @@ import {
   type CompressThreadResponse,
   type AgentMessage,
   type FactsMap,
+  type TaskStage,
 } from "@trigger-helper/shared";
 import type { FastifyInstance } from "fastify";
 import type { Env } from "../config/env.js";
 import type { Day10StateStore } from "../services/agent/day10-state.js";
 import type { MemoryStateStore } from "../services/agent/memory-state.js";
 import type { ProfileStateStore } from "../services/agent/profile-state.js";
+import { ALLOWED_TRANSITIONS, validateTaskReply } from "../services/agent/task-state.js";
+import type { TaskStateStore } from "../services/agent/task-state.js";
 import {
   AGENT_HISTORY_CAPS,
   AgentPolicyError,
@@ -63,6 +69,7 @@ type AgentRouteDeps = {
   day10State: Day10StateStore;
   memoryState: MemoryStateStore;
   profileState: ProfileStateStore;
+  taskStateStore: TaskStateStore;
 };
 
 const CONTEXT_STRATEGIES = ["sliding", "facts", "branching"] as const;
@@ -84,6 +91,8 @@ export async function registerAgentRoutes(
     factKeys: [...FACT_KEYS],
     memoryLayers: ["short", "working", "long"],
     historyCaps: AGENT_HISTORY_CAPS,
+    /** Day13: canonical transition map — UI generates goto-buttons from it. */
+    taskTransitions: ALLOWED_TRANSITIONS,
   }));
 
   app.get("/api/instances", async () => {
@@ -143,6 +152,7 @@ export async function registerAgentRoutes(
       deps.threads.clearAgentTree(id, agentId);
       deps.day10State.clearAgent(id, agentId);
       deps.memoryState.clearAgent(id, agentId);
+      deps.taskStateStore.clearAgent(id, agentId);
       return { agent, messages };
     } catch (error) {
       return sendRegistryError(reply, error);
@@ -190,6 +200,7 @@ export async function registerAgentRoutes(
       for (const agent of removed.agents) {
         deps.day10State.clearAgent(id, agent.id);
         deps.memoryState.clearAgent(id, agent.id);
+        deps.taskStateStore.clearAgent(id, agent.id);
       }
       // Day12: profiles are instance-level — one cleanup, outside the agent loop.
       deps.profileState.clearInstance(id);
@@ -619,6 +630,8 @@ export async function registerAgentRoutes(
       const memorySlice = deps.memoryState.get(instanceId, agentId);
       // Day12: instance-level router state — resolved here (server key), not client.
       const activeProfile = deps.profileState.getActiveProfile(instanceId);
+      // Day13: per-agent task FSM — resolved here, injected into every run.
+      const taskState = deps.taskStateStore.get(instanceId, agentId);
 
       const effectiveHistoryMode =
         strategy === "sliding" || strategy === "facts"
@@ -631,8 +644,15 @@ export async function registerAgentRoutes(
         contextStrategy: strategy,
         memoryFacts: memorySlice.facts,
         activeProfile,
+        taskState,
         ...(strategy === "facts" ? { facts: factsForRun } : {}),
       });
+
+      // Day13 D-7: fail-open stage check — evidence only, taskState is not mutated.
+      const taskCheck =
+        taskState && taskState.stage !== "done"
+          ? validateTaskReply(taskState, result.reply)
+          : undefined;
 
       const userMsg = deps.threads.createMessage({
         role: "user",
@@ -684,6 +704,19 @@ export async function registerAgentRoutes(
               id: activeProfile.id,
               label: activeProfile.label,
               inject: result.profileInject?.inject ?? null,
+            }
+          : null,
+        // Day13: explicit null (no task); in done inject=null and no check.
+        task: taskState
+          ? {
+              id: taskState.id,
+              title: taskState.title,
+              stage: taskState.stage,
+              step: taskState.step,
+              total: taskState.plan.length,
+              paused: taskState.paused,
+              inject: result.taskInject?.inject ?? null,
+              ...(taskCheck ? { check: taskCheck } : {}),
             }
           : null,
         memory: {
@@ -970,6 +1003,147 @@ export async function registerAgentRoutes(
     }
     return { activeProfileId: state.activeProfileId };
   });
+
+  // --- Day13 task FSM endpoints (0 LLM — not rate-limited) ---
+
+  app.get(
+    "/api/instances/:id/agents/:agentId/task",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      return { task: deps.taskStateStore.get(id, agentId) };
+    },
+  );
+
+  app.post(
+    "/api/instances/:id/agents/:agentId/task",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const parsed = TaskCreateSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      const created = deps.taskStateStore.create(id, agentId, parsed.data);
+      if (created === "exists") {
+        return reply.status(409).send({
+          error: "Task already exists",
+          message: "У агента уже есть задача — удалите её, чтобы начать новую",
+        });
+      }
+      return reply.status(201).send({ task: created });
+    },
+  );
+
+  app.post(
+    "/api/instances/:id/agents/:agentId/task/transition",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const parsed = TaskTransitionSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      const result = deps.taskStateStore.transition(id, agentId, parsed.data);
+      if (result.kind === "ok") {
+        return { task: result.state };
+      }
+      if (result.kind === "not_found") {
+        return reply.status(404).send({ error: "Task not found" });
+      }
+      return reply.status(409).send({
+        error: "Transition rejected",
+        from: result.from,
+        ...(result.to !== undefined ? { to: result.to } : {}),
+        ...(result.allowed ? { allowed: result.allowed } : {}),
+        message: result.message,
+      });
+    },
+  );
+
+  app.patch(
+    "/api/instances/:id/agents/:agentId/task",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const parsed = TaskPatchSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      const task = deps.taskStateStore.patch(id, agentId, parsed.data);
+      if (!task) {
+        return reply.status(404).send({ error: "Task not found" });
+      }
+      return { task };
+    },
+  );
+
+  app.delete(
+    "/api/instances/:id/agents/:agentId/task",
+    async (request, reply) => {
+      const { id, agentId } = request.params as {
+        id: string;
+        agentId: string;
+      };
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      const removed = deps.taskStateStore.remove(id, agentId);
+      if (!removed) {
+        return reply.status(404).send({ error: "Task not found" });
+      }
+      return { removed: true };
+    },
+  );
 
   // --- Day10 branching endpoints ---
 

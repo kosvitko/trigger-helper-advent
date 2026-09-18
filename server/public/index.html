@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day12</title>
+  <title>Trigger Helper — Агент · day13</title>
   <style>
     :root {
       color-scheme: light;
@@ -538,6 +538,26 @@
     .profile-panel .profile-fields textarea { resize: vertical; }
     .profile-panel .profile-del:hover { color: var(--error, #b33); }
     .msg-meta .badge.profile { color: #6fa8c9; }
+    .msg-meta .badge.task { color: #c9a26f; }
+    .msg-meta .badge.task.check-ok { color: #4a9a5b; }
+    .msg-meta .badge.task.check-warn { color: #c9862b; }
+    .msg-meta .badge.task.check-critical { color: #b33333; }
+    .vstat { font-weight: 600; }
+    .vstat.ok { color: #4a9a5b; }
+    .vstat.warn { color: #c9862b; }
+    .vstat.critical { color: #b33333; }
+    .task-panel .task-stages { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
+    .task-panel .stage-chip {
+      padding: 1px 8px; border: 1px solid var(--border, #ccc); border-radius: 10px;
+      font-size: 11px; color: var(--muted);
+    }
+    .task-panel .stage-chip.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+    .task-panel .stage-chip.done { border-color: #4a9a5b; color: #4a9a5b; }
+    .task-panel .task-plan { margin: 4px 0; padding: 0; list-style: none; }
+    .task-panel .task-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+    .task-panel .task-actions button { font-size: 12px; padding: 2px 8px; }
+    .task-panel .task-actions button:disabled { opacity: 0.45; cursor: default; }
+    .task-panel textarea { resize: vertical; width: 100%; }
     .payload-details { margin-top: 2px; }
     .payload-details summary { cursor: pointer; user-select: none; }
     .payload-list { margin: 2px 0 0; padding: 0; list-style: none; }
@@ -696,7 +716,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day12</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day13</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -736,10 +756,11 @@
     <div class="main-row">
       <div class="messages" id="messages" aria-live="polite"></div>
       <aside class="side" aria-label="Диагностика">
+        <div class="ctx-panel task-panel" id="task-panel" hidden></div>
         <div class="ctx-panel profile-panel" id="profile-panel" hidden></div>
         <div class="side-empty">
-          Профиль появится после выбора инстанса; memory (day11) · payload ·
-          day10 facts · branching — после первого запроса.
+          Задача (day13) и профиль появятся после выбора инстанса; memory (day11) ·
+          payload · day10 facts · branching — после первого запроса.
         </div>
         <div class="ctx-panel" id="payload-panel" hidden></div>
         <div class="ctx-panel" id="memory-panel" hidden></div>
@@ -846,6 +867,12 @@
       /** Day12: live-run badge source + inject evidence (null = no profile). */
       profileInfo: null,
       profileInject: null,
+      /** Day13: active task FSM state + transition map meta. */
+      task: null,
+      taskTransitions: null,
+      taskInfo: null,
+      taskInject: null,
+      taskDirty: false,
       branch: { forked: false, activeBranchId: null },
       strategyLock: false,
       lastPayloadMessages: [],
@@ -892,6 +919,7 @@
       strategyLock: document.getElementById("strategy-lock"),
       payloadPanel: document.getElementById("payload-panel"),
       profilePanel: document.getElementById("profile-panel"),
+      taskPanel: document.getElementById("task-panel"),
       memoryPanel: document.getElementById("memory-panel"),
       factsPanel: document.getElementById("facts-panel"),
       branchBar: document.getElementById("branch-bar"),
@@ -1228,6 +1256,7 @@
       }
       renderTabs();
       await loadMessages();
+      await loadTask();
       const snap = {
         kind: "agent",
         instanceId: state.instanceId,
@@ -1278,6 +1307,7 @@
       renderTabs();
       await loadMessages();
       await loadProfiles();
+      await loadTask();
       const snap = {
         kind: "instance",
         instance: data.instance,
@@ -1350,6 +1380,11 @@
               <span class="badge agent">${m.label || m.agentId || "?"}</span>
               ${state.profileInfo && state.profileInfo.messageId === m.id
                 ? '<span class="badge profile">' + state.profileInfo.label + "</span>"
+                : ""}
+              ${state.taskInfo && state.taskInfo.messageId === m.id
+                ? '<span class="badge task check-' + (state.taskInfo.checkLevel || "warn") + '">задача: ' + state.taskInfo.stage +
+                  (state.taskInfo.paused ? " ⏸" : "") +
+                  (state.taskInfo.checkMark || "") + "</span>"
                 : ""}
               <span class="badge">${m.model || "?"}</span>
               <span class="badge">${m.latency_ms != null ? m.latency_ms + " ms" : "—"}</span>
@@ -1499,16 +1534,40 @@
       const inj = state.memoryInject || {};
       const prof = state.profileInfo || null;
       const profInject = state.profileInject || null;
+      const task = state.taskInfo || null;
+      const taskInject = state.taskInject || null;
       const hasInj =
         (inj.long && inj.long.length) ||
         (inj.working && inj.working.length) ||
         (inj.short && inj.short.length);
-      if (!msgs.length && !hasInj && !prof) {
+      if (!msgs.length && !hasInj && !prof && !task) {
         el.payloadPanel.hidden = true;
         el.payloadPanel.innerHTML = "";
         return;
       }
       let html = "";
+      if (task) {
+        html +=
+          '<div class="memory-inject"><div><b class="badge task">Задача</b>: ' +
+          task.stage + " · шаг " + task.step + "/" + task.total +
+          (task.paused ? " (⏸)" : "") +
+          (taskInject
+            ? " — " + truncatePayload(taskInject, 90)
+            : " — блок не отправлялся (done)") +
+          "</div>" +
+          (task.checkLevel
+            ? '<div>Валидатор: <span class="vstat ' + task.checkLevel + '">' +
+              (task.checkLevel === "critical"
+                ? "✕ нарушение инварианта"
+                : task.checkLevel === "warn"
+                  ? "⚠ не подтверждено (fail-open)"
+                  : "✓ стадия соблюдена") + "</span>" +
+              (task.check && task.check.note
+                ? ' <span style="font-weight:400">· ' + truncatePayload(task.check.note, 70) + "</span>"
+                : "") + "</div>"
+            : "") +
+          "</div>";
+      }
       if (prof) {
         html +=
           '<div class="memory-inject"><div><b class="badge profile">Профиль</b>: ' +
@@ -1876,6 +1935,222 @@
       setStatus("профиль удалён");
     }
 
+    // --- Day13 task FSM panel ---
+
+    function taskUrl(suffix) {
+      return (
+        "/api/instances/" +
+        encodeURIComponent(state.instanceId) +
+        "/agents/" +
+        encodeURIComponent(state.agentId) +
+        "/task" +
+        (suffix || "")
+      );
+    }
+
+    async function loadTask() {
+      if (!state.instanceId || !state.agentId) {
+        state.task = null;
+        renderTaskPanel();
+        return;
+      }
+      try {
+        const data = await api(taskUrl());
+        state.task = data.task || null;
+      } catch {
+        /* instance/agent may be gone — keep previous */
+      }
+      renderTaskPanel();
+    }
+
+    function escAttr(s) {
+      return String(s ?? "").replace(/"/g, "&quot;");
+    }
+
+    function renderTaskPanel() {
+      if (!state.instanceId || !state.agentId) {
+        el.taskPanel.hidden = true;
+        el.taskPanel.innerHTML = "";
+        return;
+      }
+      const task = state.task;
+      if (!task) {
+        el.taskPanel.innerHTML =
+          '<span class="ctx-title">Задача (day13)</span>' +
+          '<div class="profile-fields">' +
+          '<label>Название<input maxlength="120" id="task-title" placeholder="Например: проработка точки «шея»" /></label>' +
+          '<label>План (строка = шаг, ≤5)<textarea rows="3" id="task-plan" placeholder="Найти причину\\nТехника 5 мин\\nОценить эффект"></textarea></label>' +
+          '<div class="task-actions"><button type="button" id="task-create">+ задача</button></div>' +
+          "</div>";
+        el.taskPanel.hidden = false;
+        el.taskPanel.querySelector("#task-create").addEventListener("click", () => {
+          createTask().catch((err) => setStatus(err.message, true));
+        });
+        return;
+      }
+
+      const stages = ["planning", "execution", "validation", "done"];
+      const chips = stages
+        .map(
+          (s) =>
+            '<span class="stage-chip' +
+            (s === task.stage ? " active" : "") +
+            (s === "done" ? " done" : "") +
+            '">' +
+            s +
+            "</span>",
+        )
+        .join("");
+      const allowed = (state.taskTransitions && state.taskTransitions[task.stage]) || [];
+      const gotoBtns = allowed
+        .map(
+          (s) =>
+            '<button type="button" data-goto="' + s + '">→ ' + s + "</button>",
+        )
+        .join("");
+      const planLines = task.plan
+        .map((p, i) => {
+          const mark = i < task.step - 1 ? "✓" : i === task.step - 1 ? "→" : "☐";
+          return '<li data-plan="' + i + '">' + mark + " " + escAttr(p) + "</li>";
+        })
+        .join("");
+      const lastStep = task.step >= task.plan.length;
+      el.taskPanel.innerHTML =
+        '<span class="ctx-title">Задача (day13)</span>' +
+        '<div class="task-stages">' + chips + (task.paused ? ' <span class="stage-chip active">⏸ пауза</span>' : "") + "</div>" +
+        '<div class="profile-fields">' +
+        '<label>Название<input maxlength="120" data-tk="title" value="' + escAttr(task.title) + '" /></label>' +
+        "<div><b>Шаг:</b> " + task.step + "/" + task.plan.length +
+        ' · <b>сейчас:</b> <input maxlength="200" data-tk="expectedAction" value="' + escAttr(task.expectedAction) + '" style="width:70%" /></div>' +
+        '<ul class="task-plan">' + planLines + "</ul>" +
+        '<label>Сделано (резюме)<input maxlength="200" data-tk="lastStageNote" value="' + escAttr(task.lastStageNote) + '" /></label>' +
+        "</div>" +
+        '<div class="task-actions">' +
+        gotoBtns +
+        '<button type="button" id="task-next" data-goto-action="next_step"' +
+        (task.stage === "execution" && !lastStep ? "" : " disabled") + '>✓ шаг</button>' +
+        '<button type="button" id="task-pause"' + (task.paused || task.stage === "done" ? " disabled" : "") + ">⏸</button>" +
+        '<button type="button" id="task-resume"' + (task.paused ? "" : " disabled") + ">▶</button>" +
+        '<button type="button" id="task-del" title="Удалить задачу">✕</button>' +
+        "</div>";
+      el.taskPanel.hidden = false;
+
+      el.taskPanel.querySelectorAll("[data-goto]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          transitionTask({ action: "goto", to: btn.dataset.goto }).catch((err) =>
+            setStatus(err.message, true),
+          );
+        });
+      });
+      const nextBtn = el.taskPanel.querySelector("#task-next");
+      if (nextBtn) {
+        nextBtn.addEventListener("click", () => {
+          transitionTask({ action: "next_step" }).catch((err) =>
+            setStatus(err.message, true),
+          );
+        });
+      }
+      el.taskPanel.querySelector("#task-pause").addEventListener("click", () => {
+        transitionTask({ action: "pause" }).catch((err) => setStatus(err.message, true));
+      });
+      el.taskPanel.querySelector("#task-resume").addEventListener("click", () => {
+        transitionTask({ action: "resume" }).catch((err) => setStatus(err.message, true));
+      });
+      el.taskPanel.querySelector("#task-del").addEventListener("click", () => {
+        deleteTask().catch((err) => setStatus(err.message, true));
+      });
+      el.taskPanel.querySelectorAll("[data-tk]").forEach((inp) => {
+        const save = () => patchTaskField(inp.dataset.tk, inp.value).catch((err) => {
+          setStatus(err.message, true);
+          renderTaskPanel();
+        });
+        inp.addEventListener("blur", save);
+        inp.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && inp.tagName !== "TEXTAREA") inp.blur();
+        });
+        inp.addEventListener("input", () => {
+          state.taskDirty = true;
+        });
+      });
+    }
+
+    async function createTask() {
+      if (!state.instanceId || !state.agentId) return;
+      const title = el.taskPanel.querySelector("#task-title").value.trim();
+      const plan = String(el.taskPanel.querySelector("#task-plan").value)
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (!title) {
+        setStatus("название задачи не может быть пустым", true);
+        return;
+      }
+      if (!plan.length) {
+        setStatus("план: хотя бы один шаг (строка)", true);
+        return;
+      }
+      const data = await api(taskUrl(), {
+        method: "POST",
+        body: JSON.stringify({ title, plan }),
+      });
+      state.task = data.task;
+      state.taskDirty = false;
+      renderTaskPanel();
+      setStatus("задача создана · planning · шаг 1/" + data.task.plan.length);
+    }
+
+    /** Мутации возвращают {task} — панель перерисовывается из ответа (PASS «таймлайн»). */
+    async function transitionTask(command) {
+      const data = await api(taskUrl("/transition"), {
+        method: "POST",
+        body: JSON.stringify(command),
+      });
+      state.task = data.task;
+      state.taskDirty = false;
+      renderTaskPanel();
+      setStatus(
+        "задача → " + data.task.stage +
+          (data.task.paused ? " (⏸)" : "") +
+          " · шаг " + data.task.step + "/" + data.task.plan.length,
+      );
+    }
+
+    async function patchTaskField(field, rawValue) {
+      const task = state.task;
+      if (!state.instanceId || !state.agentId || !task) {
+        state.taskDirty = false;
+        return;
+      }
+      if (String(rawValue) === String(task[field] || "")) {
+        state.taskDirty = false;
+        renderTaskPanel();
+        return;
+      }
+      if (field === "title" && !String(rawValue).trim()) {
+        setStatus("название задачи не может быть пустым", true);
+        return;
+      }
+      const data = await api(taskUrl(), {
+        method: "PATCH",
+        body: JSON.stringify({ [field]: String(rawValue) }),
+      });
+      state.task = data.task;
+      state.taskDirty = false;
+      renderTaskPanel();
+      setStatus("задача сохранена · " + data.task.stage);
+    }
+
+    async function deleteTask() {
+      if (!state.instanceId || !state.agentId) return;
+      await api(taskUrl(), { method: "DELETE" });
+      state.task = null;
+      state.taskInfo = null;
+      state.taskInject = null;
+      renderTaskPanel();
+      renderPayloadPanel();
+      setStatus("задача удалена — можно начать новую");
+    }
+
     function renderFactsPanel() {
       const strategy = effectiveContextStrategy() || state.contextStrategy;
       const facts = state.facts || {};
@@ -2048,6 +2323,8 @@
       ]);
       state.presets = agentsMeta.presets || [];
       state.autoCompressDefault = agentsMeta.autoCompress?.defaultEvery ?? 10;
+      /** Day13: canonical transition map for the task panel buttons. */
+      state.taskTransitions = agentsMeta.taskTransitions || null;
       if (el.compressEvery) el.compressEvery.placeholder = state.autoCompressDefault;
       fillPresetPick();
       state.instances = instData.instances || [];
@@ -2067,6 +2344,7 @@
       renderTabs();
       await loadMessages();
       await loadProfiles();
+      await loadTask();
       setStatus("ok · F5 hydrate");
     }
 
@@ -2079,6 +2357,8 @@
         state.memoryInject = { long: [], working: [], short: [] };
         state.branch = { forked: false, activeBranchId: null };
         state.lastPayloadMessages = [];
+        state.task = null;
+        renderTaskPanel();
         renderMessages();
         renderTokens();
         renderDay10Panels();
@@ -2128,6 +2408,7 @@
       renderTabs();
       await loadMessages();
       await loadProfiles();
+      await loadTask();
     }
 
     async function addAgent() {
@@ -2142,6 +2423,7 @@
       state.agentId = data.agent.id;
       renderTabs();
       await loadMessages();
+      await loadTask();
     }
 
     async function spawnAgents() {
@@ -2356,6 +2638,25 @@
           } else {
             state.profileInfo = null;
             state.profileInject = null;
+          }
+          // Day13: task badge + inject evidence for the payload panel.
+          if (data.context.task) {
+            const chk = data.context.task.check || null;
+            const lvl = chk ? chk.level || (chk.ok ? "ok" : "warn") : null;
+            state.taskInfo = {
+              messageId: data.message?.id,
+              stage: data.context.task.stage,
+              step: data.context.task.step,
+              total: data.context.task.total,
+              paused: data.context.task.paused,
+              check: chk,
+              checkLevel: lvl,
+              checkMark: lvl === "critical" ? " ✕" : lvl === "warn" ? " ⚠" : lvl === "ok" ? " ✓" : "",
+            };
+            state.taskInject = data.context.task.inject || null;
+          } else {
+            state.taskInfo = null;
+            state.taskInject = null;
           }
         }
         await loadUsage();
@@ -2597,10 +2898,13 @@
       state.lastPayloadMessages = [];
       state.profileInfo = null;
       state.profileInject = null;
+      state.taskInfo = null;
+      state.taskInject = null;
       state.strategyLock = false;
       renderTabs();
       await loadMessages();
       await loadProfiles();
+      await loadTask();
     });
 
     el.agentTabs.addEventListener("click", async (e) => {
@@ -2618,9 +2922,12 @@
       if (state.busy && state.abort) state.abort.abort();
       state.agentId = t.dataset.agent;
       state.lastPayloadMessages = [];
+      state.taskInfo = null;
+      state.taskInject = null;
       state.strategyLock = false;
       renderTabs();
       await loadMessages();
+      await loadTask();
     });
 
     el.undoToastBtn.addEventListener("click", () => {

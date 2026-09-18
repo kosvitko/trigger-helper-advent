@@ -6,12 +6,14 @@ import {
   InstanceSchema,
   FactRowSchema,
   ProfileStateSchema,
+  TaskStateSchema,
   type AgentContextStrategy,
   type AgentMessage,
   type FactsMap,
   type Instance,
   type AgentMemorySlice,
   type ProfileState,
+  type TaskState,
 } from "@trigger-helper/shared";
 import { z } from "zod";
 
@@ -47,6 +49,8 @@ export type AgentStateSnapshot = {
   memory?: Record<string, AgentMemorySlice>;
   /** Day12 user profiles — key instanceId (personalization router state). */
   profiles?: Record<string, ProfileState>;
+  /** Day13 task FSM states — key `${instanceId}|${agentId}`. */
+  taskStates?: Record<string, TaskState>;
 };
 
 const BranchMetaSchema = z.object({
@@ -77,6 +81,8 @@ const SnapshotSchema = z.object({
     .catch({}),
   /** Day12: records parsed per-key in load() (safeParse + warn) — not silently. */
   profiles: z.record(z.string(), z.unknown()).catch({}),
+  /** Day13: same per-key pattern as profiles — corrupt record drops alone. */
+  taskStates: z.record(z.string(), z.unknown()).catch({}),
 });
 
 const SAVE_DEBOUNCE_MS = 150;
@@ -94,6 +100,7 @@ function emptySnapshot(): AgentStateSnapshot {
     strategyByAgent: {},
     memory: {},
     profiles: {},
+    taskStates: {},
   };
 }
 
@@ -160,6 +167,18 @@ export class AgentStateStore {
           );
         }
       }
+      // Day13: same per-key pattern for task FSM states.
+      const taskStates: Record<string, TaskState> = {};
+      for (const [key, raw] of Object.entries(parsed.taskStates)) {
+        const checked = TaskStateSchema.safeParse(raw);
+        if (checked.success) {
+          taskStates[key] = checked.data;
+        } else {
+          console.warn(
+            `agent-state: taskStates[${key}] повреждена — запись пропущена`,
+          );
+        }
+      }
       return {
         version: AGENT_STATE_VERSION,
         saved_at: parsed.saved_at ?? new Date(0).toISOString(),
@@ -172,6 +191,7 @@ export class AgentStateStore {
         strategyByAgent: parsed.strategyByAgent,
         memory: parsed.memory as Record<string, AgentMemorySlice>,
         profiles,
+        taskStates,
       };
     } catch (error) {
       console.error(

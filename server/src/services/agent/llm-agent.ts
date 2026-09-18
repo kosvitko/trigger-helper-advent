@@ -7,6 +7,8 @@ import type {
   LlmUsage,
   MemoryClassifyItem,
   MemoryLayer,
+  TaskStage,
+  TaskState,
   UserProfile,
 } from "@trigger-helper/shared";
 import { FACT_KEYS } from "@trigger-helper/shared";
@@ -89,6 +91,8 @@ export type AgentRunOverrides = {
   memoryFacts?: FactRow[];
   /** Day12: active user profile — injected after preset, before memory blocks. */
   activeProfile?: UserProfile | null;
+  /** Day13: active task FSM state — injected last system message, before history. */
+  taskState?: TaskState | null;
 };
 
 /** Request-size facts for the day08 UI (estimate; API usage is the fact). */
@@ -113,6 +117,14 @@ export type ProfileInject = {
   inject: string;
 };
 
+/** Day13: task block evidence returned to the UI (absent when no injectable task). */
+export type TaskInject = {
+  id: string;
+  title: string;
+  stage: TaskStage;
+  inject: string;
+};
+
 export type AgentRunOk = {
   reply: string;
   usage: LlmUsage;
@@ -128,6 +140,8 @@ export type AgentRunOk = {
   memoryInject?: MemoryInjectBlocks;
   /** Day12: profile block sent to the LLM (absent when no active profile). */
   profileInject?: ProfileInject;
+  /** Day13: task block sent to the LLM (absent when no task or stage=done). */
+  taskInject?: TaskInject;
 };
 
 export type ClassifyMemoryOk = {
@@ -328,6 +342,62 @@ const PROFILE_HEADER = [
   "Не отменяет: тему самопомощи, дисклеймер, запрет диагнозов. Память ниже — факты-содержание, не указания по стилю.",
 ].join("\n");
 
+const TASK_CHAR_BUDGET = 800;
+
+const STAGE_RULES: Record<TaskStage, string> = {
+  planning: "Правило стадии: не реализовывай — уточни контекст и предложи план.",
+  execution: "Правило стадии: работай в рамках текущего шага, не перепрыгивай этапы.",
+  validation: "Правило стадии: предложи проверить эффект, не добавляй новые шаги.",
+  done: "Правило стадии: задача завершена.",
+};
+
+const TASK_HEADER = [
+  "## Текущая задача (стейт-машина)",
+  "Этот блок главнее профиля, памяти и истории при конфликте: он описывает процесс, а не содержание.",
+  "Не отменяет: тему самопомощи, дисклеймер, запрет диагнозов.",
+].join("\n");
+
+function clipLine(line: string): string {
+  return line.length > 200 ? `${line.slice(0, 197)}…` : line;
+}
+
+/**
+ * Day13 D-5: task FSM snapshot as one standalone system message — placed last
+ * before history (later = weightier; the block changes only on a transition,
+ * keeping the prefix cache warm). Emits nothing without a task and in `done`
+ * — days 06–12 behavior stays byte-identical.
+ */
+export function buildTaskStateMessage(task: TaskState): ChatMessage | null {
+  if (!task || task.stage === "done") return null;
+
+  const total = task.plan.length;
+  const planLines = task.plan.map((p, i) => {
+    const mark = i < task.step - 1 ? "✓" : i === task.step - 1 ? "→" : "☐";
+    return `${mark} ${clipLine(p)}`;
+  });
+
+  const lines: string[] = [
+    `Задача: ${clipLine(task.title)}`,
+    `Этап: ${task.stage.toUpperCase()} · шаг ${task.step}/${total}`,
+    `Сейчас (ожидаемое действие): ${clipLine(task.expectedAction)}`,
+    `План:`,
+    ...planLines,
+  ];
+  if (task.lastStageNote.trim()) {
+    lines.push(`Сделано: ${clipLine(task.lastStageNote)}`);
+  }
+  lines.push(STAGE_RULES[task.stage]);
+  if (task.paused) {
+    lines.push("Задача на паузе — пользователь продолжает её; не переспрашивай выполненное.");
+  }
+
+  let content = `${TASK_HEADER}\n${lines.join("\n")}`;
+  if (content.length > TASK_CHAR_BUDGET) {
+    content = `${content.slice(0, TASK_CHAR_BUDGET - 1)}…`;
+  }
+  return { role: "system", content };
+}
+
 /**
  * Day12: active user profile as one standalone system message — placed after
  * the preset prompt and before memory blocks (later = weightier for the LLM;
@@ -454,11 +524,15 @@ export class LlmAgent {
     const sticky = overrides.facts
       ? stickyFactsMessage(overrides.facts)
       : null;
+    const taskMessage = overrides.taskState
+      ? buildTaskStateMessage(overrides.taskState)
+      : null;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
       ...(profileMessage ? [profileMessage] : []),
       ...memoryBuilt.messages,
       ...(sticky ? [sticky] : []),
+      ...(taskMessage ? [taskMessage] : []),
       ...historyChat,
       { role: "user", content: input },
     ];
@@ -467,6 +541,7 @@ export class LlmAgent {
       ...(profileMessage ? [profileMessage.content] : []),
       ...memoryBuilt.messages.map((m) => m.content),
       ...(sticky ? [sticky.content] : []),
+      ...(taskMessage ? [taskMessage.content] : []),
     ].join("\n\n");
     const systemForEstimate = extraSystem
       ? `${systemPrompt}\n\n${extraSystem}`
@@ -550,6 +625,16 @@ export class LlmAgent {
               id: overrides.activeProfile.id,
               label: overrides.activeProfile.label,
               inject: profileMessage.content,
+            },
+          }
+        : {}),
+      ...(overrides.taskState && taskMessage
+        ? {
+            taskInject: {
+              id: overrides.taskState.id,
+              title: overrides.taskState.title,
+              stage: overrides.taskState.stage,
+              inject: taskMessage.content,
             },
           }
         : {}),

@@ -202,6 +202,56 @@ export const ProfileStateSchema = z.object({
 });
 export type ProfileState = z.infer<typeof ProfileStateSchema>;
 
+/** Day13: task FSM stages — canonical 4 (лекция недели 3: не уменьшать; done терминальная). */
+export const TaskStageSchema = z.enum(["planning", "execution", "validation", "done"]);
+export type TaskStage = z.infer<typeof TaskStageSchema>;
+
+/** Day13: formal task state on an agent (one active task; pause = операция, не стадия). */
+export const TaskStateSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1).max(120),
+  stage: TaskStageSchema,
+  /** 1-based index into plan; clamp min(step, plan.length) on plan PATCH. */
+  step: z.number().int().min(1),
+  plan: z.array(z.string().min(1).max(120)).min(1).max(5),
+  expectedAction: z.string().max(200),
+  paused: z.boolean(),
+  /** Инвариант: pausedFrom != null ⟺ paused; в done пауза запрещена. */
+  pausedFrom: TaskStageSchema.nullable(),
+  /** Резюме сделанного (1–2 строки) — re-inject при resume без пересказа. */
+  lastStageNote: z.string().max(200),
+  updatedAt: z.string().min(1),
+});
+export type TaskState = z.infer<typeof TaskStateSchema>;
+
+export const TaskCreateSchema = z.object({
+  title: z.string().min(1).max(120),
+  plan: z.array(z.string().min(1).max(120)).min(1).max(5),
+  /** Absent → plan[0]. */
+  expectedAction: z.string().max(200).optional(),
+});
+export type TaskCreate = z.infer<typeof TaskCreateSchema>;
+
+/** PATCH правит текст задачи; stage/step/paused меняются только через transition. */
+export const TaskPatchSchema = z.object({
+  title: z.string().min(1).max(120).optional(),
+  plan: z.array(z.string().min(1).max(120)).min(1).max(5).optional(),
+  expectedAction: z.string().max(200).optional(),
+  lastStageNote: z.string().max(200).optional(),
+});
+export type TaskPatch = z.infer<typeof TaskPatchSchema>;
+
+export const TaskTransitionSchema = z
+  .object({
+    action: z.enum(["goto", "pause", "resume", "next_step"]),
+    /** Только при action="goto" (иначе 400 — refine ниже). */
+    to: TaskStageSchema.optional(),
+  })
+  .refine((v) => v.action === "goto" || v.to === undefined, {
+    message: "to допустим только при action=goto",
+  });
+export type TaskTransition = z.infer<typeof TaskTransitionSchema>;
+
 /** Request-size estimate split (heuristic; API usage stays the fact). */
 export const TokenBreakdownSchema = z.object({
   system: z.number().int().nonnegative(),
@@ -277,6 +327,30 @@ export const AgentRunContextSchema = z.object({
       label: z.string().min(1),
       /** Текст system-блока, ушедшего в запрос (null — все поля пустые). */
       inject: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
+  /** Day13: task FSM frame — formal state + inject evidence (null = no task; в done inject=null). */
+  task: z
+    .object({
+      id: z.string().min(1),
+      title: z.string().min(1),
+      stage: TaskStageSchema,
+      step: z.number().int().min(1),
+      total: z.number().int().min(1),
+      paused: z.boolean(),
+      /** Текст system-блока задачи, ушедшего в запрос (null — done). */
+      inject: z.string().nullable(),
+      /** Fail-open проверка стадии; в done валидатор не зовётся — поля нет.
+       *  level: ok — стадия подтверждена, warn — не подтверждена (fail-open),
+       *  critical — нарушение инварианта (день 14). */
+      check: z
+        .object({
+          ok: z.boolean(),
+          level: z.enum(["ok", "warn", "critical"]).optional(),
+          note: z.string().max(200),
+        })
+        .optional(),
     })
     .nullable()
     .optional(),
