@@ -14,6 +14,7 @@ import { createDay10StateStore } from "./services/agent/day10-state.js";
 import { createMemoryStateStore } from "./services/agent/memory-state.js";
 import { createProfileStateStore } from "./services/agent/profile-state.js";
 import { createTaskStateStore } from "./services/agent/task-state.js";
+import { createInvariantStateStore } from "./services/agent/invariant-state.js";
 import { createLlmAgent } from "./services/agent/llm-agent.js";
 import {
   AGENT_STATE_VERSION,
@@ -80,6 +81,11 @@ async function main(): Promise<void> {
     onChange: () => agentState.scheduleSave(),
   });
   taskStateStore.load(savedState.taskStates);
+  // Day14: per-agent invariants — owner rules the agent may not violate.
+  const invariantStore = createInvariantStateStore({
+    onChange: () => agentState.scheduleSave(),
+  });
+  invariantStore.load(savedState.invariantStates);
   const llmAgent = createLlmAgent(
     deepSeekService,
     env.DEEPSEEK_MODEL,
@@ -101,6 +107,7 @@ async function main(): Promise<void> {
       memory: memoryState.snapshot(),
       profiles: profileState.snapshot(),
       taskStates: taskStateStore.snapshot(),
+      invariantStates: invariantStore.snapshot(),
     };
   });
 
@@ -124,6 +131,7 @@ async function main(): Promise<void> {
     memoryState,
     profileState,
     taskStateStore,
+    invariantStore,
   });
 
   await app.register(fastifyStatic, {

@@ -1,4 +1,5 @@
 import type {
+  InvariantRow,
   TaskCreate,
   TaskPatch,
   TaskStage,
@@ -43,6 +44,8 @@ export type TaskTransitionResult =
       to?: TaskStage;
       allowed?: TaskStage[];
       message: string;
+      /** Day14 D-6: goto→done без подтверждения пользователя. */
+      consentRequired?: boolean;
     };
 
 /**
@@ -113,6 +116,18 @@ export class TaskStateStore {
           to,
           allowed: [...ALLOWED_TRANSITIONS[from]],
         });
+      }
+      // Day14 D-6: инвариант согласия — последний гвард goto-ветки (после
+      // карты): без consent на запрещённом переходе клиент получает
+      // каноничный 409 с allowed[], а не consentRequired.
+      if (to === "done" && command.consent !== true) {
+        return {
+          kind: "invalid",
+          from,
+          to,
+          message: "Переход в done требует подтверждения пользователя",
+          consentRequired: true,
+        };
       }
       task.stage = to;
       task.updatedAt = nowIso();
@@ -220,17 +235,78 @@ function meaningfulWords(text: string): string[] {
     .filter((w) => w.length >= 4 && !STOP_WORDS.has(w));
 }
 
+/** Day14 D-7(a): маркеры отказа — цитата [INV-n] сильнее (см. checkInvariants). */
+const REFUSAL_MARKERS = [
+  "не могу",
+  "не буду",
+  "не стану",
+  "не помогу",
+  "не рекомендую",
+  "не стоит",
+  "отказываюсь",
+  "отказ",
+];
+
 /**
- * Day13 D-7: детерминированный скелет проверки стадии — fail-open (ответ не
- * режется, только evidence). level: "ok" | "warn" (critical — день 14,
- * инварианты-нарушения). Эвристика execution — пересечение значимых слов
- * expectedAction с ответом (лейбл категории до «:» и стоп-слова не считаются):
- * модель не обязана дословно цитировать название шага.
+ * Day14 D-7(a): детерминированный инвариант-чек, независим от задачи.
+ * Конфликтный ряд = первый hard+pattern в merge-порядке (agent→task), чей
+ * RegExp("i") матчит input; цитата [INV-n] засчитывается только при n = номеру
+ * этого ряда, неверный n — спасает только лексикон отказа. Fail-open.
+ */
+function checkInvariants(
+  invariants: InvariantRow[],
+  input: string,
+  reply: string,
+): { ok: boolean; level: "ok" | "warn" | "critical"; note: string } {
+  for (let i = 0; i < invariants.length; i += 1) {
+    const row = invariants[i]!;
+    if (row.enforcement !== "hard" || !row.pattern) continue;
+    let re: RegExp;
+    try {
+      re = new RegExp(row.pattern, "i");
+    } catch {
+      continue;
+    }
+    if (!re.test(input)) continue;
+    const n = i + 1;
+    // Модель может цитировать с аннотацией «[INV-1: текст]» — засчитываем
+    // префикс метки (граница после номера), не только точную «[INV-n]».
+    const citation = new RegExp(`\\[INV-${n}\\b`, "i").test(reply);
+    if (
+      citation ||
+      REFUSAL_MARKERS.some((m) => reply.toLowerCase().includes(m))
+    ) {
+      return { ok: true, level: "ok", note: `Конфликт распознан — отказ [INV-${n}]` };
+    }
+    return {
+      ok: false,
+      level: "critical",
+      note: `Запрос конфликтует с [INV-${n}] — отказа нет`,
+    };
+  }
+  return { ok: true, level: "ok", note: "Инварианты учтены" };
+}
+
+/**
+ * Day13 D-7 (+ Day14 D-7): детерминированный скелет проверки — fail-open
+ * (ответ не режется, только evidence). С трёх аргументами — инвариант-чек
+ * (независим от задачи, D-7a); с двумя — стадийные эвристики day13, task
+ * допускает null (нейтральный дефолт). level: "ok" | "warn" | "critical"
+ * (critical — только инвариант-нарушение). Эвристика execution — пересечение
+ * значимых слов expectedAction с ответом (лейбл категории до «:» и стоп-слова
+ * не считаются): модель не обязана дословно цитировать название шага.
  */
 export function validateTaskReply(
-  task: TaskState,
+  task: TaskState | null,
   reply: string,
-): { ok: boolean; level: "ok" | "warn"; note: string } {
+  opts?: { invariants?: InvariantRow[]; input?: string },
+): { ok: boolean; level: "ok" | "warn" | "critical"; note: string } {
+  if (opts?.invariants?.length && typeof opts.input === "string") {
+    return checkInvariants(opts.invariants, opts.input, reply);
+  }
+  if (!task) {
+    return { ok: true, level: "ok", note: "—" };
+  }
   const text = reply.toLowerCase();
   if (!reply.trim()) {
     return { ok: false, level: "warn", note: "Пустой ответ" };

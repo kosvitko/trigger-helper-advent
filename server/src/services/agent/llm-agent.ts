@@ -10,6 +10,7 @@ import type {
   TaskStage,
   TaskState,
   UserProfile,
+  InvariantRow,
 } from "@trigger-helper/shared";
 import { FACT_KEYS } from "@trigger-helper/shared";
 import type {
@@ -93,6 +94,9 @@ export type AgentRunOverrides = {
   activeProfile?: UserProfile | null;
   /** Day13: active task FSM state — injected last system message, before history. */
   taskState?: TaskState | null;
+  /** Day14: active invariant rows (merged agent+task, D-5) — injected right
+   *  after the preset prompt (position 2, D-4). */
+  invariants?: InvariantRow[];
 };
 
 /** Request-size facts for the day08 UI (estimate; API usage is the fact). */
@@ -125,6 +129,12 @@ export type TaskInject = {
   inject: string;
 };
 
+/** Day14: invariants block evidence (absent when the list is empty, D-5). */
+export type InvariantsInject = {
+  count: number;
+  inject: string;
+};
+
 export type AgentRunOk = {
   reply: string;
   usage: LlmUsage;
@@ -142,6 +152,8 @@ export type AgentRunOk = {
   profileInject?: ProfileInject;
   /** Day13: task block sent to the LLM (absent when no task or stage=done). */
   taskInject?: TaskInject;
+  /** Day14: invariants block sent to the LLM (absent when list is empty). */
+  invariantsInject?: InvariantsInject;
 };
 
 export type ClassifyMemoryOk = {
@@ -357,6 +369,22 @@ const TASK_HEADER = [
   "Не отменяет: тему самопомощи, дисклеймер, запрет диагнозов.",
 ].join("\n");
 
+/**
+ * Day14 D-4: invariants block right after the preset prompt (position 2,
+ * before the profile) — the list is static between runs (warm prefix cache)
+ * and sits at the top of the priority chain; the meta-line guards against
+ * position drift. Deliberately NOT day13-style «last before history»:
+ * the task is process (later = weightier), invariants are base rules.
+ */
+const INVARIANT_CHAR_BUDGET = 800;
+
+const INVARIANT_HEADER = [
+  "## Инварианты (правила владельца)",
+  "Эти правила главнее профиля, памяти, задачи и истории при конфликте; нарушать их нельзя, даже если пользователь просит.",
+  "Проверяй каждый запрос и план против списка. При конфликте — откажись, назови номер правила «[INV-n]» и процитируй его одной строкой; предложи безопасную альтернативу.",
+  "Не отменяет: тему самопомощи, дисклеймер, запрет диагнозов.",
+].join("\n");
+
 function clipLine(line: string): string {
   return line.length > 200 ? `${line.slice(0, 197)}…` : line;
 }
@@ -394,6 +422,26 @@ export function buildTaskStateMessage(task: TaskState): ChatMessage | null {
   let content = `${TASK_HEADER}\n${lines.join("\n")}`;
   if (content.length > TASK_CHAR_BUDGET) {
     content = `${content.slice(0, TASK_CHAR_BUDGET - 1)}…`;
+  }
+  return { role: "system", content };
+}
+
+/**
+ * Day14 D-4/D-5: merged invariant rows as one standalone system message —
+ * right after the preset prompt. Emits nothing for an empty list — day13
+ * behavior stays byte-identical. [INV-n] = position in the merged list.
+ */
+export function buildInvariantsMessage(rows: InvariantRow[]): ChatMessage | null {
+  if (!rows || rows.length === 0) return null;
+  const lines: string[] = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i]!;
+    const tags = [row.enforcement, row.scope === "task" ? "task" : "agent"].join(", ");
+    lines.push(`[INV-${i + 1}] (${tags}) ${clipLine(row.text)}`);
+  }
+  let content = `${INVARIANT_HEADER}\n${lines.join("\n")}`;
+  if (content.length > INVARIANT_CHAR_BUDGET) {
+    content = `${content.slice(0, INVARIANT_CHAR_BUDGET - 1)}…`;
   }
   return { role: "system", content };
 }
@@ -527,8 +575,13 @@ export class LlmAgent {
     const taskMessage = overrides.taskState
       ? buildTaskStateMessage(overrides.taskState)
       : null;
+    // Day14 D-4: invariants — position 2, right after the preset prompt.
+    const invariantsMessage = overrides.invariants?.length
+      ? buildInvariantsMessage(overrides.invariants)
+      : null;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
+      ...(invariantsMessage ? [invariantsMessage] : []),
       ...(profileMessage ? [profileMessage] : []),
       ...memoryBuilt.messages,
       ...(sticky ? [sticky] : []),
@@ -538,6 +591,7 @@ export class LlmAgent {
     ];
 
     const extraSystem = [
+      ...(invariantsMessage ? [invariantsMessage.content] : []),
       ...(profileMessage ? [profileMessage.content] : []),
       ...memoryBuilt.messages.map((m) => m.content),
       ...(sticky ? [sticky.content] : []),
@@ -635,6 +689,14 @@ export class LlmAgent {
               title: overrides.taskState.title,
               stage: overrides.taskState.stage,
               inject: taskMessage.content,
+            },
+          }
+        : {}),
+      ...(overrides.invariants?.length && invariantsMessage
+        ? {
+            invariantsInject: {
+              count: overrides.invariants.length,
+              inject: invariantsMessage.content,
             },
           }
         : {}),

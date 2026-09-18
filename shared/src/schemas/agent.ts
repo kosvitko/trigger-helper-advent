@@ -246,11 +246,75 @@ export const TaskTransitionSchema = z
     action: z.enum(["goto", "pause", "resume", "next_step"]),
     /** Только при action="goto" (иначе 400 — refine ниже). */
     to: TaskStageSchema.optional(),
+    /** Day14 D-6: инвариант согласия — goto→done требует явного подтверждения
+     *  пользователя. Вне goto→done молча игнорируется (без refine). */
+    consent: z.boolean().optional(),
   })
   .refine((v) => v.action === "goto" || v.to === undefined, {
     message: "to допустим только при action=goto",
   });
 export type TaskTransition = z.infer<typeof TaskTransitionSchema>;
+
+/** Day14 D-2: инварианты — правил владельца, не факт памяти (не
+ *  MemoryStateStore: tombstones + classify легализуют запреты из диалога).
+ *  Уровень — агент (зеркало taskStates); scope рядов: agent = всегда,
+ *  task = при активной задаче (stage != done). */
+export const InvariantScopeSchema = z.enum(["agent", "task"]);
+export type InvariantScope = z.infer<typeof InvariantScopeSchema>;
+
+export const InvariantEnforcementSchema = z.enum(["hard", "soft"]);
+export type InvariantEnforcement = z.infer<typeof InvariantEnforcementSchema>;
+
+const invariantPatternSchema = z.string().trim().min(1).max(120);
+
+export const InvariantRowSchema = z
+  .object({
+    id: z.string().min(1),
+    text: z.string().min(1).max(200),
+    scope: InvariantScopeSchema,
+    enforcement: InvariantEnforcementSchema,
+    /** RegExp-источник против входа пользователя; только hard (refine ниже).
+     *  Пустой/пробельный отсечён (05 Fix-1: RegExp("") матчит всё). */
+    pattern: invariantPatternSchema.optional(),
+    /** false — только явным действием владельца (UI/CRUD); агентом и через
+     *  диалог инвариант не отключаем (D-2). */
+    active: z.boolean().default(true),
+    createdAt: z.string().min(1),
+    updatedAt: z.string().min(1),
+  })
+  .refine((row) => !(row.pattern !== undefined && row.enforcement !== "hard"), {
+    message: "pattern допустим только при enforcement=hard",
+  });
+export type InvariantRow = z.infer<typeof InvariantRowSchema>;
+
+export const InvariantCreateSchema = z
+  .object({
+    text: z.string().min(1).max(200),
+    scope: InvariantScopeSchema,
+    enforcement: InvariantEnforcementSchema.default("soft"),
+    pattern: invariantPatternSchema.optional(),
+  })
+  .refine((v) => !(v.pattern !== undefined && v.enforcement !== "hard"), {
+    message: "pattern допустим только при enforcement=hard",
+  });
+export type InvariantCreate = z.infer<typeof InvariantCreateSchema>;
+
+/** PATCH: absent = keep; строка pattern = заменить, null = убрать.
+ *  Refine «pattern только при hard» — серверный (нужен текущий ряд). */
+export const InvariantPatchSchema = z.object({
+  text: z.string().min(1).max(200).optional(),
+  scope: InvariantScopeSchema.optional(),
+  enforcement: InvariantEnforcementSchema.optional(),
+  pattern: invariantPatternSchema.nullable().optional(),
+  active: z.boolean().optional(),
+});
+export type InvariantPatch = z.infer<typeof InvariantPatchSchema>;
+
+/** Agent-level invariant list (зеркало ProfileState; per-key safeParse). */
+export const InvariantStateSchema = z.object({
+  invariants: z.array(InvariantRowSchema).max(8).default([]),
+});
+export type InvariantState = z.infer<typeof InvariantStateSchema>;
 
 /** Request-size estimate split (heuristic; API usage stays the fact). */
 export const TokenBreakdownSchema = z.object({
@@ -344,6 +408,31 @@ export const AgentRunContextSchema = z.object({
       /** Fail-open проверка стадии; в done валидатор не зовётся — поля нет.
        *  level: ok — стадия подтверждена, warn — не подтверждена (fail-open),
        *  critical — нарушение инварианта (день 14). */
+      check: z
+        .object({
+          ok: z.boolean(),
+          level: z.enum(["ok", "warn", "critical"]).optional(),
+          note: z.string().max(200),
+        })
+        .optional(),
+    })
+    .nullable()
+    .optional(),
+  /** Day14: invariants frame — owner rules + inject evidence (null = пусто). */
+  invariants: z
+    .object({
+      checked: z
+        .array(
+          z.object({
+            n: z.number().int().min(1),
+            id: z.string().min(1),
+            scope: InvariantScopeSchema,
+            enforcement: InvariantEnforcementSchema,
+            text: z.string().max(200),
+          }),
+        )
+        .min(1),
+      inject: z.string(),
       check: z
         .object({
           ok: z.boolean(),

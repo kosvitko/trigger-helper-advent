@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day13</title>
+  <title>Trigger Helper — Агент · day14</title>
   <style>
     :root {
       color-scheme: light;
@@ -558,6 +558,19 @@
     .task-panel .task-actions button { font-size: 12px; padding: 2px 8px; }
     .task-panel .task-actions button:disabled { opacity: 0.45; cursor: default; }
     .task-panel textarea { resize: vertical; width: 100%; }
+    /* Day14: invariants panel — rows + create form (mirrors task/profile panels). */
+    .invariant-panel .inv-row { display: flex; gap: 4px; align-items: baseline; margin: 3px 0; }
+    .invariant-panel .inv-row .inv-n { color: #888; font-size: 11px; min-width: 34px; }
+    .invariant-panel .inv-row .inv-text { flex: 1; min-width: 0; }
+    .invariant-panel .inv-row.off .inv-text { text-decoration: line-through; opacity: 0.55; }
+    .invariant-panel .chip { font-size: 10px; padding: 0 4px; border: 1px solid #bbb; border-radius: 6px; white-space: nowrap; }
+    .invariant-panel .chip.hard { border-color: #b33333; color: #b33333; }
+    .invariant-panel .chip.soft { border-color: #c9862b; color: #c9862b; }
+    .invariant-panel .chip.task { border-color: var(--accent); color: var(--accent); }
+    .invariant-panel .inv-del { border: none; background: none; cursor: pointer; color: var(--error, #b33); }
+    .invariant-panel .inv-actions { display: flex; gap: 4px; margin-top: 4px; }
+    .invariant-panel .inv-actions button { font-size: 12px; padding: 2px 8px; }
+    .invariant-panel select { font-size: 11px; }
     .payload-details { margin-top: 2px; }
     .payload-details summary { cursor: pointer; user-select: none; }
     .payload-list { margin: 2px 0 0; padding: 0; list-style: none; }
@@ -716,7 +729,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day13</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day14</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -756,10 +769,11 @@
     <div class="main-row">
       <div class="messages" id="messages" aria-live="polite"></div>
       <aside class="side" aria-label="Диагностика">
+        <div class="ctx-panel invariant-panel" id="invariant-panel" hidden></div>
         <div class="ctx-panel task-panel" id="task-panel" hidden></div>
         <div class="ctx-panel profile-panel" id="profile-panel" hidden></div>
         <div class="side-empty">
-          Задача (day13) и профиль появятся после выбора инстанса; memory (day11) ·
+          Инварианты (day14), задача (day13) и профиль появятся после выбора инстанса; memory (day11) ·
           payload · day10 facts · branching — после первого запроса.
         </div>
         <div class="ctx-panel" id="payload-panel" hidden></div>
@@ -873,6 +887,10 @@
       taskInfo: null,
       taskInject: null,
       taskDirty: false,
+      /** Day14: invariant rows (agent-level) + live-run conflict evidence. */
+      invariants: [],
+      invariantsInfo: null,
+      invariantsInject: null,
       branch: { forked: false, activeBranchId: null },
       strategyLock: false,
       lastPayloadMessages: [],
@@ -919,6 +937,7 @@
       strategyLock: document.getElementById("strategy-lock"),
       payloadPanel: document.getElementById("payload-panel"),
       profilePanel: document.getElementById("profile-panel"),
+      invariantPanel: document.getElementById("invariant-panel"),
       taskPanel: document.getElementById("task-panel"),
       memoryPanel: document.getElementById("memory-panel"),
       factsPanel: document.getElementById("facts-panel"),
@@ -1257,6 +1276,7 @@
       renderTabs();
       await loadMessages();
       await loadTask();
+      await loadInvariants();
       const snap = {
         kind: "agent",
         instanceId: state.instanceId,
@@ -1536,16 +1556,30 @@
       const profInject = state.profileInject || null;
       const task = state.taskInfo || null;
       const taskInject = state.taskInject || null;
+      const inv = state.invariantsInfo || null;
+      const invInject = state.invariantsInject || null;
       const hasInj =
         (inj.long && inj.long.length) ||
         (inj.working && inj.working.length) ||
         (inj.short && inj.short.length);
-      if (!msgs.length && !hasInj && !prof && !task) {
+      if (!msgs.length && !hasInj && !prof && !task && !inv) {
         el.payloadPanel.hidden = true;
         el.payloadPanel.innerHTML = "";
         return;
       }
       let html = "";
+      if (inv) {
+        html +=
+          '<div class="memory-inject"><div><b class="badge task">Инварианты</b>: ' +
+          (invInject ? "блок ушёл в промпт" : "блок не отправлялся") +
+          "</div>" +
+          (inv.check
+            ? '<div>Валидатор: <span class="vstat ' + (inv.checkLevel || (inv.check.ok ? "ok" : "critical")) + '">' +
+              (inv.check.ok ? "✓" : "✕") + "</span>" +
+              (inv.check.note ? ' <span style="font-weight:400">· ' + truncatePayload(inv.check.note, 90) + "</span>" : "") + "</div>"
+            : "") +
+          "</div>";
+      }
       if (task) {
         html +=
           '<div class="memory-inject"><div><b class="badge task">Задача</b>: ' +
@@ -1948,6 +1982,120 @@
       );
     }
 
+    function invariantUrl(suffix) {
+      return (
+        "/api/instances/" +
+        encodeURIComponent(state.instanceId) +
+        "/agents/" +
+        encodeURIComponent(state.agentId) +
+        "/invariants" +
+        (suffix || "")
+      );
+    }
+
+    /** Day14: инварианты агента — seed приходит с первым GET (D-8). */
+    async function loadInvariants() {
+      if (!state.instanceId || !state.agentId) {
+        state.invariants = [];
+        renderInvariantPanel();
+        return;
+      }
+      try {
+        const data = await api(invariantUrl());
+        state.invariants = data.invariants || [];
+      } catch {
+        /* instance/agent may be gone — keep previous */
+      }
+      renderInvariantPanel();
+    }
+
+    function renderInvariantPanel() {
+      if (!state.instanceId || !state.agentId) {
+        el.invariantPanel.hidden = true;
+        el.invariantPanel.innerHTML = "";
+        return;
+      }
+      const rows = state.invariants || [];
+      const list = rows
+        .map(
+          (r, i) =>
+            '<div class="inv-row' + (r.active ? "" : " off") + '">' +
+            '<span class="inv-n">[INV-' + (i + 1) + ']</span>' +
+            '<span class="chip ' + r.enforcement + '">' + r.enforcement + "</span>" +
+            '<span class="chip' + (r.scope === "task" ? " task" : "") + '">' + r.scope + "</span>" +
+            '<span class="inv-text" title="' + escAttr(r.pattern ? "regex: " + r.pattern : "") + '">' + escAttr(r.text) + "</span>" +
+            '<label title="выключить — правило не действует"><input type="checkbox" data-inv-active="' + escAttr(r.id) + '"' + (r.active ? " checked" : "") + " /></label>" +
+            '<button type="button" class="inv-del" data-inv-del="' + escAttr(r.id) + '" title="Удалить инвариант">✕</button>' +
+            "</div>",
+        )
+        .join("");
+      el.invariantPanel.innerHTML =
+        '<span class="ctx-title">Инварианты (day14)</span>' +
+        (list || '<div class="inv-row"><span class="inv-text">— пусто: блок не уходит в промпт —</span></div>') +
+        '<div class="profile-fields">' +
+        '<label>Новое правило<input maxlength="200" id="inv-text" placeholder="Например: без медикаментов — только самомассаж" /></label>' +
+        '<div class="inv-actions">' +
+        '<select id="inv-scope"><option value="agent">agent (всегда)</option><option value="task">task (при задаче)</option></select>' +
+        '<select id="inv-enf"><option value="hard">hard</option><option value="soft" selected>soft</option></select>' +
+        '<input maxlength="120" id="inv-pattern" placeholder="regex входа (только hard), опц." style="flex:1;min-width:0" />' +
+        "</div>" +
+        '<div class="inv-actions"><button type="button" id="inv-add">+ инвариант</button></div>' +
+        "</div>";
+      el.invariantPanel.hidden = false;
+
+      el.invariantPanel.querySelector("#inv-add").addEventListener("click", () => {
+        createInvariant().catch((err) => setStatus(err.message, true));
+      });
+      el.invariantPanel.querySelectorAll("[data-inv-active]").forEach((box) => {
+        box.addEventListener("change", () => {
+          toggleInvariant(box.dataset.invActive, box.checked).catch((err) => {
+            setStatus(err.message, true);
+            loadInvariants();
+          });
+        });
+      });
+      el.invariantPanel.querySelectorAll("[data-inv-del]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          deleteInvariant(btn.dataset.invDel).catch((err) => setStatus(err.message, true));
+        });
+      });
+    }
+
+    async function createInvariant() {
+      if (!state.instanceId || !state.agentId) return;
+      const text = el.invariantPanel.querySelector("#inv-text").value.trim();
+      const scope = el.invariantPanel.querySelector("#inv-scope").value;
+      const enforcement = el.invariantPanel.querySelector("#inv-enf").value;
+      const pattern = el.invariantPanel.querySelector("#inv-pattern").value.trim();
+      if (!text) {
+        setStatus("текст инварианта не может быть пустым", true);
+        return;
+      }
+      const body = { text, scope, enforcement };
+      if (pattern) body.pattern = pattern;
+      const data = await api(invariantUrl(), {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      await loadInvariants();
+      setStatus("инвариант добавлен · " + data.invariant.enforcement + "/" + data.invariant.scope);
+    }
+
+    async function toggleInvariant(id, active) {
+      const data = await api(invariantUrl("/" + id), {
+        method: "PATCH",
+        body: JSON.stringify({ active }),
+      });
+      await loadInvariants();
+      setStatus("инвариант " + (data.invariant.active ? "включён" : "выключен — блок пересоберётся на следующем запросе"));
+    }
+
+    async function deleteInvariant(id) {
+      await api(invariantUrl("/" + id), { method: "DELETE" });
+      await loadInvariants();
+      setStatus("инвариант удалён");
+    }
+
     async function loadTask() {
       if (!state.instanceId || !state.agentId) {
         state.task = null;
@@ -2099,12 +2247,38 @@
       setStatus("задача создана · planning · шаг 1/" + data.task.plan.length);
     }
 
-    /** Мутации возвращают {task} — панель перерисовывается из ответа (PASS «таймлайн»). */
+    /** Мутации возвращают {task} — панель перерисовывается из ответа (PASS «таймлайн»).
+     *  Day14 D-6: goto→done требует согласия пользователя (confirm → consent:true);
+     *  на 409 consentRequired (stale UI) — confirm + retry. */
     async function transitionTask(command) {
-      const data = await api(taskUrl("/transition"), {
-        method: "POST",
-        body: JSON.stringify(command),
-      });
+      if (command.action === "goto" && command.to === "done" && !command.consent) {
+        const ok = window.confirm(
+          "Завершить задачу? Инвариант согласия: переход подтверждает пользователь.",
+        );
+        if (!ok) {
+          setStatus("переход в done отменён — без подтверждения сервер вернёт 409");
+          return;
+        }
+        command = { ...command, consent: true };
+      }
+      let data;
+      try {
+        data = await api(taskUrl("/transition"), {
+          method: "POST",
+          body: JSON.stringify(command),
+        });
+      } catch (err) {
+        if (err.status === 409 && err.message && err.message.includes("подтверждения")) {
+          const ok = window.confirm("Сервер требует согласия на переход в done. Подтвердить?");
+          if (!ok) throw err;
+          data = await api(taskUrl("/transition"), {
+            method: "POST",
+            body: JSON.stringify({ ...command, consent: true }),
+          });
+        } else {
+          throw err;
+        }
+      }
       state.task = data.task;
       state.taskDirty = false;
       renderTaskPanel();
@@ -2149,6 +2323,12 @@
       renderTaskPanel();
       renderPayloadPanel();
       setStatus("задача удалена — можно начать новую");
+    }
+
+    /** Day14: сброс инвариант-состояния при смене контекста. */
+    function resetInvariantsEvidence() {
+      state.invariantsInfo = null;
+      state.invariantsInject = null;
     }
 
     function renderFactsPanel() {
@@ -2345,6 +2525,7 @@
       await loadMessages();
       await loadProfiles();
       await loadTask();
+      await loadInvariants();
       setStatus("ok · F5 hydrate");
     }
 
@@ -2409,6 +2590,7 @@
       await loadMessages();
       await loadProfiles();
       await loadTask();
+      await loadInvariants();
     }
 
     async function addAgent() {
@@ -2424,6 +2606,7 @@
       renderTabs();
       await loadMessages();
       await loadTask();
+      await loadInvariants();
     }
 
     async function spawnAgents() {
@@ -2657,6 +2840,20 @@
           } else {
             state.taskInfo = null;
             state.taskInject = null;
+          }
+          // Day14: invariants conflict evidence for the payload panel.
+          if (data.context.invariants) {
+            const ichk = data.context.invariants.check || null;
+            state.invariantsInfo = {
+              messageId: data.message?.id,
+              count: data.context.invariants.checked?.length || 0,
+              check: ichk,
+              checkLevel: ichk ? ichk.level || (ichk.ok ? "ok" : "critical") : null,
+            };
+            state.invariantsInject = data.context.invariants.inject || null;
+          } else {
+            state.invariantsInfo = null;
+            state.invariantsInject = null;
           }
         }
         await loadUsage();
@@ -2900,11 +3097,13 @@
       state.profileInject = null;
       state.taskInfo = null;
       state.taskInject = null;
+      resetInvariantsEvidence();
       state.strategyLock = false;
       renderTabs();
       await loadMessages();
       await loadProfiles();
       await loadTask();
+      await loadInvariants();
     });
 
     el.agentTabs.addEventListener("click", async (e) => {
@@ -2924,10 +3123,12 @@
       state.lastPayloadMessages = [];
       state.taskInfo = null;
       state.taskInject = null;
+      resetInvariantsEvidence();
       state.strategyLock = false;
       renderTabs();
       await loadMessages();
       await loadTask();
+      await loadInvariants();
     });
 
     el.undoToastBtn.addEventListener("click", () => {

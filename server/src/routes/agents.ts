@@ -16,6 +16,8 @@ import {
   TaskCreateSchema,
   TaskPatchSchema,
   TaskTransitionSchema,
+  InvariantCreateSchema,
+  InvariantPatchSchema,
   UserProfileCreateSchema,
   UserProfilePatchSchema,
   type AgentContextStrategy,
@@ -34,6 +36,7 @@ import type { MemoryStateStore } from "../services/agent/memory-state.js";
 import type { ProfileStateStore } from "../services/agent/profile-state.js";
 import { ALLOWED_TRANSITIONS, validateTaskReply } from "../services/agent/task-state.js";
 import type { TaskStateStore } from "../services/agent/task-state.js";
+import type { InvariantStateStore } from "../services/agent/invariant-state.js";
 import {
   AGENT_HISTORY_CAPS,
   AgentPolicyError,
@@ -70,6 +73,7 @@ type AgentRouteDeps = {
   memoryState: MemoryStateStore;
   profileState: ProfileStateStore;
   taskStateStore: TaskStateStore;
+  invariantStore: InvariantStateStore;
 };
 
 const CONTEXT_STRATEGIES = ["sliding", "facts", "branching"] as const;
@@ -153,6 +157,7 @@ export async function registerAgentRoutes(
       deps.day10State.clearAgent(id, agentId);
       deps.memoryState.clearAgent(id, agentId);
       deps.taskStateStore.clearAgent(id, agentId);
+      deps.invariantStore.clearAgent(id, agentId);
       return { agent, messages };
     } catch (error) {
       return sendRegistryError(reply, error);
@@ -201,6 +206,7 @@ export async function registerAgentRoutes(
         deps.day10State.clearAgent(id, agent.id);
         deps.memoryState.clearAgent(id, agent.id);
         deps.taskStateStore.clearAgent(id, agent.id);
+        deps.invariantStore.clearAgent(id, agent.id);
       }
       // Day12: profiles are instance-level — one cleanup, outside the agent loop.
       deps.profileState.clearInstance(id);
@@ -632,6 +638,12 @@ export async function registerAgentRoutes(
       const activeProfile = deps.profileState.getActiveProfile(instanceId);
       // Day13: per-agent task FSM — resolved here, injected into every run.
       const taskState = deps.taskStateStore.get(instanceId, agentId);
+      // Day14: active invariants (merged agent+task, D-5) — resolved server-side.
+      const invariants = deps.invariantStore.getActive(
+        instanceId,
+        agentId,
+        taskState ?? null,
+      );
 
       const effectiveHistoryMode =
         strategy === "sliding" || strategy === "facts"
@@ -645,6 +657,7 @@ export async function registerAgentRoutes(
         memoryFacts: memorySlice.facts,
         activeProfile,
         taskState,
+        invariants,
         ...(strategy === "facts" ? { facts: factsForRun } : {}),
       });
 
@@ -653,6 +666,17 @@ export async function registerAgentRoutes(
         taskState && taskState.stage !== "done"
           ? validateTaskReply(taskState, result.reply)
           : undefined;
+      // Day14 D-7a: fail-open invariant check — independent of the task
+      // (hard pattern rows vs user input); emitted only when pattern rows exist.
+      const hasPatternRows = invariants.some(
+        (row) => row.enforcement === "hard" && row.pattern,
+      );
+      const invariantCheck = hasPatternRows
+        ? validateTaskReply(taskState ?? null, result.reply, {
+            invariants,
+            input,
+          })
+        : undefined;
 
       const userMsg = deps.threads.createMessage({
         role: "user",
@@ -717,6 +741,20 @@ export async function registerAgentRoutes(
               paused: taskState.paused,
               inject: result.taskInject?.inject ?? null,
               ...(taskCheck ? { check: taskCheck } : {}),
+            }
+          : null,
+        // Day14: explicit null (empty list); check = invariant conflict only.
+        invariants: invariants.length
+          ? {
+              checked: invariants.map((row, i) => ({
+                n: i + 1,
+                id: row.id,
+                scope: row.scope,
+                enforcement: row.enforcement,
+                text: row.text,
+              })),
+              inject: result.invariantsInject?.inject ?? "",
+              ...(invariantCheck ? { check: invariantCheck } : {}),
             }
           : null,
         memory: {
@@ -1089,6 +1127,7 @@ export async function registerAgentRoutes(
         from: result.from,
         ...(result.to !== undefined ? { to: result.to } : {}),
         ...(result.allowed ? { allowed: result.allowed } : {}),
+        ...(result.consentRequired ? { consentRequired: true } : {}),
         message: result.message,
       });
     },
@@ -1140,6 +1179,154 @@ export async function registerAgentRoutes(
       const removed = deps.taskStateStore.remove(id, agentId);
       if (!removed) {
         return reply.status(404).send({ error: "Task not found" });
+      }
+      return { removed: true };
+    },
+  );
+
+  // --- Day14 invariant endpoints (owner rules, agent-level) ---
+
+  /** GET also seeds the six owner rules once for a fresh agent (D-8);
+   *  an emptied record stays empty — the seed never resurrects deletions. */
+  app.get(
+    "/api/instances/:id/agents/:agentId/invariants",
+    async (request, reply) => {
+      const { id, agentId } = request.params as { id: string; agentId: string };
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      return deps.invariantStore.ensureSeed(id, agentId);
+    },
+  );
+
+  /** RegExp guard (D-9): syntactically invalid or empty/blank source → 400
+   *  (05 Fix-1: RegExp("") matches everything → phantom criticals). */
+  function compilePatternGuard(source: string): string | null {
+    if (source.trim() === "") return "pattern не может быть пустым";
+    try {
+      new RegExp(source);
+      return null;
+    } catch {
+      return "pattern — невалидное регулярное выражение";
+    }
+  }
+
+  app.post(
+    "/api/instances/:id/agents/:agentId/invariants",
+    async (request, reply) => {
+      const { id, agentId } = request.params as { id: string; agentId: string };
+      const parsed = InvariantCreateSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      if (parsed.data.pattern !== undefined) {
+        const guard = compilePatternGuard(parsed.data.pattern);
+        if (guard) {
+          return reply.status(400).send({ error: guard });
+        }
+      }
+      const created = deps.invariantStore.create(id, agentId, parsed.data);
+      if (created === "cap") {
+        return reply.status(409).send({
+          error: "Invariant cap reached",
+          cap: 8,
+          message: "Инвариантов максимум 8 — удалите лишний",
+        });
+      }
+      return reply.status(201).send({ invariant: created });
+    },
+  );
+
+  app.patch(
+    "/api/instances/:id/agents/:agentId/invariants/:invariantId",
+    async (request, reply) => {
+      const { id, agentId, invariantId } = request.params as {
+        id: string;
+        agentId: string;
+        invariantId: string;
+      };
+      const parsed = InvariantPatchSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Invalid request body",
+          details: parsed.error.flatten(),
+        });
+      }
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      // D-9 (04 Fix-3): read the current row before update — pattern/hard
+      // consistency needs the merged result, not the patch alone.
+      const current = deps.invariantStore
+        .get(id, agentId)
+        .invariants.find((row) => row.id === invariantId);
+      if (!current) {
+        return reply.status(404).send({ error: "Invariant not found" });
+      }
+      const nextEnforcement = parsed.data.enforcement ?? current.enforcement;
+      const nextPattern =
+        parsed.data.pattern === undefined ? current.pattern : parsed.data.pattern;
+      if (parsed.data.pattern !== undefined && parsed.data.pattern !== null) {
+        const guard = compilePatternGuard(parsed.data.pattern);
+        if (guard) {
+          return reply.status(400).send({ error: guard });
+        }
+      }
+      if (nextEnforcement === "soft" && nextPattern) {
+        return reply.status(400).send({
+          error: "Invariant would become soft with a pattern",
+          message: "Сначала уберите pattern — он допустим только у hard-инвариантов",
+        });
+      }
+      const updated = deps.invariantStore.update(
+        id,
+        agentId,
+        invariantId,
+        parsed.data,
+      );
+      if (!updated) {
+        return reply.status(404).send({ error: "Invariant not found" });
+      }
+      return { invariant: updated };
+    },
+  );
+
+  app.delete(
+    "/api/instances/:id/agents/:agentId/invariants/:invariantId",
+    async (request, reply) => {
+      const { id, agentId, invariantId } = request.params as {
+        id: string;
+        agentId: string;
+        invariantId: string;
+      };
+      const instance = deps.registry.get(id);
+      if (!instance) {
+        return reply.status(404).send({ error: "Instance not found" });
+      }
+      if (!instance.agents.some((a) => a.id === agentId)) {
+        return reply.status(404).send({ error: "Agent not found" });
+      }
+      const removed = deps.invariantStore.remove(id, agentId, invariantId);
+      if (!removed) {
+        return reply.status(404).send({ error: "Invariant not found" });
       }
       return { removed: true };
     },

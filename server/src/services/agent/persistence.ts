@@ -7,6 +7,7 @@ import {
   FactRowSchema,
   ProfileStateSchema,
   TaskStateSchema,
+  InvariantStateSchema,
   type AgentContextStrategy,
   type AgentMessage,
   type FactsMap,
@@ -14,6 +15,7 @@ import {
   type AgentMemorySlice,
   type ProfileState,
   type TaskState,
+  type InvariantState,
 } from "@trigger-helper/shared";
 import { z } from "zod";
 
@@ -51,6 +53,8 @@ export type AgentStateSnapshot = {
   profiles?: Record<string, ProfileState>;
   /** Day13 task FSM states — key `${instanceId}|${agentId}`. */
   taskStates?: Record<string, TaskState>;
+  /** Day14 invariant lists — key `${instanceId}|${agentId}`. */
+  invariantStates?: Record<string, InvariantState>;
 };
 
 const BranchMetaSchema = z.object({
@@ -83,6 +87,8 @@ const SnapshotSchema = z.object({
   profiles: z.record(z.string(), z.unknown()).catch({}),
   /** Day13: same per-key pattern as profiles — corrupt record drops alone. */
   taskStates: z.record(z.string(), z.unknown()).catch({}),
+  /** Day14: same per-key pattern — corrupt invariant record drops alone. */
+  invariantStates: z.record(z.string(), z.unknown()).catch({}),
 });
 
 const SAVE_DEBOUNCE_MS = 150;
@@ -101,6 +107,7 @@ function emptySnapshot(): AgentStateSnapshot {
     memory: {},
     profiles: {},
     taskStates: {},
+    invariantStates: {},
   };
 }
 
@@ -179,6 +186,18 @@ export class AgentStateStore {
           );
         }
       }
+      // Day14: same per-key pattern for invariant lists.
+      const invariantStates: Record<string, InvariantState> = {};
+      for (const [key, raw] of Object.entries(parsed.invariantStates)) {
+        const checked = InvariantStateSchema.safeParse(raw);
+        if (checked.success) {
+          invariantStates[key] = checked.data;
+        } else {
+          console.warn(
+            `agent-state: invariantStates[${key}] повреждена — запись пропущена`,
+          );
+        }
+      }
       return {
         version: AGENT_STATE_VERSION,
         saved_at: parsed.saved_at ?? new Date(0).toISOString(),
@@ -192,6 +211,7 @@ export class AgentStateStore {
         memory: parsed.memory as Record<string, AgentMemorySlice>,
         profiles,
         taskStates,
+        invariantStates,
       };
     } catch (error) {
       console.error(
