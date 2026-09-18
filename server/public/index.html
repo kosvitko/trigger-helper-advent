@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day14</title>
+  <title>Trigger Helper — Агент · day15</title>
   <style>
     :root {
       color-scheme: light;
@@ -557,6 +557,25 @@
     .task-panel .task-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
     .task-panel .task-actions button { font-size: 12px; padding: 2px 8px; }
     .task-panel .task-actions button:disabled { opacity: 0.45; cursor: default; }
+    /* Day15′: русские подписи-лейблы + фолбэк, если meta не пришла. */
+    .task-panel .stage-label { font-size: 10px; display: block; text-align: center; margin-top: 1px; }
+    .task-panel .stage-arrow { color: var(--muted, #999); font-size: 11px; align-self: center; }
+    .task-panel .task-step-hint { font-size: 11px; color: var(--muted, #888); margin-top: 3px; }
+    .task-panel .task-owner-note { font-size: 10px; color: var(--muted, #999); letter-spacing: 0.2px; }
+    /* Day15′: техрежим — сворачиваемые панели организатора. */
+    details.techmode { border: 1px solid var(--border, #e3e3e3); border-radius: 6px; padding: 4px 8px; margin: 4px 0; }
+    details.techmode > summary { cursor: pointer; font-weight: 600; font-size: 12px; color: var(--text); list-style: none; }
+    details.techmode > summary::before { content: "▸ "; color: var(--muted, #999); }
+    details.techmode[open] > summary::before { content: "▾ "; }
+    .task-panel details.demo-redpath { margin-top: 4px; }
+    .task-panel details.demo-redpath > summary { cursor: pointer; font-size: 11px; color: var(--muted, #888); }
+    /* Day15 D-4: red path — muted forbidden-transition button + inline refusal. */
+    .task-panel .task-actions button.task-forbidden { opacity: 0.5; border-style: dashed; }
+    .task-panel .task-refusal {
+      margin-top: 3px; font-size: 11px; color: #b33333;
+      background: rgba(179, 51, 51, 0.07); border: 1px solid rgba(179, 51, 51, 0.35);
+      border-radius: 4px; padding: 2px 6px;
+    }
     .task-panel textarea { resize: vertical; width: 100%; }
     /* Day14: invariants panel — rows + create form (mirrors task/profile panels). */
     .invariant-panel .inv-row { display: flex; gap: 4px; align-items: baseline; margin: 3px 0; }
@@ -729,7 +748,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day14</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day15</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -773,8 +792,8 @@
         <div class="ctx-panel task-panel" id="task-panel" hidden></div>
         <div class="ctx-panel profile-panel" id="profile-panel" hidden></div>
         <div class="side-empty">
-          Инварианты (day14), задача (day13) и профиль появятся после выбора инстанса; memory (day11) ·
-          payload · day10 facts · branching — после первого запроса.
+          Проработка и «Правила безопасности» появятся после выбора инстанса; тех. панели (память ·
+          payload · facts · ветвление) — после первого запроса.
         </div>
         <div class="ctx-panel" id="payload-panel" hidden></div>
         <div class="ctx-panel" id="memory-panel" hidden></div>
@@ -884,9 +903,14 @@
       /** Day13: active task FSM state + transition map meta. */
       task: null,
       taskTransitions: null,
+      /** Day15′: русские имена этапов из meta — один источник с сервером. */
+      stageLabels: null,
+      stageGotoLabels: null,
       taskInfo: null,
       taskInject: null,
       taskDirty: false,
+      /** Day15 D-4: last rejected forbidden transition (inline refusal). */
+      taskRefusal: null,
       /** Day14: invariant rows (agent-level) + live-run conflict evidence. */
       invariants: [],
       invariantsInfo: null,
@@ -1001,6 +1025,7 @@
           const msg = data.message || data.error || res.statusText;
           const err = new Error(msg);
           err.status = res.status;
+          err.body = data;
           throw err;
         }
         return data;
@@ -1402,7 +1427,7 @@
                 ? '<span class="badge profile">' + state.profileInfo.label + "</span>"
                 : ""}
               ${state.taskInfo && state.taskInfo.messageId === m.id
-                ? '<span class="badge task check-' + (state.taskInfo.checkLevel || "warn") + '">задача: ' + state.taskInfo.stage +
+                ? '<span class="badge task check-' + (state.taskInfo.checkLevel || "warn") + '">проработка: ' + stageLabel(state.taskInfo.stage) +
                   (state.taskInfo.paused ? " ⏸" : "") +
                   (state.taskInfo.checkMark || "") + "</span>"
                 : ""}
@@ -1576,18 +1601,19 @@
           (inv.check
             ? '<div>Валидатор: <span class="vstat ' + (inv.checkLevel || (inv.check.ok ? "ok" : "critical")) + '">' +
               (inv.check.ok ? "✓" : "✕") + "</span>" +
-              (inv.check.note ? ' <span style="font-weight:400">· ' + truncatePayload(inv.check.note, 90) + "</span>" : "") + "</div>"
+              (inv.check.note ? ' <span style="font-weight:400">· ' + truncatePayload(inv.check.note, 90) + "</span>" : "") +
+              (inv.check.retried ? ' <span style="font-weight:400">· retry</span>' : "") + "</div>"
             : "") +
           "</div>";
       }
       if (task) {
         html +=
-          '<div class="memory-inject"><div><b class="badge task">Задача</b>: ' +
-          task.stage + " · шаг " + task.step + "/" + task.total +
+          '<div class="memory-inject"><div><b class="badge task">Проработка</b>: ' +
+          stageLabel(task.stage) + " · шаг " + task.step + "/" + task.total +
           (task.paused ? " (⏸)" : "") +
           (taskInject
             ? " — " + truncatePayload(taskInject, 90)
-            : " — блок не отправлялся (done)") +
+            : " — блок не отправлялся (Готово)") +
           "</div>" +
           (task.checkLevel
             ? '<div>Валидатор: <span class="vstat ' + task.checkLevel + '">' +
@@ -1598,7 +1624,8 @@
                   : "✓ стадия соблюдена") + "</span>" +
               (task.check && task.check.note
                 ? ' <span style="font-weight:400">· ' + truncatePayload(task.check.note, 70) + "</span>"
-                : "") + "</div>"
+                : "") +
+              (task.check && task.check.retried ? ' <span style="font-weight:400">· retry</span>' : "") + "</div>"
             : "") +
           "</div>";
       }
@@ -1855,7 +1882,8 @@
           "</div>"
         : '<div class="profile-fields" style="color:var(--muted)">Активного профиля нет — ответам день12-блок не добавляется.</div>';
       el.profilePanel.innerHTML =
-        '<span class="ctx-title">Профиль (day12)</span>' +
+        '<details class="techmode"><summary>Профиль</summary>' +
+        '<span class="ctx-title">Профиль</span>' +
         '<div class="profile-row">' +
         '<select id="profile-select"' + (state.profileDirty ? " disabled" : "") + ">" +
         options +
@@ -1864,7 +1892,8 @@
         '<button type="button" class="profile-del" id="profile-del" title="Удалить активный профиль"' +
         (cur ? "" : " disabled") + ">✕</button>" +
         "</div>" +
-        fields;
+        fields +
+        "</details>";
       el.profilePanel.hidden = false;
 
       el.profilePanel.querySelector("#profile-select").addEventListener("change", (e) => {
@@ -2030,7 +2059,9 @@
         )
         .join("");
       el.invariantPanel.innerHTML =
-        '<span class="ctx-title">Инварианты (day14)</span>' +
+        '<details class="techmode">' +
+        '<summary>Правила безопасности · ' + rows.length + '</summary>' +
+        '<span class="ctx-title">Инварианты</span>' +
         (list || '<div class="inv-row"><span class="inv-text">— пусто: блок не уходит в промпт —</span></div>') +
         '<div class="profile-fields">' +
         '<label>Новое правило<input maxlength="200" id="inv-text" placeholder="Например: без медикаментов — только самомассаж" /></label>' +
@@ -2040,7 +2071,8 @@
         '<input maxlength="120" id="inv-pattern" placeholder="regex входа (только hard), опц." style="flex:1;min-width:0" />' +
         "</div>" +
         '<div class="inv-actions"><button type="button" id="inv-add">+ инвариант</button></div>' +
-        "</div>";
+        "</div>" +
+        "</details>";
       el.invariantPanel.hidden = false;
 
       el.invariantPanel.querySelector("#inv-add").addEventListener("click", () => {
@@ -2124,11 +2156,11 @@
       const task = state.task;
       if (!task) {
         el.taskPanel.innerHTML =
-          '<span class="ctx-title">Задача (day13)</span>' +
+          '<span class="ctx-title">Проработка</span>' +
           '<div class="profile-fields">' +
           '<label>Название<input maxlength="120" id="task-title" placeholder="Например: проработка точки «шея»" /></label>' +
-          '<label>План (строка = шаг, ≤5)<textarea rows="3" id="task-plan" placeholder="Найти причину\\nТехника 5 мин\\nОценить эффект"></textarea></label>' +
-          '<div class="task-actions"><button type="button" id="task-create">+ задача</button></div>' +
+          '<label>План (строка = шаг, ≤5)<textarea rows="3" id="task-plan" placeholder="По шагам, например:\\nнайти причину дискомфорта\\nразминка трапеции 5 минут\\nоценить эффект"></textarea></label>' +
+          '<div class="task-actions"><button type="button" id="task-create">+ проработка</button></div>' +
           "</div>";
         el.taskPanel.hidden = false;
         el.taskPanel.querySelector("#task-create").addEventListener("click", () => {
@@ -2138,24 +2170,49 @@
       }
 
       const stages = ["planning", "execution", "validation", "done"];
+      // Day15′ (Pick B): русские имена из meta (один источник с LLM-инжектом).
+      const labelOf = (s) => ((state.stageLabels && state.stageLabels[s]) || s);
+      const gotoLabelOf = (s) => ((state.stageGotoLabels && state.stageGotoLabels[s]) || "→ " + s);
+      // Степпер: позиция этапа — пройденные залиты, текущий акцент, связи —▸.
+      const stageIdx = stages.indexOf(task.stage);
       const chips = stages
         .map(
-          (s) =>
+          (s, i) =>
             '<span class="stage-chip' +
             (s === task.stage ? " active" : "") +
-            (s === "done" ? " done" : "") +
-            '">' +
-            s +
+            (i < stageIdx || s === "done" ? " done" : "") +
+            '" title="' + s + '">' +
+            labelOf(s) +
             "</span>",
         )
-        .join("");
+        .join('<span class="stage-arrow">—▸</span>');
       const allowed = (state.taskTransitions && state.taskTransitions[task.stage]) || [];
       const gotoBtns = allowed
         .map(
           (s) =>
-            '<button type="button" data-goto="' + s + '">→ ' + s + "</button>",
+            '<button type="button" data-goto="' + s + '" title="→ ' + s + '">' +
+            gotoLabelOf(s) + "</button>",
         )
         .join("");
+      // Day15 D-4 → Day15′: красный путь — демо-кнопка в свёрнутом блоке.
+      const forbiddenTo =
+        task.stage !== "done"
+          ? stages.find((s) => s === "done" && !allowed.includes(s)) ||
+            stages.find((s) => s !== task.stage && !allowed.includes(s))
+          : null;
+      const forbiddenBlock = forbiddenTo
+        ? '<details class="demo-redpath"><summary>демо: проверить запрет перехода</summary>' +
+          '<button type="button" class="task-forbidden" data-forbidden-goto="' +
+          forbiddenTo + '" title="Запрещённый переход — сервер вернёт 409">✕ → ' +
+          labelOf(forbiddenTo) + " сразу</button></details>"
+        : "";
+      // Day15′: детерминированная подсказка «зачем сейчас» от стадии.
+      const stepHints = {
+        planning: "План согласован? — «К практике»",
+        execution: "Шаг сделан — «Шаг сделан»; все шаги — «Проверить эффект»",
+        validation: "Эффект оценён — «Завершить проработку» или «Сделать ещё раз»",
+        done: "Проработка завершена — можно создать новую",
+      };
       const planLines = task.plan
         .map((p, i) => {
           const mark = i < task.step - 1 ? "✓" : i === task.step - 1 ? "→" : "☐";
@@ -2164,28 +2221,49 @@
         .join("");
       const lastStep = task.step >= task.plan.length;
       el.taskPanel.innerHTML =
-        '<span class="ctx-title">Задача (day13)</span>' +
+        '<span class="ctx-title">Проработка</span>' +
         '<div class="task-stages">' + chips + (task.paused ? ' <span class="stage-chip active">⏸ пауза</span>' : "") + "</div>" +
         '<div class="profile-fields">' +
         '<label>Название<input maxlength="120" data-tk="title" value="' + escAttr(task.title) + '" /></label>' +
         "<div><b>Шаг:</b> " + task.step + "/" + task.plan.length +
-        ' · <b>сейчас:</b> <input maxlength="200" data-tk="expectedAction" value="' + escAttr(task.expectedAction) + '" style="width:70%" /></div>' +
+        ' · <b>Сейчас</b> <input maxlength="200" data-tk="expectedAction" title="Что делаем на этом шаге — ассистент это учитывает" value="' + escAttr(task.expectedAction) + '" style="width:70%" /></div>' +
         '<ul class="task-plan">' + planLines + "</ul>" +
-        '<label>Сделано (резюме)<input maxlength="200" data-tk="lastStageNote" value="' + escAttr(task.lastStageNote) + '" /></label>' +
+        '<label>Что уже сделали<input maxlength="200" data-tk="lastStageNote" placeholder="Одной строкой: например, нашёл напряжённую трапецию" /></label>' +
         "</div>" +
+        '<div class="task-owner-note">Что дальше — решаете вы · ассистент сам перейти не может</div>' +
         '<div class="task-actions">' +
         gotoBtns +
         '<button type="button" id="task-next" data-goto-action="next_step"' +
-        (task.stage === "execution" && !lastStep ? "" : " disabled") + '>✓ шаг</button>' +
-        '<button type="button" id="task-pause"' + (task.paused || task.stage === "done" ? " disabled" : "") + ">⏸</button>" +
-        '<button type="button" id="task-resume"' + (task.paused ? "" : " disabled") + ">▶</button>" +
-        '<button type="button" id="task-del" title="Удалить задачу">✕</button>' +
-        "</div>";
+        (task.stage === "execution" && !lastStep ? "" : " disabled") + '>Шаг сделан</button>' +
+        '<button type="button" id="task-pause" title="Приостановить проработку — прогресс сохранится"' + (task.paused || task.stage === "done" ? " disabled" : "") + ">⏸</button>" +
+        '<button type="button" id="task-resume" title="Продолжить проработку"' + (task.paused ? "" : " disabled") + ">▶</button>" +
+        '<button type="button" id="task-del" title="Удалить проработку">✕</button>' +
+        "</div>" +
+        '<div class="task-step-hint">' + (stepHints[task.stage] || "") + "</div>" +
+        forbiddenBlock +
+        (state.taskRefusal
+          ? '<div class="task-refusal">✕ Из «' + escAttr(labelOf(state.taskRefusal.from)) +
+            "» в «" + escAttr(labelOf(state.taskRefusal.to)) +
+            "» нельзя — сначала: " +
+            escAttr(
+              state.taskRefusal.allowed.length
+                ? state.taskRefusal.allowed.map(labelOf).join(" → ")
+                : "—",
+            ) +
+            "</div>"
+          : "");
       el.taskPanel.hidden = false;
 
       el.taskPanel.querySelectorAll("[data-goto]").forEach((btn) => {
         btn.addEventListener("click", () => {
           transitionTask({ action: "goto", to: btn.dataset.goto }).catch((err) =>
+            setStatus(err.message, true),
+          );
+        });
+      });
+      el.taskPanel.querySelectorAll("[data-forbidden-goto]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          attemptForbiddenTransition(btn.dataset.forbiddenGoto).catch((err) =>
             setStatus(err.message, true),
           );
         });
@@ -2222,6 +2300,11 @@
       });
     }
 
+    /** Day15′: русское имя этапа (meta — один источник с LLM-инжектом). */
+    function stageLabel(s) {
+      return (state.stageLabels && state.stageLabels[s]) || s;
+    }
+
     async function createTask() {
       if (!state.instanceId || !state.agentId) return;
       const title = el.taskPanel.querySelector("#task-title").value.trim();
@@ -2243,8 +2326,9 @@
       });
       state.task = data.task;
       state.taskDirty = false;
+      state.taskRefusal = null;
       renderTaskPanel();
-      setStatus("задача создана · planning · шаг 1/" + data.task.plan.length);
+      setStatus("Проработка создана · " + stageLabel("planning") + " · шаг 1/" + data.task.plan.length);
     }
 
     /** Мутации возвращают {task} — панель перерисовывается из ответа (PASS «таймлайн»).
@@ -2252,11 +2336,9 @@
      *  на 409 consentRequired (stale UI) — confirm + retry. */
     async function transitionTask(command) {
       if (command.action === "goto" && command.to === "done" && !command.consent) {
-        const ok = window.confirm(
-          "Завершить задачу? Инвариант согласия: переход подтверждает пользователь.",
-        );
+        const ok = window.confirm("Завершить проработку? Зафиксируем результат.");
         if (!ok) {
-          setStatus("переход в done отменён — без подтверждения сервер вернёт 409");
+          setStatus("Завершение отменено — без подтверждения сервер вернёт 409");
           return;
         }
         command = { ...command, consent: true };
@@ -2269,7 +2351,7 @@
         });
       } catch (err) {
         if (err.status === 409 && err.message && err.message.includes("подтверждения")) {
-          const ok = window.confirm("Сервер требует согласия на переход в done. Подтвердить?");
+          const ok = window.confirm("Сервер просит подтверждение завершения. Зафиксировать результат?");
           if (!ok) throw err;
           data = await api(taskUrl("/transition"), {
             method: "POST",
@@ -2281,12 +2363,44 @@
       }
       state.task = data.task;
       state.taskDirty = false;
+      state.taskRefusal = null;
       renderTaskPanel();
       setStatus(
-        "задача → " + data.task.stage +
+        "Проработка: " + stageLabel(data.task.stage) +
           (data.task.paused ? " (⏸)" : "") +
           " · шаг " + data.task.step + "/" + data.task.plan.length,
       );
+    }
+
+    /** Day15 D-4: красный путь — попытка запрещённого перехода. Прямой POST
+     *  без confirm/retry-веток day14 (те живут в transitionTask); 409 →
+     *  инлайн-отказ в панели задачи из каноничного {from, to, allowed}. */
+    async function attemptForbiddenTransition(to) {
+      if (!state.instanceId || !state.agentId) return;
+      try {
+        const data = await api(taskUrl("/transition"), {
+          method: "POST",
+          body: JSON.stringify({ action: "goto", to }),
+        });
+        state.taskRefusal = null;
+        state.task = data.task;
+        state.taskDirty = false;
+        renderTaskPanel();
+        setStatus("Проработка: " + stageLabel(data.task.stage));
+      } catch (err) {
+        if (err.status === 409 && err.body) {
+          state.taskRefusal = {
+            from: err.body.from || (state.task && state.task.stage) || "?",
+            to: err.body.to || to,
+            allowed: err.body.allowed || [],
+            message: err.body.message || "",
+          };
+          renderTaskPanel();
+          setStatus(err.message, true);
+        } else {
+          throw err;
+        }
+      }
     }
 
     async function patchTaskField(field, rawValue) {
@@ -2311,13 +2425,14 @@
       state.task = data.task;
       state.taskDirty = false;
       renderTaskPanel();
-      setStatus("задача сохранена · " + data.task.stage);
+      setStatus("Сохранено · " + stageLabel(data.task.stage));
     }
 
     async function deleteTask() {
       if (!state.instanceId || !state.agentId) return;
       await api(taskUrl(), { method: "DELETE" });
       state.task = null;
+      state.taskRefusal = null;
       state.taskInfo = null;
       state.taskInject = null;
       renderTaskPanel();
@@ -2505,6 +2620,8 @@
       state.autoCompressDefault = agentsMeta.autoCompress?.defaultEvery ?? 10;
       /** Day13: canonical transition map for the task panel buttons. */
       state.taskTransitions = agentsMeta.taskTransitions || null;
+      state.stageLabels = agentsMeta.stageLabels || null;
+      state.stageGotoLabels = agentsMeta.stageGotoLabels || null;
       if (el.compressEvery) el.compressEvery.placeholder = state.autoCompressDefault;
       fillPresetPick();
       state.instances = instData.instances || [];

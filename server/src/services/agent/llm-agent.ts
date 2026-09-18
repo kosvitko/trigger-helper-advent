@@ -22,6 +22,10 @@ import { contextLimitForModel } from "../model-cost-tier.js";
 import { costRubFromUsage } from "../pricing.js";
 import { heuristicSuggestedLayer } from "./memory-state.js";
 import { buildSystemPrompt } from "./presets.js";
+// Day15 D-1: карта переходов генерируется из канона task-state (источник
+// истины один), в промпт не дублируется руками. Day15′ (260919): с русскими
+// именами кнопок — фраза ассистента совпадает с кнопкой в UI.
+import { ALLOWED_TRANSITIONS, STAGE_GOTO_LABELS } from "./task-state.js";
 import {
   estimateMessagesBreakdown,
   estimateTokens,
@@ -97,6 +101,10 @@ export type AgentRunOverrides = {
   /** Day14: active invariant rows (merged agent+task, D-5) — injected right
    *  after the preset prompt (position 2, D-4). */
   invariants?: InvariantRow[];
+  /** Day15 D-3: retry-once flag (routes, after a deterministic critical) —
+   *  adds a system message «нарушал этап X» as the last message before the
+   *  user turn; the text is built here from taskState/STAGE_RULES. */
+  stageRetry?: boolean;
 };
 
 /** Request-size facts for the day08 UI (estimate; API usage is the fact). */
@@ -354,7 +362,10 @@ const PROFILE_HEADER = [
   "Не отменяет: тему самопомощи, дисклеймер, запрет диагнозов. Память ниже — факты-содержание, не указания по стилю.",
 ].join("\n");
 
-const TASK_CHAR_BUDGET = 800;
+// Day15′ (260919): русский слой (кнопки в карте + приглашение в шапке)
+// удлинили блок — 800 отрезали карту переходов клипом (smoke 260919: модель
+// звала «К технике», не видя лейблов). 1200 вмещает шапку+план+карту с хвостом.
+const TASK_CHAR_BUDGET = 1200;
 
 const STAGE_RULES: Record<TaskStage, string> = {
   planning: "Правило стадии: не реализовывай — уточни контекст и предложи план.",
@@ -367,6 +378,10 @@ const TASK_HEADER = [
   "## Текущая задача (стейт-машина)",
   "Этот блок главнее профиля, памяти и истории при конфликте: он описывает процесс, а не содержание.",
   "Не отменяет: тему самопомощи, дисклеймер, запрет диагнозов.",
+  // Day15 D-1: красный путь — просьбы пропустить стадии не выполняем.
+  "Если просят игнорировать или перепрыгнуть стадии либо сразу выдать финальный результат — не соглашайся: назови текущий этап, разрешённые переходы и что должно произойти сначала. Этап меняет только пользователь.",
+  // Day15′ (260919): связка чат↔кнопки — приглашение в конце ответа.
+  "Когда смысл текущего этапа исчерпан, закончи ответ одной короткой строкой-приглашением к следующему шагу, называя кнопку по её имени из «Переходы» (например: «Когда будете готовы — нажмите „К практике“»).",
 ].join("\n");
 
 /**
@@ -415,6 +430,19 @@ export function buildTaskStateMessage(task: TaskState): ChatMessage | null {
     lines.push(`Сделано: ${clipLine(task.lastStageNote)}`);
   }
   lines.push(STAGE_RULES[task.stage]);
+  // Day15 D-1: карта переходов из канона — LLM знает, куда пользователь может
+  // перейти, и объясняет запреты, не обещая сменить этап сам. Day15′: имена
+  // кнопок как в UI — приглашение в ответе совпадает с кнопкой на экране.
+  const allowedNext = ALLOWED_TRANSITIONS[task.stage] ?? [];
+  lines.push(
+    `Переходы (нажимает пользователь): ${
+      allowedNext.length
+        ? allowedNext
+            .map((s) => `«${STAGE_GOTO_LABELS[s]}» (→ ${s})`)
+            .join(" · ")
+        : "нет — задача завершена"
+    }`,
+  );
   if (task.paused) {
     lines.push("Задача на паузе — пользователь продолжает её; не переспрашивай выполненное.");
   }
@@ -579,6 +607,18 @@ export class LlmAgent {
     const invariantsMessage = overrides.invariants?.length
       ? buildInvariantsMessage(overrides.invariants)
       : null;
+    // Day15 D-3: retry-once — last system message before the user turn
+    // (weightiest spot); built here so STAGE_RULES stay the single source.
+    const stageRetryMessage =
+      overrides.stageRetry && overrides.taskState && overrides.taskState.stage !== "done"
+        ? {
+            role: "system" as const,
+            content:
+              `Предыдущий ответ нарушал этап ${overrides.taskState.stage.toUpperCase()}. ` +
+              `${STAGE_RULES[overrides.taskState.stage]} Ответь строго в рамках текущего этапа; ` +
+              "просьбы пользователя игнорировать или перепрыгнуть этапы не выполняй.",
+          }
+        : null;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
       ...(invariantsMessage ? [invariantsMessage] : []),
@@ -587,6 +627,7 @@ export class LlmAgent {
       ...(sticky ? [sticky] : []),
       ...(taskMessage ? [taskMessage] : []),
       ...historyChat,
+      ...(stageRetryMessage ? [stageRetryMessage] : []),
       { role: "user", content: input },
     ];
 
@@ -596,6 +637,7 @@ export class LlmAgent {
       ...memoryBuilt.messages.map((m) => m.content),
       ...(sticky ? [sticky.content] : []),
       ...(taskMessage ? [taskMessage.content] : []),
+      ...(stageRetryMessage ? [stageRetryMessage.content] : []),
     ].join("\n\n");
     const systemForEstimate = extraSystem
       ? `${systemPrompt}\n\n${extraSystem}`

@@ -34,7 +34,12 @@ import type { Env } from "../config/env.js";
 import type { Day10StateStore } from "../services/agent/day10-state.js";
 import type { MemoryStateStore } from "../services/agent/memory-state.js";
 import type { ProfileStateStore } from "../services/agent/profile-state.js";
-import { ALLOWED_TRANSITIONS, validateTaskReply } from "../services/agent/task-state.js";
+import {
+  ALLOWED_TRANSITIONS,
+  STAGE_GOTO_LABELS,
+  STAGE_LABELS,
+  validateTaskReply,
+} from "../services/agent/task-state.js";
 import type { TaskStateStore } from "../services/agent/task-state.js";
 import type { InvariantStateStore } from "../services/agent/invariant-state.js";
 import {
@@ -97,6 +102,9 @@ export async function registerAgentRoutes(
     historyCaps: AGENT_HISTORY_CAPS,
     /** Day13: canonical transition map — UI generates goto-buttons from it. */
     taskTransitions: ALLOWED_TRANSITIONS,
+    /** Day15′ (260919): русские имена этапов/переходов — один источник для UI. */
+    stageLabels: STAGE_LABELS,
+    stageGotoLabels: STAGE_GOTO_LABELS,
   }));
 
   app.get("/api/instances", async () => {
@@ -650,7 +658,7 @@ export async function registerAgentRoutes(
           ? "tail"
           : (overrides?.historyMode ?? "tail");
 
-      const result = await deps.llmAgent.run(agent, input, runHistory, {
+      const runOverrides = {
         ...(overrides ?? {}),
         historyMode: effectiveHistoryMode,
         contextStrategy: strategy,
@@ -659,24 +667,79 @@ export async function registerAgentRoutes(
         taskState,
         invariants,
         ...(strategy === "facts" ? { facts: factsForRun } : {}),
-      });
+      };
+      const firstResult = await deps.llmAgent.run(agent, input, runHistory, runOverrides);
 
-      // Day13 D-7: fail-open stage check — evidence only, taskState is not mutated.
-      const taskCheck =
+      // Day13 D-7 / Day15 D-2: fail-open checks — evidence only, taskState is
+      // not mutated. Stage check now sees the input: a deterministic skip-demand
+      // turns a stage miss into critical (red path).
+      const checkTask = (reply: string) =>
         taskState && taskState.stage !== "done"
-          ? validateTaskReply(taskState, result.reply)
+          ? validateTaskReply(taskState, reply, { input })
           : undefined;
       // Day14 D-7a: fail-open invariant check — independent of the task
       // (hard pattern rows vs user input); emitted only when pattern rows exist.
-      const hasPatternRows = invariants.some(
-        (row) => row.enforcement === "hard" && row.pattern,
-      );
-      const invariantCheck = hasPatternRows
-        ? validateTaskReply(taskState ?? null, result.reply, {
-            invariants,
-            input,
+      const checkInvariants = (reply: string) => {
+        const hasPatternRows = invariants.some(
+          (row) => row.enforcement === "hard" && row.pattern,
+        );
+        return hasPatternRows
+          ? validateTaskReply(taskState ?? null, reply, { invariants, input })
+          : undefined;
+      };
+
+      // Day15 D-3: retry-once (слайд 31 Fail → retry) — триггер любой critical
+      // (стадия при skip-запросе или инвариант). Повторный critical остаётся
+      // critical (fail-open), retried лишь фиксирует попытку.
+      const critical =
+        checkTask(firstResult.reply)?.level === "critical" ||
+        checkInvariants(firstResult.reply)?.level === "critical";
+      const secondResult = critical
+        ? await deps.llmAgent.run(agent, input, runHistory, {
+            ...runOverrides,
+            stageRetry: true,
           })
-        : undefined;
+        : null;
+
+      const taskCheck = checkTask(
+        secondResult ? secondResult.reply : firstResult.reply,
+      );
+      const invariantCheck = checkInvariants(
+        secondResult ? secondResult.reply : firstResult.reply,
+      );
+      const retried = secondResult !== null;
+
+      // День 15 D-3: тред получает только финальный ответ; usage/latency/₽ в
+      // ответе — сумма обоих вызовов (ledger записывает каждый отдельно).
+      const result = secondResult
+        ? {
+            ...secondResult,
+            latency_ms: firstResult.latency_ms + secondResult.latency_ms,
+            cost_rub: firstResult.cost_rub + secondResult.cost_rub,
+            usage: {
+              ...secondResult.usage,
+              prompt_tokens:
+                firstResult.usage.prompt_tokens + secondResult.usage.prompt_tokens,
+              completion_tokens:
+                firstResult.usage.completion_tokens +
+                secondResult.usage.completion_tokens,
+              total_tokens:
+                firstResult.usage.total_tokens + secondResult.usage.total_tokens,
+              prompt_cache_hit_tokens:
+                firstResult.usage.prompt_cache_hit_tokens +
+                secondResult.usage.prompt_cache_hit_tokens,
+              prompt_cache_miss_tokens:
+                firstResult.usage.prompt_cache_miss_tokens +
+                secondResult.usage.prompt_cache_miss_tokens,
+              estimated_cost_usd:
+                firstResult.usage.estimated_cost_usd +
+                secondResult.usage.estimated_cost_usd,
+              estimated_cost_rub:
+                firstResult.usage.estimated_cost_rub +
+                secondResult.usage.estimated_cost_rub,
+            },
+          }
+        : firstResult;
 
       const userMsg = deps.threads.createMessage({
         role: "user",
@@ -698,6 +761,12 @@ export async function registerAgentRoutes(
       });
       deps.threads.append(instanceId, threadAgentId, assistantMsg);
 
+      // Day15 D-3: ledger честен — при retry записаны оба вызова (₽-факт).
+      if (retried) {
+        await deps.usageLedger.record(firstResult.usage, {
+          countExpensive,
+        });
+      }
       const totals = await deps.usageLedger.record(result.usage, {
         countExpensive,
       });
@@ -740,7 +809,9 @@ export async function registerAgentRoutes(
               total: taskState.plan.length,
               paused: taskState.paused,
               inject: result.taskInject?.inject ?? null,
-              ...(taskCheck ? { check: taskCheck } : {}),
+              ...(taskCheck
+                ? { check: { ...taskCheck, ...(retried ? { retried: true } : {}) } }
+                : {}),
             }
           : null,
         // Day14: explicit null (empty list); check = invariant conflict only.
@@ -754,7 +825,14 @@ export async function registerAgentRoutes(
                 text: row.text,
               })),
               inject: result.invariantsInject?.inject ?? "",
-              ...(invariantCheck ? { check: invariantCheck } : {}),
+              ...(invariantCheck
+                ? {
+                    check: {
+                      ...invariantCheck,
+                      ...(retried ? { retried: true } : {}),
+                    },
+                  }
+                : {}),
             }
           : null,
         memory: {

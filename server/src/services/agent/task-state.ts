@@ -27,6 +27,41 @@ export function canTransition(from: TaskStage, to: TaskStage): boolean {
   return (ALLOWED_TRANSITIONS[from] ?? []).includes(to);
 }
 
+/**
+ * Day15′ (260919, Pick B): русские имена этапов для UI-кнопок и LLM-инжекта —
+ * один источник (не дублировать в JS-фронтенде: UI берёт из meta.stageLabels).
+ * API-контракт (stage id) не меняется — это только слой отображения.
+ */
+export const STAGE_LABELS: Record<TaskStage, string> = {
+  planning: "Разбор",
+  execution: "Практика",
+  validation: "Проверка эффекта",
+  done: "Готово",
+};
+
+/** Русские подписи переходов для кнопок: куда пользователь может нажать. */
+export const STAGE_GOTO_LABELS: Record<TaskStage, string> = {
+  planning: "Вернуться к разбору",
+  execution: "К практике",
+  validation: "Проверить эффект",
+  done: "Завершить проработку",
+};
+
+/**
+ * Day15 D-2: детерминированный признак skip-запроса — «игнорируй все стадии»,
+ * «перепрыгни этап», «выдай сразу результат без плана» (красный путь, чат
+ * Гладкова 18.09). Консервативный: только игнор-глагол/перескок рядом со
+ * «стадия/этап» или императив с «сразу»; общие «стадия/этап» без игнор-глагола
+ * не матчатся (медицинское «какая стадия остеохондроза?» — не красный путь).
+ * Для кириллицы \b не работает (\w = латиница) — границы опускаем.
+ */
+const SKIP_DEMAND_RE =
+  /игнорир[а-яё]*\s+(все\s+)?(стади|этап)|пропусти[а-яё]*\s+(все\s+)?(стади|этап)|перепрыгн[а-яё]*|перескоч[а-яё]*\s+(этап|стади)|наруш[а-яё]*\s+(все\s+)?(стади|этап)|(выдай|дай|напиши|сделай|покажи)[а-яё]*\s+(сразу|немедленно)|(сразу|немедленно)\s+(выдай|дай|напиши|сделай|покажи)[а-яё]*|без\s+(плана|стадий|этапов)|\bskip\s+(the\s+)?stages?\b|\bignore\s+(the\s+)?(stages?|steps?)\b|\bjump\s+(straight\s+)?to\s+(the\s+)?(end|final|done)\b/i;
+
+export function isStageSkipDemand(input: string): boolean {
+  return SKIP_DEMAND_RE.test(input);
+}
+
 function keyOf(instanceId: string, agentId: string): string {
   return `${instanceId}|${agentId}`;
 }
@@ -288,13 +323,14 @@ function checkInvariants(
 }
 
 /**
- * Day13 D-7 (+ Day14 D-7): детерминированный скелет проверки — fail-open
- * (ответ не режется, только evidence). С трёх аргументами — инвариант-чек
- * (независим от задачи, D-7a); с двумя — стадийные эвристики day13, task
- * допускает null (нейтральный дефолт). level: "ok" | "warn" | "critical"
- * (critical — только инвариант-нарушение). Эвристика execution — пересечение
- * значимых слов expectedAction с ответом (лейбл категории до «:» и стоп-слова
- * не считаются): модель не обязана дословно цитировать название шага.
+ * Day13 D-7 (+ Day14 D-7, + Day15 D-2): детерминированный скелет проверки —
+ * fail-open (ответ не режется, только evidence). С invariants+input —
+ * инвариант-чек (независим от задачи, D-7a); с task — стадийные эвристики,
+ * task допускает null (нейтральный дефолт). level: "ok" | "warn" | "critical"
+ * (critical — красное нарушение: инвариант-нарушение, день 14, или стадия
+ * при skip-запросе, день 15; см. isStageSkipDemand). Эвристика execution —
+ * пересечение значимых слов expectedAction с ответом (лейбл категории до «:»
+ * и стоп-слова не считаются): модель не обязана дословно цитировать шаг.
  */
 export function validateTaskReply(
   task: TaskState | null,
@@ -307,6 +343,10 @@ export function validateTaskReply(
   if (!task) {
     return { ok: true, level: "ok", note: "—" };
   }
+  // Day15 D-2: skip-запрос превращает провал стадии в critical (красный путь);
+  // без него — warn как day13. Инвариант-ветка выше вернулась раньше, поэтому
+  // opts.input здесь с day14-семантикой не конфликтует.
+  const skip = opts?.input ? isStageSkipDemand(opts.input) : false;
   const text = reply.toLowerCase();
   if (!reply.trim()) {
     return { ok: false, level: "warn", note: "Пустой ответ" };
@@ -316,7 +356,13 @@ export function validateTaskReply(
       PLANNING_HINTS.some((h) => text.includes(h));
     return hasPlanShape
       ? { ok: true, level: "ok", note: "Planning: уточнение/план" }
-      : { ok: false, level: "warn", note: "Похоже на реализацию — стадия planning" };
+      : {
+          ok: false,
+          level: skip ? "critical" : "warn",
+          note: skip
+            ? "Стадия planning проигнорирована — запрос требует перескока"
+            : "Похоже на реализацию — стадия planning",
+        };
   }
   if (task.stage === "execution") {
     const current = task.plan[task.step - 1] ?? "";
@@ -329,8 +375,10 @@ export function validateTaskReply(
       ? { ok: true, level: "ok", note: `Выполняется шаг ${task.step}/${task.plan.length}` }
       : {
           ok: false,
-          level: "warn",
-          note: `Шаг ${task.step}/${task.plan.length} не подтверждён в ответе`,
+          level: skip ? "critical" : "warn",
+          note: skip
+            ? "Стадия execution проигнорирована — запрос требует перескока"
+            : `Шаг ${task.step}/${task.plan.length} не подтверждён в ответе`,
         };
   }
   if (task.stage === "validation") {
@@ -339,8 +387,10 @@ export function validateTaskReply(
       ? { ok: true, level: "ok", note: "Validation: приглашение к оценке эффекта" }
       : {
           ok: false,
-          level: "warn",
-          note: "Нет приглашения оценить эффект — стадия validation",
+          level: skip ? "critical" : "warn",
+          note: skip
+            ? "Стадия validation проигнорирована — запрос требует перескока"
+            : "Нет приглашения оценить эффект — стадия validation",
         };
   }
   return { ok: true, level: "ok", note: "Задача завершена" };

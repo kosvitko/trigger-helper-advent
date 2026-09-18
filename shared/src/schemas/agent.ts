@@ -407,12 +407,14 @@ export const AgentRunContextSchema = z.object({
       inject: z.string().nullable(),
       /** Fail-open проверка стадии; в done валидатор не зовётся — поля нет.
        *  level: ok — стадия подтверждена, warn — не подтверждена (fail-open),
-       *  critical — нарушение инварианта (день 14). */
+       *  critical — красное нарушение: инвариант (день 14) или стадия при
+       *  skip-запросе (день 15). retried — был retry-once (день 15). */
       check: z
         .object({
           ok: z.boolean(),
           level: z.enum(["ok", "warn", "critical"]).optional(),
           note: z.string().max(200),
+          retried: z.boolean().optional(),
         })
         .optional(),
     })
@@ -438,6 +440,7 @@ export const AgentRunContextSchema = z.object({
           ok: z.boolean(),
           level: z.enum(["ok", "warn", "critical"]).optional(),
           note: z.string().max(200),
+          retried: z.boolean().optional(),
         })
         .optional(),
     })
