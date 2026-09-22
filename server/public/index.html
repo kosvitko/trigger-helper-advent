@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day15</title>
+  <title>Trigger Helper — Агент · day16</title>
   <style>
     :root {
       color-scheme: light;
@@ -582,6 +582,10 @@
     .invariant-panel .inv-row .inv-n { color: #888; font-size: 11px; min-width: 34px; }
     .invariant-panel .inv-row .inv-text { flex: 1; min-width: 0; }
     .invariant-panel .inv-row.off .inv-text { text-decoration: line-through; opacity: 0.55; }
+    /* Day16: MCP tools list reuses inv-row markup outside the invariant panel. */
+    #mcp-block .inv-row { display: flex; gap: 6px; align-items: baseline; margin: 2px 0; }
+    #mcp-block .inv-row .inv-n { color: #888; font-size: 11px; min-width: 14px; }
+    #mcp-block .inv-row .inv-text { flex: 1; min-width: 0; }
     .invariant-panel .chip { font-size: 10px; padding: 0 4px; border: 1px solid #bbb; border-radius: 6px; white-space: nowrap; }
     .invariant-panel .chip.hard { border-color: #b33333; color: #b33333; }
     .invariant-panel .chip.soft { border-color: #c9862b; color: #c9862b; }
@@ -748,7 +752,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day15</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day16</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -799,6 +803,7 @@
         <div class="ctx-panel" id="memory-panel" hidden></div>
         <div class="ctx-panel" id="facts-panel" hidden></div>
         <div class="ctx-panel branch-bar" id="branch-bar" hidden></div>
+        <details class="techmode" id="mcp-block" hidden></details>
       </aside>
     </div>
 
@@ -966,6 +971,7 @@
       memoryPanel: document.getElementById("memory-panel"),
       factsPanel: document.getElementById("facts-panel"),
       branchBar: document.getElementById("branch-bar"),
+      mcpBlock: document.getElementById("mcp-block"),
       ctxBanner: document.getElementById("ctx-banner"),
       undoToast: document.getElementById("undo-toast"),
       undoToastText: document.getElementById("undo-toast-text"),
@@ -3308,6 +3314,40 @@
       el.toggle.textContent = open ? "▴" : "▾";
     });
 
+    function mcpPluralTools(n) {
+      const m10 = n % 10,
+        m100 = n % 100;
+      if (m10 === 1 && m100 !== 11) return "инструмент";
+      if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return "инструмента";
+      return "инструментов";
+    }
+
+    /** Day16: MCP tools/list — global tech block, independent of agent selection.
+        Hidden until data arrives: an empty <details> renders default "Details". */
+    async function loadMcpTools() {
+      try {
+        const data = await api("/api/mcp/tools");
+        el.mcpBlock.hidden = false;
+        const rows = data.tools
+          .map(
+            (t, i) =>
+              '<div class="inv-row"><span class="inv-n">' + (i + 1) + "</span>" +
+              '<span class="inv-text" title="' + escAttr(t.description || "") + '">' + escAttr(t.name) + "</span></div>",
+          )
+          .join("");
+        el.mcpBlock.innerHTML =
+          "<summary>MCP · " + escAttr(data.serverInfo.name) + " · " + data.toolCount + " " + mcpPluralTools(data.toolCount) + "</summary>" +
+          '<span class="ctx-title">' + escAttr(data.server) + " · " + escAttr(data.transport) + "</span>" + rows +
+          '<div class="inv-text" style="color:var(--muted,#999)">схема тулов ≈ ' + data.meta.tokensEstimate +
+          " ток. на каждый вызов LLM — учёт для оркестрации (day17+)</div>";
+      } catch (err) {
+        el.mcpBlock.hidden = false;
+        el.mcpBlock.innerHTML =
+          "<summary>MCP · недоступен</summary>" +
+          '<div class="inv-text">' + escAttr(err.message || String(err)) + "</div>";
+      }
+    }
+
     (async function boot() {
       try {
         await api("/api/health");
@@ -3320,6 +3360,7 @@
         await loadModels();
         await loadUsage();
         await hydrate();
+        loadMcpTools().catch(() => undefined);
       } catch (err) {
         setStatus(err.message || String(err), true);
       }

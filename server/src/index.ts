@@ -7,6 +7,7 @@ import { registerAgentRoutes } from "./routes/agents.js";
 import { registerAskRoutes } from "./routes/ask.js";
 import { registerCompareRoutes } from "./routes/compare.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerUsageRoutes } from "./routes/usage.js";
 import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";
 import { createInstanceRegistry } from "./services/agent/instance-registry.js";
@@ -133,6 +134,8 @@ async function main(): Promise<void> {
     taskStateStore,
     invariantStore,
   });
+  // Day16: MCP client — connect to the configured public MCP, list tools.
+  await registerMcpRoutes(app, { env });
 
   await app.register(fastifyStatic, {
     root: path.join(serverRoot, "public"),

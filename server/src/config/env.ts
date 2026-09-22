@@ -60,6 +60,11 @@ const envSchema = z.object({
   BUDGET_DELAY_FILL_MS: z.coerce.number().nonnegative().default(20_000),
   BUDGET_DELAY_PACE_MS: z.coerce.number().nonnegative().default(60_000),
   BUDGET_DELAY_MAX_MS: z.coerce.number().nonnegative().default(180_000),
+  /**
+   * Day16: public MCP server (Streamable HTTP) for the tools/list client.
+   * Read-only list — no secrets involved. Days 17+ will add call_tool.
+   */
+  MCP_SERVER_URL: z.string().url().default("https://mcp.deepwiki.com/mcp"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 });
 
