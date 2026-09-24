@@ -8,6 +8,7 @@ import { registerAskRoutes } from "./routes/ask.js";
 import { registerCompareRoutes } from "./routes/compare.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
+import { registerSchedulerRoutes } from "./routes/scheduler.js";
 import { registerUsageRoutes } from "./routes/usage.js";
 import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";import { createInstanceRegistry } from "./services/agent/instance-registry.js";
 import { createDay10StateStore } from "./services/agent/day10-state.js";
@@ -26,6 +27,7 @@ import { createDeepSeekService } from "./services/deepseek.js";
 import { createPointsService } from "./services/points.js";
 import { createUsageLedgerService } from "./services/usage-ledger.js";
 import { ownMcpUrl, registerOwnMcpRoute } from "./services/mcp-server.js";
+import { createSchedulerService } from "./services/scheduler.js";
 
 const serverRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -60,6 +62,16 @@ async function main(): Promise<void> {
   });
   const threads = createThreadStore({ onChange: () => agentState.scheduleSave() });
   threads.loadThreads(savedState.threads);
+  // Day18: background scheduler — PubMed digest jobs + proactive summaries.
+  // Needs threads: proactive digests are delivered into the live chat thread
+  // (решение Кости 24.09 — сводки видны в ленте, не только в доке).
+  const scheduler = createSchedulerService({
+    env,
+    deepSeek: deepSeekService,
+    ledger: usageLedger,
+    threads,
+  });
+  await scheduler.load();
   const day10State = createDay10StateStore({
     onChange: () => agentState.scheduleSave(),
   });
@@ -139,7 +151,9 @@ async function main(): Promise<void> {
   // Day16: MCP client — connect to the configured public MCP, list tools.
   await registerMcpRoutes(app, { env });
   // Day17: own MCP server (product atlas) on POST /mcp — tools/call target.
-  await registerOwnMcpRoute(app, { pointsService });
+  await registerOwnMcpRoute(app, { pointsService, scheduler });
+  // Day18: read-only scheduler state (jobs/counters/last summary).
+  await registerSchedulerRoutes(app, { scheduler });
 
   await app.register(fastifyStatic, {
     root: path.join(serverRoot, "public"),
@@ -148,9 +162,13 @@ async function main(): Promise<void> {
 
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
 
+  // Day18: scheduler starts only after the server accepts traffic.
+  scheduler.start();
+
   // Day07: flush agent state on shutdown (Ctrl+C / systemd stop keeps the dialog)
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
+      scheduler.stop();
       void agentState
         .flush()
         .catch(() => undefined)

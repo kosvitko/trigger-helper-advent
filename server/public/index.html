@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day17</title>
+  <title>Trigger Helper — Агент · day18</title>
   <style>
     :root {
       color-scheme: light;
@@ -754,7 +754,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day17</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day18</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -3403,7 +3403,8 @@
           '<span class="ctx-title">' + escAttr(data.server) + " · " + escAttr(data.transport) + "</span>" + rows +
           '<div class="inv-text" style="color:var(--muted,#999)">схема тулов ≈ ' + data.meta.tokensEstimate +
           " ток. на каждый вызов LLM — учёт для оркестрации (day17+)</div>" + ownHtml +
-          '<div id="mcp-last-call" hidden></div>';
+          '<div id="mcp-last-call" hidden></div>' +
+          '<div id="mcp-scheduler" hidden></div>';
         renderMcpLastCall();
       } catch (err) {
         el.mcpBlock.hidden = false;
@@ -3411,6 +3412,81 @@
           "<summary>MCP · недоступен</summary>" +
           '<div class="inv-text">' + escAttr(err.message || String(err)) + "</div>";
       }
+    }
+
+    /** Day18: scheduler section inside #mcp-block — polled every 5 s.
+        Hidden until data (lesson day16): no active jobs and no summary → no block. */
+    async function loadSchedulerState() {
+      const box = document.getElementById("mcp-scheduler");
+      if (!box) return;
+      let data;
+      try {
+        data = await api("/api/scheduler");
+      } catch (_) {
+        return; // endpoint down — section stays as-is
+      }
+      const active = data.jobs.filter((j) => j.active);
+      const last = data.lastSummary;
+      if (!active.length && !last) {
+        box.hidden = true;
+        box.innerHTML = "";
+        return;
+      }
+      el.mcpBlock.hidden = false;
+      const jobRows = active
+        .map(
+          (j) =>
+            '<div class="inv-row"><span class="inv-n">·</span><span class="inv-text">' +
+            escAttr(j.query) + " · каждые " + j.everySec + " с · next " +
+            escAttr(new Date(j.nextRunAt).toLocaleTimeString()) + " · id " + escAttr(j.id) + "</span></div>",
+        )
+        .join("");
+      const modeLabel = !last
+        ? ""
+        : last.mode === "fresh"
+          ? '<span style="color:var(--accent)">новое</span>'
+          : '<span style="color:#c9862b">из архива</span>';
+      const artLine = last
+        ? last.articles
+            .map((a) => "PMID " + escAttr(a.pmid) + " «" + escAttr(a.title) + "»")
+            .join("; ")
+        : "";
+      box.hidden = false;
+      box.innerHTML =
+        '<div class="inv-text" style="margin-top:6px"><b>Планировщик</b> · тиков: ' + data.counters.ticks +
+        " · в очереди: " + data.counters.pending + " · обработано: " + data.counters.digested + "</div>" +
+        (active.length
+          ? jobRows
+          : '<div class="inv-text" style="color:var(--muted,#999)">активных задач нет</div>') +
+        (last
+          ? '<div class="inv-text" style="margin-top:4px">сводка · ' + modeLabel + " · " +
+            escAttr(new Date(last.at).toLocaleTimeString()) + "</div>" +
+            '<div class="inv-text">' + escAttr(last.text) + "</div>" +
+            '<div class="inv-text" style="color:var(--muted,#999)">' + artLine + "</div>"
+          : "");
+    }
+
+    /** Day18: live chat delivery — scheduler digests append to the thread;
+        poll the feed (5 s) and re-render when new messages arrive. */
+    let feedWatch = null; // { key, count }
+    async function pollThreadFeed() {
+      try {
+        if (!state.instanceId || !state.agentId) return;
+        const data = await api(
+          "/api/instances/" + state.instanceId + "/agents/" + state.agentId + "/messages",
+        );
+        const msgs = data.messages || [];
+        const key = state.instanceId + "|" + state.agentId;
+        if (!feedWatch || feedWatch.key !== key) {
+          feedWatch = { key: key, count: msgs.length };
+          return;
+        }
+        if (msgs.length !== feedWatch.count) {
+          feedWatch.count = msgs.length;
+          state.messages = msgs;
+          renderMessages(); // скроллит в низ — свежая сводка видна сразу
+        }
+      } catch (_) { /* тихо: лента перерисуется на следующем проходе */ }
     }
 
     (async function boot() {
@@ -3426,6 +3502,13 @@
         await loadUsage();
         await hydrate();
         loadMcpTools().catch(() => undefined);
+        loadSchedulerState().catch(() => undefined);
+        // Day18: the scheduler section is the only thing polled — a summary/tick
+        // must appear on screen without user action (demo PASS #2/#3).
+        setInterval(() => {
+          loadSchedulerState();
+          pollThreadFeed(); // сводки из шедулера появляются в чате сами
+        }, 5000);
       } catch (err) {
         setStatus(err.message || String(err), true);
       }

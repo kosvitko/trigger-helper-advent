@@ -1,64 +1,64 @@
-# AI Advent Challenge #9 — Week 04, Day 17
+# AI Advent Challenge #9 — Week 04, Day 18
 
-**Задание:** реализовать свой MCP-сервер вокруг любого API (например: Яндекс.Трекер, Git, CRM, mock API). Сделать: регистрацию инструмента; описание входных параметров; возврат результата. Подключить инструмент к своему агенту и: вызвать его из приложения; получить и использовать результат. Результат: агент делает вызов к MCP-инструменту и получает результат. Сдача: видео + код.
+**Задание:** сделать MCP-инструмент с отложенным или периодическим выполнением (примеры: reminder; периодический сбор данных; регулярный summary). Инструмент должен: сохранять данные (JSON / SQLite); выполняться по расписанию; возвращать агрегированный результат. Результат: агент, который работает 24/7 и периодически выдаёт сводку. Сдача: видео + код.
 
-Trigger Helper (day17): собственный **MCP-сервер** вокруг данных продукта — атласа триггерных точек (11 точек, 3 зоны боли). Серверная сторона — тот же официальный **`@modelcontextprotocol/sdk`** (день 16 ставил SDK ради клиента, а в нём уже был сервер): `McpServer` + `StreamableHTTPServerTransport`, endpoint `POST /mcp` в том же процессе Fastify, stateless (свежая пара server+transport на каждый запрос, JSON-ответы, без SSE-ноги и сессий). Два инструмента: **`list_points(zone?)`** и **`get_point(id)`** — read-only обёртки `PointsService`, без LLM внутри; входные параметры описаны Zod-схемой (для `registerTool`) и зеркальной JSON Schema для LLM — рядом, в одном модуле. Агент вызывает инструменты через **`callTool`** day16-клиентом по loopback — и **использует результат**: в `LlmAgent.run()` один раунд tool-calling (модель вернула `tool_calls` → исполняем все через MCP → результаты назад сообщениями `role:"tool"` → второй вызов без tools даёт финальный текст). Схемы тулов по умолчанию **не** едут в каждый запрос: флаг `overrides.tools`, default `false` (UI-композер включает явно) — размер схем виден в preflight-оценке и в payload (`context.tool.calls`: имя, аргументы, ok, латентность, клип результата). Видимость в UI: бейдж `tool: list_points` в ленте ответов + след последнего вызова в блоке «MCP». Для проверки руками — `POST /api/mcp/call {name, arguments}`. Безопасность: тулзы только читают JSON-атлас, ключей не нужно; `/mcp` и `/api/mcp/call` под rate-limit, при этом собственные loopback-вызовы сервера исключены из бакета (иначе агент 429-ил бы сам себя посреди демо).
+Trigger Helper (day18): **планировщик фоновых задач** в том же Fastify-процессе, обёрнутый в MCP-инструменты — поверх своего сервера day17 (`POST /mcp`). Четыре инструмента: **`schedule_job`**, **`get_summary`**, **`list_jobs`**, **`cancel_job`** (Zod-схема для SDK + зеркальная JSON Schema для LLM — тот же паттерн). Джоба — периодический сбор публикаций **PubMed E-utilities** (без API-ключей: esearch → esummary, дедуп по PMID): тик каждые ≥30 секунд — это только сбор и агрегация, **без LLM, ₽0**. Анализ — отдельно от тика: когда накопился необработанный материал (debounce, default 15 минут; при пустых свежих — ретро-обзор статьи из архива), фоновый вызов `deepseek-chat` пишет дайджест — и **доставляет его в чат** как сообщение ассистента «⏰ планировщик» (в доке — секция «Планировщик»: план, очередь, счётчики). Всё персистится в `var/scheduler.json` (атомарная запись по образцу usage-ledger): рестарт сервиса/деплой не теряют ни джобу, ни сводки; пропущенные за даунтайм тики — skip-and-advance. Бюджет-гарда: фоновый LLM не проходит при исчерпании дневного бюджета (юзерские вопросы не 429-ятся из-за фона). Капы: ≤3 активных джоб, интервал ≥30 с, TTL ≤24 ч. Ноль новых npm-зависимостей — планировщик на голом Node (setTimeout-цепочка от абсолютного `nextRunAt`).
 
-**Live demo:** http://91.188.212.10/ · **Tag:** [`week04-day17`](https://github.com/kosvitko/trigger-helper-advent/tree/week04-day17)
+**Live demo:** http://91.188.212.10/ · **Tag:** [`week04-day18`](https://github.com/kosvitko/trigger-helper-advent/tree/week04-day18)
 
-## Demo на видео (~36s)
+## Demo на видео (~2:27)
 
 | | |
 |:--|:--|
-| **Блок «MCP» раскрыт** | DeepWiki (day16) + **наш сервер** `http://127.0.0.1:3000/mcp · trigger-helper-atlas` — тулзы `list_points`, `get_point` (схемы — в tooltip) |
-| **Вопрос агенту** | «Болит основание черепа и отдаёт в голову — какую триггерную точку поработать и как именно?» |
-| **Ответ + след вызова** | бейдж `tool: list_points` в мете ответа; текст называет подзатылочные/ременную с техниками и предостережениями из атласа |
-| **Клип вызова** | в блоке «MCP»: «последний вызов: list_points · ok · 27 ms» + клип JSON-результата |
-| **Сырой код** | `POST /api/mcp/call {name:"list_points",arguments:{zone:"arm"}}` — полный результат: 3 точки, `isError:false`, латентность |
+| **Блок «MCP» раскрыт** | наш сервер — теперь **6 инструментов**: `list_points`, `get_point`, **`schedule_job`**, `get_summary`, `list_jobs`, `cancel_job` |
+| **Вопрос агенту** | «Ставь сбор публикаций по самомассажу каждые 30 секунд, запрос: massage therapy» |
+| **Ответ + след вызова** | бейдж `tool: schedule_job`, ответ с jobId (агент отдельно комментирует частый интервал); клип вызова в блоке «MCP» |
+| **Сводки появляются сами** | в ленте без юзер-действия приходят сообщения «⏰ планировщик» — дайджесты свежих публикаций (2 цикла); тик-счётчик и очередь растут сами |
+| **F5 — персист** | джоба, сводки и сообщения на месте (store в `var/`, переживает рестарт) |
+| **Сырой код** | `GET /api/scheduler` — джобы, счётчики (тики/LLM-вызовы/очередь), последняя сводка |
 
 ## Выводы
 
-по вызову mcp особых выводов нет. только надо запомнить - схема передается в каждом последующем вызове. а нейронка может решить вызвать тул в любой момент. так что описание mcp в полной схеме - единственный вариант.
+Свой планировщик, обернутый в mcp - удобный механизм, который позволяет оптимизировать запросы к любым сервисам (и обработку потенциальных ошибок, накопление статистики и т.п.). Анализ ллм при этом может выполняться с другой скважностью (если в автоматическом режиме), либо по запросу всегда на свежих актуальных и доступных данных.
 
 ## Что где реализовано
 
 | Требование | Где |
 |:-----------|:----|
-| Свой MCP-сервер | `server/src/services/mcp-server.ts` — `McpServer` + `StreamableHTTPServerTransport` (stateless, `enableJsonResponse`, POST-only; GET → 404) на `POST /mcp` |
-| Регистрация инструмента | `registerTool("list_points"/"get_point")` — read-only обёртки `PointsService.loadAll/findById`, LLM внутри тулз нет |
-| Описание входных параметров | Zod raw shapes для SDK + `OWN_MCP_TOOL_SCHEMAS` (JSON Schema для function calling) — рядом, один модуль |
-| Возврат результата | один text-блок с JSON (`{count, points}` / `{point}` / `{error}`); неизвестный id → `isError:true` |
-| Подключение к агенту | `server/src/services/mcp-client.ts` — `callMcpTool(serverUrl, name, args, timeout?)` на шве `withMcpConnection` (day16), loopback `http://127.0.0.1:PORT/mcp` |
-| Вызов из приложения + использование результата | `server/src/services/agent/llm-agent.ts` — 1-раундовый цикл: `tool_calls` → MCP → `role:"tool"` → финальный ответ; `overrides.tools` (default false, UI-композер шлёт `true`); usage двух вызовов мержится |
-| Видимость в UI | `server/public/index.html` — бейдж `tool:` в ленте (`context.tool` в payload), own-секция + «последний вызов» в блоке «MCP» |
-| Проверка руками | `POST /api/mcp/call {name, arguments}` → `{name, content, isError, latencyMs}`; own-секция в `GET /api/mcp/tools` |
-| Конфиг без секретов | ноль новых env — URL своего сервера собирается из `PORT`; тулзы читают только `data/points.json` |
+| MCP-инструмент периодического выполнения | `server/src/services/mcp-server.ts` — +4 `registerTool` на том же `POST /mcp` (схемы Zod + JSON Schema — рядом) |
+| Сохранение данных (JSON) | `server/src/services/scheduler.ts` — store `var/scheduler.json` (env `SCHEDULER_FILE`): джобы, статьи (метаданные + дедуп по PMID), сводки, счётчики; атомарная запись tmp+rename |
+| Выполнение по расписанию | setTimeout-цепочка от абсолютного `nextRunAt`; restore + skip-and-advance при рестарте (пропущенное не догоняется шквалом) |
+| Агрегированный результат | `get_summary` (MCP) + `GET /api/scheduler` (джобы, счётчики, последняя сводка) |
+| Периодический сбор данных | PubMed E-utilities без ключей: esearch (30-дневное окно) → esummary — метаданные статей, дедуп по PMID; тик — ₽0 |
+| Регулярный summary (LLM) | по появлению материала с debounce (`SCHEDULE_SUMMARY_MIN_SEC`, default 15 мин); пусто свежих — ретро-обзор из архива; `deepseek-chat` + `timeoutMs` 60 с, usage — в общий ledger |
+| Бюджет-гарда | фон не проходит 0.95×`DAILY_BUDGET_RUB` — сводка откладывается, юзерские вопросы не 429-ятся |
+| Капы (auth нет) | ≤3 активных джоб, интервал ≥30 с, TTL ≤24 ч, query ≤120 симв; серверные капы — единственная защита (loopback `/mcp` вне rate-limit) |
+| Доставка в чат | сводка — сообщение ассистента «⏰ планировщик» в самом свежем треде (`threads.append`); UI-поллинг 5 с показывает её без перезагрузки; F5 — всё на месте |
 
 ## Быстрый старт
 
 ```bash
 git clone https://github.com/kosvitko/trigger-helper-advent.git
 cd trigger-helper-advent
-git checkout week04-day17
-cp .env.example .env   # DEEPSEEK_API_KEY=... (для ответов агента; MCP-ключей нет)
+git checkout week04-day18
+cp .env.example .env   # DEEPSEEK_API_KEY=... (PubMed и MCP — без ключей)
 npm install
-npm run dev            # http://127.0.0.1:3000 — Agent UI · title «Агент · day17»
+npm run dev            # http://127.0.0.1:3000 — Agent UI · title «Агент · day18»
 ```
 
 ## Demo через API
 
 ```bash
-# сырой вызов тулзы своего MCP-сервера
+# назначить фоновую джобу сбора публикаций (через MCP-тулзу своего сервера)
 curl -X POST http://127.0.0.1:3000/api/mcp/call \
   -H "content-type: application/json" \
-  -d '{"name":"list_points","arguments":{"zone":"arm"}}'
-# → {"name":"list_points","content":"{\"count\":3,\"points\":[...]}","isError":false,"latencyMs":26}
+  -d '{"name":"schedule_job","arguments":{"query":"massage therapy","every_sec":30}}'
+# → {"name":"schedule_job","content":"{\"jobId\":\"job-…\",\"nextRunAt\":\"…\"}","isError":false}
 
-# tools/list своего сервера (own-секция) рядом с публичным DeepWiki
-curl http://127.0.0.1:3000/api/mcp/tools | jq .own
+# состояние планировщика: джобы, счётчики (тики/LLM/очередь), последняя сводка
+curl http://127.0.0.1:3000/api/scheduler
 
-# агент с инструментом: tool-calls → MCP → ответ, использующий результат
-curl -X POST http://127.0.0.1:3000/api/agent/run -H "content-type: application/json" \
-  -d '{"instanceId":"...","agentId":"...","input":"Болит основание черепа — что делать?","overrides":{"tools":true}}'
-# → reply использует technique/cautions из атласа; context.tool.calls — след вызова
+# сводка как MCP-тулза (то, что видит агент)
+curl -X POST http://127.0.0.1:3000/api/mcp/call \
+  -H "content-type: application/json" -d '{"name":"get_summary","arguments":{}}'
 ```

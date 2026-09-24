@@ -82,6 +82,31 @@ export class ThreadStore {
     }
   }
 
+  /**
+   * Day18: most recently active thread (by last message createdAt) — target
+   * for proactive scheduler digests. Works after restore: reads loaded state,
+   * no in-memory activity tracking needed.
+   */
+  latestThread(): { instanceId: string; agentId: string } | null {
+    let bestKey: string | null = null;
+    let bestTs = 0;
+    for (const [k, list] of this.threads) {
+      const last = list[list.length - 1];
+      if (!last) continue;
+      const ts = Date.parse(last.createdAt) || 0;
+      if (ts > bestTs) {
+        bestTs = ts;
+        bestKey = k;
+      }
+    }
+    if (!bestKey) return null;
+    const sep = bestKey.indexOf("|");
+    return {
+      instanceId: bestKey.slice(0, sep),
+      agentId: bestKey.slice(sep + 1),
+    };
+  }
+
   createMessage(
     partial: Omit<AgentMessage, "id" | "createdAt"> & {
       id?: string;

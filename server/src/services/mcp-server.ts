@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import type { Point } from "@trigger-helper/shared";
 import type { PointsService } from "./points.js";
+import type { SchedulerService } from "./scheduler.js";
 
 /**
  * Day17: own MCP server around the product atlas — read-only PointsService.
@@ -21,6 +22,34 @@ const listPointsShape = {
 
 const getPointShape = {
   id: z.string().min(1).describe("id точки из list_points"),
+};
+
+// Day18: scheduler tools — schedule/cancel digest jobs, read the summary.
+const scheduleJobShape = {
+  query: z
+    .string()
+    .min(3)
+    .max(120)
+    .describe(
+      "Запрос на английском для PubMed (русский не ищется), пример: massage therapy",
+    ),
+  every_sec: z
+    .number()
+    .int()
+    .min(30)
+    .max(86400)
+    .describe("Интервал сбора в секундах (не чаще раза в 30 секунд)"),
+  ttl_sec: z
+    .number()
+    .int()
+    .min(60)
+    .max(86400)
+    .optional()
+    .describe("Время жизни задачи в секундах, по умолчанию 86400 (сутки)"),
+};
+
+const cancelJobShape = {
+  id: z.string().min(1).describe("id задачи из list_jobs или schedule_job"),
 };
 
 /**
@@ -60,6 +89,63 @@ export const OWN_MCP_TOOL_SCHEMAS = [
       required: ["id"],
     },
   },
+  {
+    name: "schedule_job",
+    description:
+      "Создать фоновую задачу периодического сбора публикаций PubMed по запросу. " +
+      "query — НА АНГЛИЙСКОМ (PubMed не ищет по-русски), например: massage therapy. " +
+      "Возвращает id задачи и время истечения TTL; сбор идёт сам по расписанию, " +
+      "сводки появляются сами (см. get_summary).",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          minLength: 3,
+          maxLength: 120,
+          description:
+            "Запрос на английском для PubMed, пример: massage therapy",
+        },
+        every_sec: {
+          type: "integer",
+          minimum: 30,
+          maximum: 86400,
+          description: "Интервал сбора в секундах (не чаще раза в 30 секунд)",
+        },
+        ttl_sec: {
+          type: "integer",
+          minimum: 60,
+          maximum: 86400,
+          description: "Время жизни задачи в секундах (по умолчанию 86400 = сутки)",
+        },
+      },
+      required: ["query", "every_sec"],
+    },
+  },
+  {
+    name: "get_summary",
+    description:
+      "Последняя агрегированная сводка планировщика: дайджест публикаций PubMed " +
+      "(свежие или из архива) + счётчики (сколько статей ждёт обработки, сколько тиков).",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "list_jobs",
+    description:
+      "Список фоновых задач планировщика: запрос, интервал, следующий запуск, пропуски, активность.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "cancel_job",
+    description: "Отменить фоновую задачу планировщика по id.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "id задачи из list_jobs" },
+      },
+      required: ["id"],
+    },
+  },
 ] as const;
 
 export type OwnMcpToolName = (typeof OWN_MCP_TOOL_SCHEMAS)[number]["name"];
@@ -68,7 +154,10 @@ function toolText(payload: unknown): { content: [{ type: "text"; text: string }]
   return { content: [{ type: "text", text: JSON.stringify(payload) }] };
 }
 
-function createOwnMcpServer(pointsService: PointsService): McpServer {
+function createOwnMcpServer(
+  pointsService: PointsService,
+  scheduler: SchedulerService,
+): McpServer {
   const server = new McpServer({
     name: "trigger-helper-atlas",
     version: "0.1.0",
@@ -124,6 +213,98 @@ function createOwnMcpServer(pointsService: PointsService): McpServer {
     },
   );
 
+  // ---- Day18: scheduler tools (design §4.1; canon gate D-6) ----
+
+  server.registerTool(
+    "schedule_job",
+    {
+      description: OWN_MCP_TOOL_SCHEMAS[2].description,
+      inputSchema: scheduleJobShape,
+    },
+    async ({ query, every_sec, ttl_sec }) => {
+      try {
+        const res = await scheduler.scheduleJob({
+          query,
+          everySec: every_sec,
+          ttlSec: ttl_sec,
+        });
+        return toolText({ jobId: res.jobId, nextRunAt: res.nextRunAt });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          ...toolText({
+            error:
+              message === "job_cap_reached"
+                ? "job_cap_reached"
+                : `schedule_job failed: ${message}`,
+          }),
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_summary",
+    {
+      description: OWN_MCP_TOOL_SCHEMAS[3].description,
+      inputSchema: {},
+    },
+    async () => {
+      const snap = scheduler.snapshot();
+      if (!snap.lastSummary) {
+        return {
+          ...toolText({ error: "no_summary_yet" }),
+          isError: true,
+        };
+      }
+      return toolText({
+        summary: snap.lastSummary,
+        counters: {
+          pending: snap.counters.pending,
+          digested: snap.counters.digested,
+          ticks: snap.counters.ticks,
+        },
+      });
+    },
+  );
+
+  server.registerTool(
+    "list_jobs",
+    {
+      description: OWN_MCP_TOOL_SCHEMAS[4].description,
+      inputSchema: {},
+    },
+    async () => {
+      const snap = scheduler.snapshot();
+      return toolText({
+        jobs: snap.jobs.map((j) => ({
+          id: j.id,
+          query: j.query,
+          every_sec: j.everySec,
+          active: j.active,
+          next_run_at: new Date(j.nextRunAt).toISOString(),
+          last_run_at: j.lastRunAt ? new Date(j.lastRunAt).toISOString() : null,
+          missed: j.missed,
+        })),
+      });
+    },
+  );
+
+  server.registerTool(
+    "cancel_job",
+    {
+      description: OWN_MCP_TOOL_SCHEMAS[5].description,
+      inputSchema: cancelJobShape,
+    },
+    async ({ id }) => {
+      if (!scheduler.cancelJob(id)) {
+        return { ...toolText({ error: "job_not_found" }), isError: true };
+      }
+      return toolText({ ok: true, id });
+    },
+  );
+
   return server;
 }
 
@@ -139,7 +320,7 @@ export function ownMcpUrl(port: number): string {
  */
 export async function registerOwnMcpRoute(
   app: FastifyInstance,
-  opts: { pointsService: PointsService },
+  opts: { pointsService: PointsService; scheduler: SchedulerService },
 ): Promise<void> {
   app.post("/mcp", async (request, reply) => {
     reply.hijack();
@@ -147,7 +328,7 @@ export async function registerOwnMcpRoute(
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
-    const server = createOwnMcpServer(opts.pointsService);
+    const server = createOwnMcpServer(opts.pointsService, opts.scheduler);
     try {
       await server.connect(transport);
       await transport.handleRequest(request.raw, reply.raw, request.body);

@@ -20,6 +20,10 @@ const envSchema = z.object({
   USAGE_FILE: z.string().optional(),
   /** Day07: agent context file (default: <repo>/var/agent-state.json). */
   AGENT_STATE_FILE: z.string().optional(),
+  /** Day18: scheduler store (default: <repo>/var/scheduler.json). */
+  SCHEDULER_FILE: z.string().optional(),
+  /** Day18: min seconds between proactive LLM summaries (default 900 = 15 min). */
+  SCHEDULE_SUMMARY_MIN_SEC: z.coerce.number().int().positive().default(900),
   /**
    * Daily cap for expensive models only (0 = off). Moscow calendar day.
    * DeepSeek / flash-lite / gpt-4o-mini / haiku — без лимита.

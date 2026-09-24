@@ -40,6 +40,11 @@ export type ChatOptions = {
   /** Day17: function-calling tools; absent = plain chat (day16 behavior). */
   tools?: ToolSpec[];
   toolChoice?: "auto";
+  /**
+   * Day18: per-call timeout override (scheduler summary — 60 s instead of the
+   * 1-hour default; a hung background call must not stall the pipeline).
+   */
+  timeoutMs?: number;
 };
 
 /**
@@ -292,7 +297,7 @@ export class DeepSeekService {
           Authorization: `Bearer ${endpoint.apiKey}`,
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(LLM_FETCH_TIMEOUT_MS),
+        signal: AbortSignal.timeout(options.timeoutMs ?? LLM_FETCH_TIMEOUT_MS),
         dispatcher: llmDispatcher,
       });
     } catch (error) {
