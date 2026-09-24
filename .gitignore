@@ -11,6 +11,3 @@ build/
 **/recordings/*
 !**/recordings/.gitkeep
 .DS_Store
-
-# runtime state (day18 scheduler)
-server/var/

@@ -48,9 +48,10 @@ import {
   ContextLimitError,
   EXTRACT_HISTORY_TAIL,
   shouldAutoCompress,
-  stickyFromClassifyItems,
-  type LlmAgent,
-} from "../services/agent/llm-agent.js";
+   stickyFromClassifyItems,
+   type LlmAgent,
+ } from "../services/agent/llm-agent.js";
+import { PIPELINE_STAGE_LABEL } from "../services/agent/llm-agent.js";
 import {
   messageCostRub,
   sumThreadTokens,
@@ -552,6 +553,18 @@ export async function registerAgentRoutes(
       strategy,
     );
     const history = deps.threads.list(instanceId, threadAgentId);
+    // Day19 (фидбек Кости): стадии пайплайна — в живой ленте ЭТОГО треда
+    // (не latestThread: вопрос ещё не записан в момент первой стадии).
+    const onStage = (text: string) =>
+      deps.threads.append(
+        instanceId,
+        threadAgentId,
+        deps.threads.createMessage({
+          role: "system",
+          content: text,
+          label: PIPELINE_STAGE_LABEL,
+        }),
+      );
 
     try {
       // Day09: synchronous auto-compress before the LLM call (C-3) — the
@@ -668,7 +681,13 @@ export async function registerAgentRoutes(
         invariants,
         ...(strategy === "facts" ? { facts: factsForRun } : {}),
       };
-      const firstResult = await deps.llmAgent.run(agent, input, runHistory, runOverrides);
+      const firstResult = await deps.llmAgent.run(
+        agent,
+        input,
+        runHistory,
+        runOverrides,
+        onStage,
+      );
 
       // Day13 D-7 / Day15 D-2: fail-open checks — evidence only, taskState is
       // not mutated. Stage check now sees the input: a deterministic skip-demand
@@ -695,10 +714,16 @@ export async function registerAgentRoutes(
         checkTask(firstResult.reply)?.level === "critical" ||
         checkInvariants(firstResult.reply)?.level === "critical";
       const secondResult = critical
-        ? await deps.llmAgent.run(agent, input, runHistory, {
-            ...runOverrides,
-            stageRetry: true,
-          })
+        ? await deps.llmAgent.run(
+            agent,
+            input,
+            runHistory,
+            {
+              ...runOverrides,
+              stageRetry: true,
+            },
+            onStage,
+          )
         : null;
 
       const taskCheck = checkTask(

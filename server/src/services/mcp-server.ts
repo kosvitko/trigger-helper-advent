@@ -5,10 +5,15 @@ import type { FastifyInstance } from "fastify";
 import type { Point } from "@trigger-helper/shared";
 import type { PointsService } from "./points.js";
 import type { SchedulerService } from "./scheduler.js";
+import { PipelineError, type PipelinesService } from "./pipelines.js";
 
 /**
- * Day17: own MCP server around the product atlas — read-only PointsService.
- * Registered tools never call the LLM and never touch secrets (design TR-2).
+ * Day17: own MCP server around the product atlas. Day18: scheduler tools.
+ * Day19 (canon gate Pick A): pipeline tools search/summarize/saveToFile —
+ * summarize calls the LLM (deepseek-chat, budget-guarded + ledger-recorded),
+ * which revises the day17 "tools never call the LLM" invariant (design D-4);
+ * saveToFile is the first writing tool (hard root var/pipelines/, sanitized
+ * name, caps, atomic write). All other tools remain read-only, no secrets.
  */
 
 const ZONE_VALUES = ["head", "arm", "shoulder"] as const;
@@ -50,6 +55,49 @@ const scheduleJobShape = {
 
 const cancelJobShape = {
   id: z.string().min(1).describe("id задачи из list_jobs или schedule_job"),
+};
+
+// Day19: pipeline tools — search → summarize → saveToFile (design §4.1).
+const searchShape = {
+  query: z
+    .string()
+    .min(3)
+    .max(120)
+    .describe(
+      "Запрос на английском для PubMed (русский не ищется), пример: massage therapy",
+    ),
+  retmax: z
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .optional()
+    .describe("Сколько статей вернуть (по умолчанию 5)"),
+};
+
+const summarizeShape = {
+  pmids: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(5)
+    .describe("pmid статей из search"),
+  focus: z
+    .string()
+    .max(200)
+    .optional()
+    .describe("На что сделать акцент в сводке"),
+};
+
+const saveToFileShape = {
+  filename: z
+    .string()
+    .min(1)
+    .max(64)
+    .describe("Имя файла: латиница/цифры/._- , расширение .md или .txt"),
+  content: z
+    .string()
+    .min(1)
+    .describe("Текст файла (например, сводка из summarize)"),
 };
 
 /**
@@ -146,6 +194,77 @@ export const OWN_MCP_TOOL_SCHEMAS = [
       required: ["id"],
     },
   },
+  {
+    name: "search",
+    description:
+      "Шаг 1 из 3 пайплайна: ищет публикации PubMed. query — НА АНГЛИЙСКОМ (PubMed " +
+      "не ищет по-русски), окно 30 дней. pmid из результата — в summarize.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          minLength: 3,
+          maxLength: 120,
+          description: "Запрос на английском для PubMed, пример: massage therapy",
+        },
+        retmax: {
+          type: "integer",
+          minimum: 1,
+          maximum: 20,
+          description: "Сколько статей вернуть (по умолчанию 5)",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "summarize",
+    description:
+      "Шаг 2 из 3 пайплайна: краткая сводка по pmid из search. Получив текст — СРАЗУ " +
+      "вызови saveToFile (content = текст), не пересказывай сводку в ответе.",
+    parameters: {
+      type: "object",
+      properties: {
+        pmids: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 5,
+          description: "pmid статей из search (≤5)",
+        },
+        focus: {
+          type: "string",
+          maxLength: 200,
+          description: "На что сделать акцент (опционально)",
+        },
+      },
+      required: ["pmids"],
+    },
+  },
+  {
+    name: "saveToFile",
+    description:
+      "Шаг 3 из 3 пайплайна: сохраняет текст сводки (content) в файл. " +
+      "filename — латиница/цифры/._- , .md/.txt. В ответе назови файл.",
+    parameters: {
+      type: "object",
+      properties: {
+        filename: {
+          type: "string",
+          minLength: 1,
+          maxLength: 64,
+          description: "Имя файла: латиница/цифры/._- , .md или .txt",
+        },
+        content: {
+          type: "string",
+          minLength: 1,
+          description: "Текст файла (например, сводка из summarize)",
+        },
+      },
+      required: ["filename", "content"],
+    },
+  },
 ] as const;
 
 export type OwnMcpToolName = (typeof OWN_MCP_TOOL_SCHEMAS)[number]["name"];
@@ -154,9 +273,16 @@ function toolText(payload: unknown): { content: [{ type: "text"; text: string }]
   return { content: [{ type: "text", text: JSON.stringify(payload) }] };
 }
 
+/** Day19: PipelineError codes go to the model verbatim; the rest — prefixed. */
+function pipelineErrorText(prefix: string, error: unknown): string {
+  if (error instanceof PipelineError) return error.code;
+  return `${prefix}: ${error instanceof Error ? error.message : String(error)}`;
+}
+
 function createOwnMcpServer(
   pointsService: PointsService,
   scheduler: SchedulerService,
+  pipelines: PipelinesService,
 ): McpServer {
   const server = new McpServer({
     name: "trigger-helper-atlas",
@@ -305,6 +431,62 @@ function createOwnMcpServer(
     },
   );
 
+  // ---- Day19: pipeline tools (design §4.1; canon gate Pick A) ----
+
+  server.registerTool(
+    "search",
+    {
+      description: OWN_MCP_TOOL_SCHEMAS[6].description,
+      inputSchema: searchShape,
+    },
+    async ({ query, retmax }) => {
+      try {
+        return toolText(await pipelines.search({ query, retmax }));
+      } catch (error) {
+        return {
+          ...toolText({ error: pipelineErrorText("search_failed", error) }),
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "summarize",
+    {
+      description: OWN_MCP_TOOL_SCHEMAS[7].description,
+      inputSchema: summarizeShape,
+    },
+    async ({ pmids, focus }) => {
+      try {
+        return toolText(await pipelines.summarize({ pmids, focus }));
+      } catch (error) {
+        return {
+          ...toolText({ error: pipelineErrorText("summarize_failed", error) }),
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "saveToFile",
+    {
+      description: OWN_MCP_TOOL_SCHEMAS[8].description,
+      inputSchema: saveToFileShape,
+    },
+    async ({ filename, content }) => {
+      try {
+        return toolText(await pipelines.saveToFile({ filename, content }));
+      } catch (error) {
+        return {
+          ...toolText({ error: pipelineErrorText("save_failed", error) }),
+          isError: true,
+        };
+      }
+    },
+  );
+
   return server;
 }
 
@@ -320,7 +502,11 @@ export function ownMcpUrl(port: number): string {
  */
 export async function registerOwnMcpRoute(
   app: FastifyInstance,
-  opts: { pointsService: PointsService; scheduler: SchedulerService },
+  opts: {
+    pointsService: PointsService;
+    scheduler: SchedulerService;
+    pipelines: PipelinesService;
+  },
 ): Promise<void> {
   app.post("/mcp", async (request, reply) => {
     reply.hijack();
@@ -328,7 +514,11 @@ export async function registerOwnMcpRoute(
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
-    const server = createOwnMcpServer(opts.pointsService, opts.scheduler);
+    const server = createOwnMcpServer(
+      opts.pointsService,
+      opts.scheduler,
+      opts.pipelines,
+    );
     try {
       await server.connect(transport);
       await transport.handleRequest(request.raw, reply.raw, request.body);

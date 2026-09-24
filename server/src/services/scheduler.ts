@@ -8,6 +8,8 @@ import type { DeepSeekService } from "./deepseek.js";
 import type { UsageLedgerService } from "./usage-ledger.js";
 import type { ThreadStore } from "./agent/threads.js";
 import { costRubFromUsage } from "./pricing.js";
+// Day19: PubMed client moved to its own module (shared with pipeline tools).
+import { efetchAbstract, esearch, esummary } from "./pubmed.js";
 
 /**
  * Day18: background scheduler — periodic PubMed collection jobs (₽0 ticks)
@@ -25,7 +27,6 @@ const repoRoot = path.resolve(
   "../..",
 );
 
-const EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 /** Deep-archive query when no job ever defined one (design §4.1, pass 04 п.6). */
 const DEFAULT_QUERY = "massage therapy";
 const ACTIVE_JOBS_MAX = 3;
@@ -37,7 +38,6 @@ const FRESH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const ESEARCH_WINDOW_DAYS = 30;
 const SUMMARY_BATCH_MAX = 3;
 const ABSTRACT_CAP = 4000;
-const FETCH_TIMEOUT_MS = 10_000;
 /** Design D-4: background summaries use deepseek-chat only (known price). */
 const SUMMARY_MODEL = "deepseek-chat";
 const SUMMARY_TIMEOUT_MS = 60_000;
@@ -122,101 +122,6 @@ function emptyStore(): Store {
       missed: 0,
     },
   };
-}
-
-/* ------------------------------- PubMed ---------------------------------- */
-
-async function eutilsJson(url: URL): Promise<unknown> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!res.ok) {
-    throw new Error(`eutils ${res.status} at ${url.pathname}`);
-  }
-  return (await res.json()) as unknown;
-}
-
-const ESearchSchema = z.object({
-  esearchresult: z.object({
-    count: z.string(),
-    idlist: z.array(z.string()),
-  }),
-});
-
-async function esearch(
-  term: string,
-  opts: { retmax: number; reldateDays?: number; retstart?: number },
-): Promise<{ count: number; pmids: string[] }> {
-  const url = new URL(`${EUTILS_BASE}/esearch.fcgi`);
-  url.searchParams.set("db", "pubmed");
-  url.searchParams.set("term", term);
-  url.searchParams.set("retmode", "json");
-  url.searchParams.set("retmax", String(opts.retmax));
-  url.searchParams.set("sort", "pub date");
-  if (opts.retstart !== undefined) {
-    url.searchParams.set("retstart", String(opts.retstart));
-  }
-  if (opts.reldateDays) {
-    url.searchParams.set("datetype", "edat");
-    url.searchParams.set("reldate", String(opts.reldateDays));
-  }
-  const parsed = ESearchSchema.parse(await eutilsJson(url));
-  return {
-    count: Number(parsed.esearchresult.count) || 0,
-    pmids: parsed.esearchresult.idlist,
-  };
-}
-
-const ESummaryDocSchema = z.object({
-  title: z.string().default(""),
-  fulljournalname: z.string().default(""),
-  pubdate: z.string().default(""),
-  epubdate: z.string().default(""),
-  authors: z.array(z.object({ name: z.string() })).default([]),
-});
-
-type ArticleMeta = {
-  title: string;
-  journal: string;
-  pubdate: string;
-  epubdate: string;
-  authors: string[];
-};
-
-async function esummary(pmids: string[]): Promise<Map<string, ArticleMeta>> {
-  const url = new URL(`${EUTILS_BASE}/esummary.fcgi`);
-  url.searchParams.set("db", "pubmed");
-  url.searchParams.set("id", pmids.join(","));
-  url.searchParams.set("retmode", "json");
-  const raw = (await eutilsJson(url)) as {
-    result?: Record<string, unknown>;
-  };
-  const map = new Map<string, ArticleMeta>();
-  const result = raw.result ?? {};
-  for (const pmid of pmids) {
-    const doc = ESummaryDocSchema.safeParse(result[pmid]);
-    if (!doc.success) continue;
-    map.set(pmid, {
-      title: doc.data.title,
-      journal: doc.data.fulljournalname || doc.data.pubdate,
-      pubdate: doc.data.pubdate,
-      epubdate: doc.data.epubdate,
-      authors: doc.data.authors.slice(0, 3).map((a) => a.name),
-    });
-  }
-  return map;
-}
-
-/** Plain-text abstract (retmode=text) — no XML parsing needed (design §5.2). */
-async function efetchAbstract(pmid: string): Promise<string> {
-  const url = new URL(`${EUTILS_BASE}/efetch.fcgi`);
-  url.searchParams.set("db", "pubmed");
-  url.searchParams.set("id", pmid);
-  url.searchParams.set("rettype", "abstract");
-  url.searchParams.set("retmode", "text");
-  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!res.ok) {
-    throw new Error(`eutils ${res.status} at efetch`);
-  }
-  return res.text();
 }
 
 /* ------------------------------ Service ---------------------------------- */

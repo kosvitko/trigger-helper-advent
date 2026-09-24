@@ -306,7 +306,11 @@ function historyToChat(
 ): ChatMessage[] {
   // Compression summaries stay in the request regardless of the window —
   // they stand in for the dialogue that was dropped.
-  const summaries = messages.filter((m) => m.role === "system");
+  const summaries = messages.filter(
+    // Day19: pipeline stage lines (label "⚙️ пайплайн") are UI-only progress —
+    // never sent to the model.
+    (m) => m.role === "system" && m.label !== PIPELINE_STAGE_LABEL,
+  );
   const dialogue = messages.filter((m) => m.role !== "system");
   const cap = mode === "full" ? HISTORY_FULL_CAP : HISTORY_TAIL;
 
@@ -585,6 +589,39 @@ function clipToolResult(text: string): string {
   return text.length > 300 ? `${text.slice(0, 299)}…` : text;
 }
 
+/** Day19 (фидбек Кости): human-visible stage line per executed tool call —
+ *  appended to the live chat thread while the multi-round chain runs
+ *  (same delivery path as day18 digests). */
+export const PIPELINE_STAGE_LABEL = "⚙️ пайплайн";
+
+const TOOL_STAGE_TEXT: Record<
+  string,
+  (args: Record<string, unknown>) => string
+> = {
+  search: (a) => `🔎 Ищу публикации PubMed: «${String(a.query ?? "")}»…`,
+  summarize: (a) =>
+    `✍️ Готовлю сводку по ${Array.isArray(a.pmids) ? a.pmids.length : 0} публ.…`,
+  saveToFile: (a) => `💾 Сохраняю файл «${String(a.filename ?? "")}»…`,
+  list_points: () => "📋 Открываю атлас триггерных точек…",
+  get_point: (a) => `📋 Читаю точку «${String(a.id ?? "")}»…`,
+  schedule_job: (a) => `⏰ Ставлю фоновый сбор: «${String(a.query ?? "")}»…`,
+  get_summary: () => "📊 Собираю сводку планировщика…",
+  list_jobs: () => "📊 Смотрю фоновые задачи…",
+  cancel_job: (a) => `⏰ Отменяю задачу «${String(a.id ?? "")}»…`,
+};
+
+function stageTextFor(name: string, args: Record<string, unknown>): string {
+  const build = TOOL_STAGE_TEXT[name];
+  return build ? build(args) : `🛠 Вызываю ${name}…`;
+}
+
+/** Day19 D-2: clip role:"tool" content pushed into the model thread (the
+ *  summarize output ≤500 tokens ≈ ~2.5k chars must survive; bulky search/
+ *  list dumps must not flood later rounds). */
+function clipToolThread(text: string): string {
+  return text.length > 4_000 ? `${text.slice(0, 3_999)}…` : text;
+}
+
 function parseToolArguments(raw: string): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(raw || "{}");
@@ -623,6 +660,10 @@ export class LlmAgent {
     rawInput: string,
     history: AgentMessage[],
     overrides: AgentRunOverrides = {},
+    /** Day19 (фидбек Кости): stage lines per executed tool call — routes
+     *  замыкают на тред этого рана (latestThread здесь врёт: вопрос ещё
+     *  не записан в момент первой стадии). */
+    onStage?: (text: string) => void,
   ): Promise<AgentRunOk> {
     const input = applyInputPolicy(agent, rawInput);
     const model = overrides.model ?? agent.defaultModel ?? this.defaultModel;
@@ -766,63 +807,136 @@ export class LlmAgent {
       maxTokens: AGENT_MAX_TOKENS,
       temperature,
       model,
+      // Day19 (pass 05 F-3): cap EVERY LLM call of the run — first, tool
+      // rounds, final. The old default was 1 hour; a hung multi-round run
+      // must not stall the HTTP request.
+      timeoutMs: 60_000,
     };
     let result = await chatGuard(messages, {
       ...baseChatOptions,
       ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
     });
 
-    // Day17: one tool round — execute every tool_call of the first answer,
-    // feed results back as role:"tool" messages, and let the second call
-    // (tools omitted — a second round is structurally impossible) produce
-    // the final text that USES the results (demo criterion TR-3).
+    // Day19: multi-round tool loop (day18 D-5 lifted by canon gate) — the
+    // agent chains search → summarize → saveToFile itself, passing data
+    // through tool results into the next call's arguments (design D-1).
+    // Caps: ≤4 rounds, ≤8 executed calls per run (per-call check); an
+    // identical repeat is skipped (pass 05 F-5: exit when a round has zero
+    // NEW calls). Provider contract (pass 04 F-1): every tool_call gets a
+    // role:"tool" answer — skipped calls receive a synthesized one in the
+    // model thread ONLY; the UI trace keeps executed calls, so the badge
+    // shows no ✕ on skips (pass 05 F-2). Caps exhausted while the model
+    // still wants tools → day17 degradation: one final call WITHOUT tools
+    // (day17/18 behavior, not an error).
+    const MAX_TOOL_ROUNDS = 4;
+    const MAX_TOOL_CALLS = 8;
+    // Day19 D-2: summarize nests an LLM call — the 10 s client default
+    // would kill it.
+    const TOOL_CALL_TIMEOUT_MS = 90_000;
     let toolInject: ToolInject | undefined;
     if (result.toolCalls?.length && this.ownMcpUrl) {
-      const followup: ChatMessage[] = [
-        ...messages,
-        {
-          role: "assistant",
-          content: result.reply,
-          tool_calls: result.toolCalls,
-        },
-      ];
+      const followup: ChatMessage[] = [...messages];
       const trace: ToolCallTrace[] = [];
-      for (const call of result.toolCalls) {
-        const started = Date.now();
-        let content: string;
-        let ok = true;
-        try {
-          const toolResult = await callMcpTool(
-            this.ownMcpUrl,
-            call.function.name,
-            parseToolArguments(call.function.arguments),
-          );
-          content = toolResult.content;
-          ok = !toolResult.isError;
-        } catch (error) {
-          // Transport/timeout failure ≠ isError result — same degradation
-          // contract (design §4.2 F-D): tool row ok:false, agent answers
-          // without the point data.
-          content = JSON.stringify({
-            error: error instanceof Error ? error.message : String(error),
-          });
-          ok = false;
-        }
-        trace.push({
-          name: call.function.name,
-          arguments: parseToolArguments(call.function.arguments),
-          ok,
-          latencyMs: Date.now() - started,
-          resultClip: clipToolResult(content),
+      const usages = [result.usage];
+      let latencySum = result.latency_ms;
+      const executed = new Set<string>();
+      let current = result;
+      let rounds = 0;
+      let callsDone = 0;
+      while (
+        current.toolCalls?.length &&
+        rounds < MAX_TOOL_ROUNDS &&
+        callsDone < MAX_TOOL_CALLS
+      ) {
+        rounds += 1;
+        // Pairing: the assistant message of THIS round precedes its answers.
+        followup.push({
+          role: "assistant",
+          content: current.reply,
+          tool_calls: current.toolCalls,
         });
-        followup.push({ role: "tool", tool_call_id: call.id, content });
+        let executedThisRound = 0;
+        for (const call of current.toolCalls) {
+          const args = parseToolArguments(call.function.arguments);
+          const key = `${call.function.name}|${JSON.stringify(args)}`;
+          const synthAnswer = (error: string) =>
+            followup.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: JSON.stringify({ error }),
+            });
+          if (callsDone >= MAX_TOOL_CALLS) {
+            synthAnswer("skipped: cap reached"); // pairing kept, trace untouched
+            continue;
+          }
+          if (executed.has(key)) {
+            synthAnswer("duplicate_skipped"); // self-correct via changed args only
+            continue;
+          }
+          executed.add(key);
+          callsDone += 1;
+          executedThisRound += 1;
+          // Day19: visible stage in the chat feed of THIS thread (UI-only;
+          // excluded from the LLM context via historyToChat label filter).
+          onStage?.(stageTextFor(call.function.name, args));
+          const started = Date.now();
+          let content: string;
+          let ok = true;
+          try {
+            const toolResult = await callMcpTool(
+              this.ownMcpUrl,
+              call.function.name,
+              args,
+              TOOL_CALL_TIMEOUT_MS,
+            );
+            content = toolResult.content;
+            ok = !toolResult.isError;
+          } catch (error) {
+            // Transport/timeout failure ≠ isError result — same degradation
+            // contract (design §4.2 F-D): tool row ok:false, agent answers
+            // without the data.
+            content = JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+            });
+            ok = false;
+          }
+          trace.push({
+            name: call.function.name,
+            arguments: args,
+            ok,
+            latencyMs: Date.now() - started,
+            resultClip: clipToolResult(content),
+          });
+          followup.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: clipToolThread(content),
+          });
+        }
+        // Zero NEW calls this round → nothing left to try (pass 05 F-5);
+        // loop exits and the final no-tools call produces the text.
+        if (executedThisRound === 0) break;
+        const next = await chatGuard(followup, {
+          ...baseChatOptions,
+          ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
+        });
+        usages.push(next.usage);
+        latencySum += next.latency_ms;
+        current = next;
       }
-      const second = await chatGuard(followup, baseChatOptions);
+      if (current.toolCalls?.length) {
+        // Caps exhausted while the model still wants tools → day17 behavior:
+        // one final call WITHOUT tools produces the final text.
+        const last = await chatGuard(followup, baseChatOptions);
+        usages.push(last.usage);
+        latencySum += last.latency_ms;
+        current = last;
+      }
       toolInject = { calls: trace };
       result = {
-        ...second,
-        usage: mergeUsage([result.usage, second.usage]),
-        latency_ms: result.latency_ms + second.latency_ms,
+        ...current,
+        usage: mergeUsage(usages),
+        latency_ms: latencySum,
       };
     }
 

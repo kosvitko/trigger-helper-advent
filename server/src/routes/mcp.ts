@@ -12,27 +12,29 @@ function clipLine(text: string, max = 160): string {
 
 export async function registerMcpRoutes(
   app: FastifyInstance,
-  opts: { env: { MCP_SERVER_URL: string; PORT: number } },
+  opts: { env: { PORT: number } },
 ): Promise<void> {
   const ownUrl = ownMcpUrl(opts.env.PORT);
 
-  /** Day16: tools/list of the configured public MCP (read-only; no call_tool). */
+  /**
+   * Day16 shape, day19 source: tools/list of OUR OWN MCP server (loopback).
+   * The public DeepWiki client was removed 24.09 (Konstantin: the product
+   * won't use it); the day16 response fields are preserved — top-level now
+   * comes from the same loopback listing as the day17 `own` section.
+   */
   app.get("/api/mcp/tools", async (_request, reply) => {
     try {
-      const result = await listMcpTools(opts.env.MCP_SERVER_URL);
-      // Day17: own atlas server next to the public one. The day16 shape is
-      // untouched (deepwiki part must keep working); own failure degrades
-      // into own.ok=false instead of failing the whole endpoint.
-      let own: OwnSection;
-      try {
-        own = await ownSection(ownUrl);
-      } catch (error) {
-        own = {
-          ok: false,
-          url: ownUrl,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
+      const result = await listMcpTools(ownUrl);
+      const own: OwnSection = {
+        ok: true,
+        url: ownUrl,
+        serverInfo: result.serverInfo,
+        tools: result.tools.map((tool) => ({
+          name: tool.name,
+          description: clipLine(tool.description),
+          inputSchema: tool.inputSchema,
+        })),
+      };
       return {
         server: result.server,
         transport: "streamable-http",
@@ -54,7 +56,7 @@ export async function registerMcpRoutes(
     }
   });
 
-/** Day17: own-section of GET /api/mcp/tools — ok:true with tools, or degraded. */
+/** Day17: own-section shape of GET /api/mcp/tools — ok:true with tools, or degraded. */
 type OwnSection =
   | {
       ok: true;
@@ -63,20 +65,6 @@ type OwnSection =
       tools: { name: string; description: string; inputSchema: unknown }[];
     }
   | { ok: false; url: string; error: string };
-
-async function ownSection(url: string): Promise<Extract<OwnSection, { ok: true }>> {
-  const result = await listMcpTools(url);
-  return {
-    ok: true,
-    url,
-    serverInfo: result.serverInfo,
-    tools: result.tools.map((tool) => ({
-      name: tool.name,
-      description: clipLine(tool.description),
-      inputSchema: tool.inputSchema,
-    })),
-  };
-}
 
   /** Day17: raw tools/call against our own server — demo criterion + screencast. */
   app.post("/api/mcp/call", async (request, reply) => {
@@ -94,10 +82,13 @@ async function ownSection(url: string): Promise<Extract<OwnSection, { ok: true }
     }
     const started = Date.now();
     try {
+      // Day19 D-2: summarize nests an LLM call — 90 s (the 10 s client
+      // default would kill it on the manual demo path too).
       const result = await callMcpTool(
         ownUrl,
         parsed.data.name,
         parsed.data.arguments ?? {},
+        90_000,
       );
       return {
         name: parsed.data.name,

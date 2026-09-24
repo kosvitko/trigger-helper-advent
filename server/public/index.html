@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day18</title>
+  <title>Trigger Helper — Агент · day19</title>
   <style>
     :root {
       color-scheme: light;
@@ -754,7 +754,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day18</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day19</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -1392,11 +1392,16 @@
 
     function renderMessages() {
       el.messages.innerHTML = "";
-      if (!state.messages.length) {
+      // Day19: стадии пайплайна аппендятся в тред до записи вопроса — рисуем
+      // в хронологии createdAt, иначе визуальный порядок ломается.
+      const drawList = [...state.messages].sort((a, b) =>
+        String(a.createdAt).localeCompare(String(b.createdAt)),
+      );
+      if (!drawList.length) {
         el.messages.innerHTML = '<p class="empty">Нет сообщений в этом агенте</p>';
         return;
       }
-      for (const m of state.messages) {
+      for (const m of drawList) {
         const wrap = document.createElement("div");
         wrap.className = "msg " + m.role;
         if (m.role === "user") {
@@ -1414,7 +1419,7 @@
           wrap.innerHTML = `
             <div class="bubble"></div>
             <div class="msg-meta">
-              <span class="badge compress">сводка истории</span>
+              <span class="badge compress">${m.label || "сводка истории"}</span>
               <span class="badge">${m.usage ? fmtTok(m.usage.total_tokens) + " tok" : "—"}</span>
               <span class="badge">${fmtRub(rub)}</span>
               ${delta}
@@ -3003,6 +3008,7 @@
               ? { name: last.name, ok: last.ok, latencyMs: last.latencyMs, resultClip: last.resultClip }
               : null;
             renderMcpLastCall();
+            loadPipelines().catch(() => undefined); // Day19: файл пайплайна — в секции
           } else {
             state.toolInfo = null;
             state.toolInject = null;
@@ -3374,37 +3380,31 @@
       try {
         const data = await api("/api/mcp/tools");
         el.mcpBlock.hidden = false;
-        const rows = data.tools
-          .map(
-            (t, i) =>
-              '<div class="inv-row"><span class="inv-n">' + (i + 1) + "</span>" +
-              '<span class="inv-text" title="' + escAttr(t.description || "") + '">' + escAttr(t.name) + "</span></div>",
-          )
-          .join("");
-        // Day17: our own atlas server next to the public one (POST /mcp).
-        let ownHtml = "";
+        // Day19: single listing view — our own server (the public DeepWiki
+        // part was removed 24.09). Payload keeps the day16 top-level shape.
+        let listing = "";
         if (data.own && data.own.ok) {
           const ownRows = data.own.tools
             .map(
-              (t) =>
-                '<div class="inv-row"><span class="inv-n">·</span>' +
+              (t, i) =>
+                '<div class="inv-row"><span class="inv-n">' + (i + 1) + "</span>" +
                 '<span class="inv-text" title="' + escAttr(JSON.stringify(t.inputSchema)) + '">' + escAttr(t.name) + "</span></div>",
             )
             .join("");
-          ownHtml =
-            '<div class="inv-text" style="margin-top:4px">наш сервер · ' + escAttr(data.own.url) +
-            " · " + escAttr(data.own.serverInfo.name) + "</div>" + ownRows;
+          listing =
+            '<span class="ctx-title">' + escAttr(data.own.url) + " · " + escAttr(data.own.serverInfo.name) + "</span>" + ownRows;
         } else if (data.own) {
-          ownHtml =
+          listing =
             '<div class="inv-text" style="color:#b33333">наш сервер · недоступен — ' + escAttr(data.own.error) + "</div>";
         }
         el.mcpBlock.innerHTML =
           "<summary>MCP · " + escAttr(data.serverInfo.name) + " · " + data.toolCount + " " + mcpPluralTools(data.toolCount) + "</summary>" +
-          '<span class="ctx-title">' + escAttr(data.server) + " · " + escAttr(data.transport) + "</span>" + rows +
+          listing +
           '<div class="inv-text" style="color:var(--muted,#999)">схема тулов ≈ ' + data.meta.tokensEstimate +
-          " ток. на каждый вызов LLM — учёт для оркестрации (day17+)</div>" + ownHtml +
+          " ток. на каждый вызов LLM — учёт для оркестрации</div>" +
           '<div id="mcp-last-call" hidden></div>' +
-          '<div id="mcp-scheduler" hidden></div>';
+          '<div id="mcp-scheduler" hidden></div>' +
+          '<div id="mcp-pipelines" hidden></div>';
         renderMcpLastCall();
       } catch (err) {
         el.mcpBlock.hidden = false;
@@ -3466,6 +3466,37 @@
           : "");
     }
 
+    /** Day19: saved pipeline files (list) inside #mcp-block — fetched on boot
+        and refetched after every tools-run; no extra polling (design D-7). */
+    function renderPipelines(data) {
+      const box = document.getElementById("mcp-pipelines");
+      if (!box) return;
+      if (!data || !data.files || !data.files.length) {
+        box.hidden = true;
+        box.innerHTML = "";
+        return;
+      }
+      const rows = data.files
+        .slice(0, 5)
+        .map(
+          (f) =>
+            '<div class="inv-row"><span class="inv-n">·</span><span class="inv-text">' +
+            escAttr(f.name) + " · " + f.bytes + " Б · " +
+            escAttr(new Date(f.mtime).toLocaleTimeString()) + "</span></div>",
+        )
+        .join("");
+      box.hidden = false;
+      box.innerHTML =
+        '<div class="inv-text" style="margin-top:6px"><b>Пайплайны</b> · файлов: ' + data.total + "</div>" + rows;
+    }
+    async function loadPipelines() {
+      try {
+        renderPipelines(await api("/api/pipelines"));
+      } catch (_) {
+        renderPipelines(null); // endpoint down — section stays hidden
+      }
+    }
+
     /** Day18: live chat delivery — scheduler digests append to the thread;
         poll the feed (5 s) and re-render when new messages arrive. */
     let feedWatch = null; // { key, count }
@@ -3501,8 +3532,11 @@
         await loadModels();
         await loadUsage();
         await hydrate();
-        loadMcpTools().catch(() => undefined);
+        // Day19: pipelines-секция живёт ВНУТРИ #mcp-block — рендерится после
+        // loadMcpTools, иначе её контейнер пересоздаётся пустым (кадр дубля 5).
+        await loadMcpTools().catch(() => undefined);
         loadSchedulerState().catch(() => undefined);
+        loadPipelines().catch(() => undefined);
         // Day18: the scheduler section is the only thing polled — a summary/tick
         // must appear on screen without user action (demo PASS #2/#3).
         setInterval(() => {

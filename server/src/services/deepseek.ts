@@ -211,18 +211,31 @@ export class DeepSeekService {
     return Boolean(this.env.PROXYAPI_API_KEY);
   }
 
-  /** Day05 weak/mid/strong — ProxyAPI when key present, else DeepSeek fallbacks. */
+  /** Day05 weak/mid/strong — ProxyAPI when key present, else DeepSeek fallbacks.
+   *  Day19 (решение Кости 24.09): DEMO_MODELS задаёт список ЦЕЛИКОМ — тиры без
+   *  записи в env из списка выпадают (strong убран: сильная — только временно
+   *  на пересъёмку, демо-env паттерн day08/18). */
   getDemoModels(): DemoModelInfo[] {
     const fromEnv = this.env.DEMO_MODELS?.split(",")
       .map((s) => s.trim())
       .filter(Boolean);
     const useProxy = this.hasProxyApi();
 
-    return ASK_DEMO_MODEL_TIERS.map((tier, index) => {
-      const override = fromEnv?.[index];
-      const model =
-        override ??
-        (useProxy ? tier.proxyModel : tier.deepseekModel);
+    if (fromEnv && fromEnv.length > 0) {
+      return ASK_DEMO_MODEL_TIERS.slice(0, fromEnv.length).map((tier, index) => {
+        const model =
+          fromEnv[index] ?? (useProxy ? tier.proxyModel : tier.deepseekModel);
+        return {
+          tier: tier.tier,
+          label: tier.label,
+          model,
+          via: isProxyModelId(model) && useProxy ? "proxyapi" : "deepseek",
+        };
+      });
+    }
+
+    return ASK_DEMO_MODEL_TIERS.map((tier) => {
+      const model = useProxy ? tier.proxyModel : tier.deepseekModel;
       return {
         tier: tier.tier,
         label: tier.label,

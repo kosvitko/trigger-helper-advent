@@ -8,6 +8,7 @@ import { registerAskRoutes } from "./routes/ask.js";
 import { registerCompareRoutes } from "./routes/compare.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
+import { registerPipelinesRoutes } from "./routes/pipelines.js";
 import { registerSchedulerRoutes } from "./routes/scheduler.js";
 import { registerUsageRoutes } from "./routes/usage.js";
 import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";import { createInstanceRegistry } from "./services/agent/instance-registry.js";
@@ -27,6 +28,7 @@ import { createDeepSeekService } from "./services/deepseek.js";
 import { createPointsService } from "./services/points.js";
 import { createUsageLedgerService } from "./services/usage-ledger.js";
 import { ownMcpUrl, registerOwnMcpRoute } from "./services/mcp-server.js";
+import { createPipelinesService } from "./services/pipelines.js";
 import { createSchedulerService } from "./services/scheduler.js";
 
 const serverRoot = path.resolve(
@@ -72,6 +74,13 @@ async function main(): Promise<void> {
     threads,
   });
   await scheduler.load();
+  // Day19: pipeline tools — search (PubMed) / summarize (nested LLM) /
+  // saveToFile (first writing tool, var/pipelines/).
+  const pipelines = createPipelinesService({
+    env,
+    deepSeek: deepSeekService,
+    ledger: usageLedger,
+  });
   const day10State = createDay10StateStore({
     onChange: () => agentState.scheduleSave(),
   });
@@ -148,12 +157,14 @@ async function main(): Promise<void> {
     taskStateStore,
     invariantStore,
   });
-  // Day16: MCP client — connect to the configured public MCP, list tools.
+  // Day16→19: MCP tools listing — own server only (public DeepWiki removed).
   await registerMcpRoutes(app, { env });
   // Day17: own MCP server (product atlas) on POST /mcp — tools/call target.
-  await registerOwnMcpRoute(app, { pointsService, scheduler });
+  await registerOwnMcpRoute(app, { pointsService, scheduler, pipelines });
   // Day18: read-only scheduler state (jobs/counters/last summary).
   await registerSchedulerRoutes(app, { scheduler });
+  // Day19: saved pipeline files (list + ?name= content).
+  await registerPipelinesRoutes(app, { pipelines });
 
   await app.register(fastifyStatic, {
     root: path.join(serverRoot, "public"),
