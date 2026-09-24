@@ -325,6 +325,8 @@ export const TokenBreakdownSchema = z.object({
   historyMessages: z.number().int().nonnegative(),
   /** Day10: extract call tokens when known before estimate assembly. */
   extract: z.number().int().nonnegative().optional(),
+  /** Day17: tool-scheme tokens riding every tools-run request. */
+  tools: z.number().int().nonnegative().optional(),
 });
 export type TokenBreakdownDto = z.infer<typeof TokenBreakdownSchema>;
 
@@ -361,6 +363,8 @@ export const AgentRunRequestSchema = z.object({
       compressEvery: z.number().int().nonnegative().max(100).optional(),
       /** Day10 primary: context assembly strategy. Absent = day09 (historyMode only). */
       contextStrategy: AgentContextStrategySchema.optional(),
+      /** Day17: enable MCP tool use for this run (default false — explicit opt-in). */
+      tools: z.boolean().optional(),
     })
     .optional(),
 });
@@ -462,6 +466,21 @@ export const AgentRunContextSchema = z.object({
           latency_ms: z.number().int().nonnegative().optional(),
         })
         .optional(),
+    })
+    .optional(),
+  /** Day17: MCP tool calls inside this run — present only in tools-runs;
+   *  calls — always an array (failure = row with ok:false). */
+  tool: z
+    .object({
+      calls: z.array(
+        z.object({
+          name: z.string().min(1),
+          arguments: z.unknown().optional(),
+          ok: z.boolean(),
+          latencyMs: z.number().int().nonnegative(),
+          resultClip: z.string(),
+        }),
+      ),
     })
     .optional(),
 });

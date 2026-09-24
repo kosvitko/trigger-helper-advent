@@ -6,9 +6,27 @@ import { Agent, fetch as undiciFetch } from "undici";
 import type { Env } from "../config/env.js";
 import { estimateCost } from "./pricing.js";
 
+/** Day17: OpenAI-compatible tool-call request returned by the model. */
+export type ToolCallRequest = {
+  id: string;
+  /** DeepSeek/OpenAI require the literal "function" on the wire (422 otherwise). */
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+/** Day17: function spec for ChatOptions.tools (JSON Schema parameters). */
+export type ToolSpec = {
+  type: "function";
+  function: { name: string; description: string; parameters: unknown };
+};
+
 export type ChatMessage = {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /** Day17: set on assistant messages that request tool execution. */
+  tool_calls?: ToolCallRequest[];
+  /** Day17: set on role:"tool" — id of the call this result answers. */
+  tool_call_id?: string;
 };
 
 export type ChatOptions = {
@@ -19,6 +37,9 @@ export type ChatOptions = {
   temperature?: number;
   /** Override model id (DeepSeek or ProxyAPI provider/model). */
   model?: string;
+  /** Day17: function-calling tools; absent = plain chat (day16 behavior). */
+  tools?: ToolSpec[];
+  toolChoice?: "auto";
 };
 
 /**
@@ -115,7 +136,11 @@ type ChatApiResponse = {
   choices?: Array<{
     finish_reason?: string;
     message?: {
-      content?: string;
+      content?: string | null;
+      tool_calls?: Array<{
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
     };
   }>;
   usage?: RawUsage;
@@ -129,6 +154,8 @@ export type ChatResult = {
   usage: LlmUsage;
   finishReason?: string;
   latency_ms: number;
+  /** Day17: tool execution requests (empty/absent = plain text answer). */
+  toolCalls?: ToolCallRequest[];
 };
 
 export type DemoModelInfo = {
@@ -248,6 +275,10 @@ export class DeepSeekService {
     if (options.temperature !== undefined) {
       body.temperature = options.temperature;
     }
+    if (options.tools?.length) {
+      body.tools = options.tools;
+      body.tool_choice = options.toolChoice ?? "auto";
+    }
 
     const started = Date.now();
     let response: Awaited<ReturnType<typeof undiciFetch>>;
@@ -279,8 +310,25 @@ export class DeepSeekService {
     }
 
     const choice = payload.choices?.[0];
-    const reply = choice?.message?.content?.trim();
-    if (!reply) {
+    const rawMessage = choice?.message;
+    // Day17: with tools in play the model may answer with tool_calls and a
+    // null content — an empty-reply throw must not fire for that case.
+    const toolCalls = (rawMessage?.tool_calls ?? []).flatMap((call) =>
+      call?.id && call.function?.name
+        ? [
+            {
+              id: call.id,
+              type: "function" as const,
+              function: {
+                name: call.function.name,
+                arguments: call.function.arguments ?? "{}",
+              },
+            },
+          ]
+        : [],
+    );
+    const reply = rawMessage?.content?.trim() ?? "";
+    if (!reply && toolCalls.length === 0) {
       throw new Error(`${endpoint.label} returned an empty reply`);
     }
 
@@ -291,6 +339,7 @@ export class DeepSeekService {
       usage: normalizeUsage(resolvedModel, payload.usage, model),
       finishReason: choice?.finish_reason,
       latency_ms,
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
     };
   }
 }

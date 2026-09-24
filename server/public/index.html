@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day16</title>
+  <title>Trigger Helper — Агент · day17</title>
   <style>
     :root {
       color-scheme: light;
@@ -538,6 +538,8 @@
     .profile-panel .profile-fields textarea { resize: vertical; }
     .profile-panel .profile-del:hover { color: var(--error, #b33); }
     .msg-meta .badge.profile { color: #6fa8c9; }
+    .msg-meta .badge.tool { color: #7a9a6f; }
+    .msg-meta .badge.tool.fail { color: #b33333; }
     .msg-meta .badge.task { color: #c9a26f; }
     .msg-meta .badge.task.check-ok { color: #4a9a5b; }
     .msg-meta .badge.task.check-warn { color: #c9862b; }
@@ -752,7 +754,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day16</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day17</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -920,6 +922,10 @@
       invariants: [],
       invariantsInfo: null,
       invariantsInject: null,
+      /** Day17: live-run tool trace (badge source) + last call for #mcp-block. */
+      toolInfo: null,
+      toolInject: null,
+      lastToolCall: null,
       branch: { forked: false, activeBranchId: null },
       strategyLock: false,
       lastPayloadMessages: [],
@@ -1436,6 +1442,9 @@
                 ? '<span class="badge task check-' + (state.taskInfo.checkLevel || "warn") + '">проработка: ' + stageLabel(state.taskInfo.stage) +
                   (state.taskInfo.paused ? " ⏸" : "") +
                   (state.taskInfo.checkMark || "") + "</span>"
+                : ""}
+              ${state.toolInfo && state.toolInfo.messageId === m.id && state.toolInfo.names
+                ? '<span class="badge tool' + (state.toolInfo.anyFail ? " fail" : "") + '">tool: ' + escAttr(state.toolInfo.names) + "</span>"
                 : ""}
               <span class="badge">${m.model || "?"}</span>
               <span class="badge">${m.latency_ms != null ? m.latency_ms + " ms" : "—"}</span>
@@ -2780,6 +2789,8 @@
         // Day10 comparison: prefer compressEvery=0 when Lab field empty.
         if (rawEvery === "") overrides.compressEvery = 0;
       }
+      // Day17: composer always opts in to MCP tools — «вызов из приложения».
+      overrides.tools = true;
       // Day09: predict BEFORE the optimistic user-message push — the server
       // counts on the pre-send thread with the same formula.
       // When day10 forces compressEvery=0, skip compress-poll UI.
@@ -2977,6 +2988,24 @@
           } else {
             state.invariantsInfo = null;
             state.invariantsInject = null;
+          }
+          // Day17: tool-call trace — badge for this reply + clip in #mcp-block.
+          if (data.context.tool) {
+            const calls = data.context.tool.calls || [];
+            state.toolInfo = {
+              messageId: data.message?.id,
+              names: calls.map((c) => c.name + (c.ok ? "" : " ✕")).join(", "),
+              anyFail: calls.some((c) => !c.ok),
+            };
+            state.toolInject = data.context.tool;
+            const last = calls[calls.length - 1] || null;
+            state.lastToolCall = last
+              ? { name: last.name, ok: last.ok, latencyMs: last.latencyMs, resultClip: last.resultClip }
+              : null;
+            renderMcpLastCall();
+          } else {
+            state.toolInfo = null;
+            state.toolInject = null;
           }
         }
         await loadUsage();
@@ -3322,6 +3351,23 @@
       return "инструментов";
     }
 
+    /** Day17: last executed tool call inside #mcp-block (after every tools-run). */
+    function renderMcpLastCall() {
+      const box = document.getElementById("mcp-last-call");
+      if (!box) return;
+      const call = state.lastToolCall;
+      if (!call) {
+        box.hidden = true;
+        box.innerHTML = "";
+        return;
+      }
+      box.hidden = false;
+      box.innerHTML =
+        '<div class="inv-text" style="margin-top:4px">последний вызов: <b>' + escAttr(call.name) + "</b> · " +
+        (call.ok ? "ok" : '<span style="color:#b33333">fail</span>') + " · " + call.latencyMs + " ms</div>" +
+        '<div class="inv-text" style="color:var(--muted,#999)">' + escAttr(call.resultClip) + "</div>";
+    }
+
     /** Day16: MCP tools/list — global tech block, independent of agent selection.
         Hidden until data arrives: an empty <details> renders default "Details". */
     async function loadMcpTools() {
@@ -3335,11 +3381,30 @@
               '<span class="inv-text" title="' + escAttr(t.description || "") + '">' + escAttr(t.name) + "</span></div>",
           )
           .join("");
+        // Day17: our own atlas server next to the public one (POST /mcp).
+        let ownHtml = "";
+        if (data.own && data.own.ok) {
+          const ownRows = data.own.tools
+            .map(
+              (t) =>
+                '<div class="inv-row"><span class="inv-n">·</span>' +
+                '<span class="inv-text" title="' + escAttr(JSON.stringify(t.inputSchema)) + '">' + escAttr(t.name) + "</span></div>",
+            )
+            .join("");
+          ownHtml =
+            '<div class="inv-text" style="margin-top:4px">наш сервер · ' + escAttr(data.own.url) +
+            " · " + escAttr(data.own.serverInfo.name) + "</div>" + ownRows;
+        } else if (data.own) {
+          ownHtml =
+            '<div class="inv-text" style="color:#b33333">наш сервер · недоступен — ' + escAttr(data.own.error) + "</div>";
+        }
         el.mcpBlock.innerHTML =
           "<summary>MCP · " + escAttr(data.serverInfo.name) + " · " + data.toolCount + " " + mcpPluralTools(data.toolCount) + "</summary>" +
           '<span class="ctx-title">' + escAttr(data.server) + " · " + escAttr(data.transport) + "</span>" + rows +
           '<div class="inv-text" style="color:var(--muted,#999)">схема тулов ≈ ' + data.meta.tokensEstimate +
-          " ток. на каждый вызов LLM — учёт для оркестрации (day17+)</div>";
+          " ток. на каждый вызов LLM — учёт для оркестрации (day17+)</div>" + ownHtml +
+          '<div id="mcp-last-call" hidden></div>';
+        renderMcpLastCall();
       } catch (err) {
         el.mcpBlock.hidden = false;
         el.mcpBlock.innerHTML =

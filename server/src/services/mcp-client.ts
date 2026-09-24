@@ -60,3 +60,39 @@ export async function listMcpTools(serverUrl: string): Promise<McpToolsResult> {
     };
   });
 }
+
+/** Flattened tool result: text blocks joined; isError from the protocol flag. */
+export type McpToolCallResult = {
+  content: string;
+  isError: boolean;
+};
+
+/**
+ * Day17: tools/call over the day16 connection seam. Transport errors throw —
+ * the caller (agent loop / debug route) owns the degradation contract;
+ * an isError result is a protocol answer, not an exception.
+ */
+export async function callMcpTool(
+  serverUrl: string,
+  name: string,
+  args: Record<string, unknown> = {},
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+): Promise<McpToolCallResult> {
+  return withMcpConnection(serverUrl, async (client) => {
+    const result = await client.callTool(
+      { name, arguments: args },
+      undefined,
+      { timeout: timeoutMs },
+    );
+    const blocks = Array.isArray(result.content) ? result.content : [];
+    const content = blocks
+      .map((block) =>
+        block && typeof block === "object" && "text" in block
+          ? String((block as { text: unknown }).text)
+          : "",
+      )
+      .filter(Boolean)
+      .join("\n");
+    return { content, isError: result.isError === true };
+  });
+}

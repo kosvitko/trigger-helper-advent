@@ -787,8 +787,10 @@ export async function registerAgentRoutes(
 
       const context: AgentRunContext = {
         strategy,
+        // historyChat is the pre-loop history — historyToChat only ever
+        // emits system/user/assistant ("tool" exists only inside run()).
         historyMessages: result.historyChat.map((m) => ({
-          role: m.role,
+          role: m.role as "user" | "assistant" | "system",
           content: m.content,
         })),
         // Day12: explicit null (not omission) — schema allows both, design §3.4.
@@ -850,6 +852,9 @@ export async function registerAgentRoutes(
               extract: extractInfo,
             }
           : {}),
+        // Day17: MCP tool-call frame — present only in tools-runs (calls is
+        // always an array there; failure = rows with ok:false).
+        ...(result.toolInject ? { tool: result.toolInject } : {}),
       };
 
       const body: AgentRunResponse = {

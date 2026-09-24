@@ -9,8 +9,7 @@ import { registerCompareRoutes } from "./routes/compare.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerUsageRoutes } from "./routes/usage.js";
-import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";
-import { createInstanceRegistry } from "./services/agent/instance-registry.js";
+import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";import { createInstanceRegistry } from "./services/agent/instance-registry.js";
 import { createDay10StateStore } from "./services/agent/day10-state.js";
 import { createMemoryStateStore } from "./services/agent/memory-state.js";
 import { createProfileStateStore } from "./services/agent/profile-state.js";
@@ -26,6 +25,7 @@ import { createThreadStore } from "./services/agent/threads.js";
 import { createDeepSeekService } from "./services/deepseek.js";
 import { createPointsService } from "./services/points.js";
 import { createUsageLedgerService } from "./services/usage-ledger.js";
+import { ownMcpUrl, registerOwnMcpRoute } from "./services/mcp-server.js";
 
 const serverRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -91,6 +91,8 @@ async function main(): Promise<void> {
     deepSeekService,
     env.DEEPSEEK_MODEL,
     env.DEMO_CONTEXT_LIMIT,
+    // Day17: loopback URL of our own MCP server — enables overrides.tools
+    ownMcpUrl(env.PORT),
   );
   agentState.setSnapshotProvider((): AgentStateSnapshot => {
     const state = registry.snapshotState();
@@ -136,6 +138,8 @@ async function main(): Promise<void> {
   });
   // Day16: MCP client — connect to the configured public MCP, list tools.
   await registerMcpRoutes(app, { env });
+  // Day17: own MCP server (product atlas) on POST /mcp — tools/call target.
+  await registerOwnMcpRoute(app, { pointsService });
 
   await app.register(fastifyStatic, {
     root: path.join(serverRoot, "public"),

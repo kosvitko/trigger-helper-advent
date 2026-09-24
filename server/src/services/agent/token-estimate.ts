@@ -49,6 +49,8 @@ export type TokenBreakdown = {
   historyMessages: number;
   /** Day10: extract usage when folded into the run estimate. */
   extract?: number;
+  /** Day17: tool-schema tokens riding every tools-run request. */
+  tools?: number;
 };
 
 export function estimateMessagesBreakdown(parts: {

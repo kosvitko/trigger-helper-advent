@@ -1,58 +1,64 @@
-# AI Advent Challenge #9 — Week 04, Day 16
+# AI Advent Challenge #9 — Week 04, Day 17
 
-**Задание:** установить MCP SDK / клиент (или поднять MCP-сервер, если используется локальный вариант). Минимальный код, который устанавливает MCP-соединение и получает от MCP список доступных инструментов. Проверить: соединение устанавливается, список корректно возвращается. Результат: код, который подключается к MCP и выводит список доступных инструментов. Сдача: видео + код. P.S. организатора: здесь пока с MCP работать не нужно — просто запросить `get_tools` у любого общедоступного MCP.
+**Задание:** реализовать свой MCP-сервер вокруг любого API (например: Яндекс.Трекер, Git, CRM, mock API). Сделать: регистрацию инструмента; описание входных параметров; возврат результата. Подключить инструмент к своему агенту и: вызвать его из приложения; получить и использовать результат. Результат: агент делает вызов к MCP-инструменту и получает результат. Сдача: видео + код.
 
-Trigger Helper (day16): MCP-клиент на официальном **`@modelcontextprotocol/sdk`** (TypeScript) по транспорту **Streamable HTTP** к публичному серверу **DeepWiki MCP** (`https://mcp.deepwiki.com/mcp` — без ключей и регистрации). Контракт клиента построен с прицелом на остальные дни недели: `withMcpConnection()` / `listMcpTools()` — раздельные шаги (initialize → notifications/initialized → tools/list), соединение живёт на один вызов (per-call lifecycle, никаких фоновых сессий), а в DTO инструмента сохраняется сырой `inputSchema` — он понадобится для `call_tool` и оркестрации в дни 17–20. Соединение с MCP не встроено в чат: инструменты — это **данные** (`GET /api/mcp/tools` + блок «MCP» в UI), а не промпт — по лекции схема тулов едет в каждый sampling call и является главным расходом токенов, поэтому решение «что попадает в контекст агента» остаётся оркестрации следующих дней. В мету ответа кладётся оценка размера схемы в токенах (`meta.tokensEstimate`) — заготовка для сравнения MCP vs skills. Роут отвечает в общем формате сервера: апстрим-сбой или таймаут (10s) → `502 {error, message}`, конфиг — один env `MCP_SERVER_URL` (дефолт — DeepWiki), секретов не нужно.
+Trigger Helper (day17): собственный **MCP-сервер** вокруг данных продукта — атласа триггерных точек (11 точек, 3 зоны боли). Серверная сторона — тот же официальный **`@modelcontextprotocol/sdk`** (день 16 ставил SDK ради клиента, а в нём уже был сервер): `McpServer` + `StreamableHTTPServerTransport`, endpoint `POST /mcp` в том же процессе Fastify, stateless (свежая пара server+transport на каждый запрос, JSON-ответы, без SSE-ноги и сессий). Два инструмента: **`list_points(zone?)`** и **`get_point(id)`** — read-only обёртки `PointsService`, без LLM внутри; входные параметры описаны Zod-схемой (для `registerTool`) и зеркальной JSON Schema для LLM — рядом, в одном модуле. Агент вызывает инструменты через **`callTool`** day16-клиентом по loopback — и **использует результат**: в `LlmAgent.run()` один раунд tool-calling (модель вернула `tool_calls` → исполняем все через MCP → результаты назад сообщениями `role:"tool"` → второй вызов без tools даёт финальный текст). Схемы тулов по умолчанию **не** едут в каждый запрос: флаг `overrides.tools`, default `false` (UI-композер включает явно) — размер схем виден в preflight-оценке и в payload (`context.tool.calls`: имя, аргументы, ok, латентность, клип результата). Видимость в UI: бейдж `tool: list_points` в ленте ответов + след последнего вызова в блоке «MCP». Для проверки руками — `POST /api/mcp/call {name, arguments}`. Безопасность: тулзы только читают JSON-атлас, ключей не нужно; `/mcp` и `/api/mcp/call` под rate-limit, при этом собственные loopback-вызовы сервера исключены из бакета (иначе агент 429-ил бы сам себя посреди демо).
 
-**Live demo:** http://91.188.212.10/ · **Tag:** [`week04-day16`](https://github.com/kosvitko/trigger-helper-advent/tree/week04-day16)
+**Live demo:** http://91.188.212.10/ · **Tag:** [`week04-day17`](https://github.com/kosvitko/trigger-helper-advent/tree/week04-day17)
 
-## Demo на видео (~22s)
-
-Блок «MCP» — в правом доке, свёрнут; соединение устанавливается на каждый boot страницы:
+## Demo на видео (~36s)
 
 | | |
 |:--|:--|
-| **Блок MCP раскрыт** | `MCP · DeepWiki · 3 инструмента` — URL сервера, транспорт `streamable-http`, список имён (`ask_wiki_question`, `read_wiki_contents`, `read_wiki_structure`), «схема тулов ≈ 266 ток.» |
-| **F5** | страница перезагружена — соединение установлено заново, тот же список (per-call lifecycle) |
-| **Сырой код** | `GET /api/mcp/tools` — полный JSON: `server`, `transport`, `serverInfo` (DeepWiki 2.14.3), `toolCount: 3`, tools[], `meta.tokensEstimate` |
+| **Блок «MCP» раскрыт** | DeepWiki (day16) + **наш сервер** `http://127.0.0.1:3000/mcp · trigger-helper-atlas` — тулзы `list_points`, `get_point` (схемы — в tooltip) |
+| **Вопрос агенту** | «Болит основание черепа и отдаёт в голову — какую триггерную точку поработать и как именно?» |
+| **Ответ + след вызова** | бейдж `tool: list_points` в мете ответа; текст называет подзатылочные/ременную с техниками и предостережениями из атласа |
+| **Клип вызова** | в блоке «MCP»: «последний вызов: list_points · ok · 27 ms» + клип JSON-результата |
+| **Сырой код** | `POST /api/mcp/call {name:"list_points",arguments:{zone:"arm"}}` — полный результат: 3 точки, `isError:false`, латентность |
 
 ## Выводы
 
-подключили публичные mcp-серверы. первый же дает ответ. Вопрос - как доверять содержимому - открытый. С другой стороны - различные плагины тоже не проверишь, и, вроде бы количество пользователей mcp должно некоторым образом повышать гарантию безопасности, хотя это спорно.
+по вызову mcp особых выводов нет. только надо запомнить - схема передается в каждом последующем вызове. а нейронка может решить вызвать тул в любой момент. так что описание mcp в полной схеме - единственный вариант.
 
 ## Что где реализовано
 
 | Требование | Где |
 |:-----------|:----|
-| MCP SDK установлен | `@modelcontextprotocol/sdk` в `server/package.json` — `Client` + `StreamableHTTPClientTransport` |
-| Установка MCP-соединения | `server/src/services/mcp-client.ts` — `withMcpConnection()`: initialize → notifications/initialized → готов; connect/close per-call, таймаут 10s |
-| Список доступных инструментов | `listMcpTools()` → `tools/list`; DTO `{name, description, inputSchema}` (raw schema сохранён для дней 17–20) |
-| Вывод списка (код) | `server/src/routes/mcp.ts` — `GET /api/mcp/tools` → `{server, transport, serverInfo, toolCount, tools[{name, description}], meta.tokensEstimate}`; сбой апстрима → 502 `{error, message}` |
-| Конфиг без секретов | `MCP_SERVER_URL` в `server/src/config/env.ts` (default `https://mcp.deepwiki.com/mcp`); публичный read-only список — ключи не нужны |
-| Вывод списка (UI) | `server/public/index.html` — details-блок «MCP» в доке: имя сервера, число инструментов, transport, имена; появляется только после ответа (пустой блок не показываем) |
-| Задел на дни 17–20 | соединение/транспорт за модулем; `inputSchema` сохранён; `meta.tokensEstimate` — базовая линия для сравнения MCP vs skills; инжект инструментов в промпт агента — осознанно вне дня 16 |
+| Свой MCP-сервер | `server/src/services/mcp-server.ts` — `McpServer` + `StreamableHTTPServerTransport` (stateless, `enableJsonResponse`, POST-only; GET → 404) на `POST /mcp` |
+| Регистрация инструмента | `registerTool("list_points"/"get_point")` — read-only обёртки `PointsService.loadAll/findById`, LLM внутри тулз нет |
+| Описание входных параметров | Zod raw shapes для SDK + `OWN_MCP_TOOL_SCHEMAS` (JSON Schema для function calling) — рядом, один модуль |
+| Возврат результата | один text-блок с JSON (`{count, points}` / `{point}` / `{error}`); неизвестный id → `isError:true` |
+| Подключение к агенту | `server/src/services/mcp-client.ts` — `callMcpTool(serverUrl, name, args, timeout?)` на шве `withMcpConnection` (day16), loopback `http://127.0.0.1:PORT/mcp` |
+| Вызов из приложения + использование результата | `server/src/services/agent/llm-agent.ts` — 1-раундовый цикл: `tool_calls` → MCP → `role:"tool"` → финальный ответ; `overrides.tools` (default false, UI-композер шлёт `true`); usage двух вызовов мержится |
+| Видимость в UI | `server/public/index.html` — бейдж `tool:` в ленте (`context.tool` в payload), own-секция + «последний вызов» в блоке «MCP» |
+| Проверка руками | `POST /api/mcp/call {name, arguments}` → `{name, content, isError, latencyMs}`; own-секция в `GET /api/mcp/tools` |
+| Конфиг без секретов | ноль новых env — URL своего сервера собирается из `PORT`; тулзы читают только `data/points.json` |
 
 ## Быстрый старт
 
 ```bash
 git clone https://github.com/kosvitko/trigger-helper-advent.git
 cd trigger-helper-advent
-git checkout week04-day16
-cp .env.example .env   # DEEPSEEK_API_KEY=... (для boot сервера; MCP-ключей нет)
+git checkout week04-day17
+cp .env.example .env   # DEEPSEEK_API_KEY=... (для ответов агента; MCP-ключей нет)
 npm install
-npm run dev            # http://127.0.0.1:3000 — Agent UI · title «Агент · day16»
+npm run dev            # http://127.0.0.1:3000 — Agent UI · title «Агент · day17»
 ```
 
 ## Demo через API
 
 ```bash
-# соединение с публичным MCP + список инструментов (read-only)
-curl http://127.0.0.1:3000/api/mcp/tools
-# → {"server":"https://mcp.deepwiki.com/mcp","transport":"streamable-http",
-#    "serverInfo":{"name":"DeepWiki","version":"2.14.3"},"toolCount":3,
-#    "tools":[{"name":"ask_wiki_question",...},{"name":"read_wiki_contents",...},
-#             {"name":"read_wiki_structure",...}],"meta":{"tokensEstimate":266}}
+# сырой вызов тулзы своего MCP-сервера
+curl -X POST http://127.0.0.1:3000/api/mcp/call \
+  -H "content-type: application/json" \
+  -d '{"name":"list_points","arguments":{"zone":"arm"}}'
+# → {"name":"list_points","content":"{\"count\":3,\"points\":[...]}","isError":false,"latencyMs":26}
 
-# другой публичный MCP — тем же кодом (Streamable HTTP, без ключей)
-MCP_SERVER_URL=https://mcp.context7.com/mcp
+# tools/list своего сервера (own-секция) рядом с публичным DeepWiki
+curl http://127.0.0.1:3000/api/mcp/tools | jq .own
+
+# агент с инструментом: tool-calls → MCP → ответ, использующий результат
+curl -X POST http://127.0.0.1:3000/api/agent/run -H "content-type: application/json" \
+  -d '{"instanceId":"...","agentId":"...","input":"Болит основание черепа — что делать?","overrides":{"tools":true}}'
+# → reply использует technique/cautions из атласа; context.tool.calls — след вызова
 ```

@@ -17,8 +17,11 @@ import type {
   ChatMessage,
   ChatResult,
   DeepSeekService,
+  ToolSpec,
 } from "../deepseek.js";
 import { contextLimitForModel } from "../model-cost-tier.js";
+import { callMcpTool } from "../mcp-client.js";
+import { OWN_MCP_TOOL_SCHEMAS } from "../mcp-server.js";
 import { costRubFromUsage } from "../pricing.js";
 import { heuristicSuggestedLayer } from "./memory-state.js";
 import { buildSystemPrompt } from "./presets.js";
@@ -26,6 +29,7 @@ import { buildSystemPrompt } from "./presets.js";
 // истины один), в промпт не дублируется руками. Day15′ (260919): с русскими
 // именами кнопок — фраза ассистента совпадает с кнопкой в UI.
 import { ALLOWED_TRANSITIONS, STAGE_GOTO_LABELS } from "./task-state.js";
+import { mergeUsage } from "../usage.js";
 import {
   estimateMessagesBreakdown,
   estimateTokens,
@@ -105,6 +109,8 @@ export type AgentRunOverrides = {
    *  adds a system message «нарушал этап X» as the last message before the
    *  user turn; the text is built here from taskState/STAGE_RULES. */
   stageRetry?: boolean;
+  /** Day17: MCP tool use for this run (default false — explicit opt-in). */
+  tools?: boolean;
 };
 
 /** Request-size facts for the day08 UI (estimate; API usage is the fact). */
@@ -143,6 +149,20 @@ export type InvariantsInject = {
   inject: string;
 };
 
+/** Day17: one executed MCP tool call (UI badge + payload evidence). */
+export type ToolCallTrace = {
+  name: string;
+  arguments?: unknown;
+  ok: boolean;
+  latencyMs: number;
+  resultClip: string;
+};
+
+/** Day17: tool-call frame — present only in tools-runs; calls always an array. */
+export type ToolInject = {
+  calls: ToolCallTrace[];
+};
+
 export type AgentRunOk = {
   reply: string;
   usage: LlmUsage;
@@ -162,6 +182,8 @@ export type AgentRunOk = {
   taskInject?: TaskInject;
   /** Day14: invariants block sent to the LLM (absent when list is empty). */
   invariantsInject?: InvariantsInject;
+  /** Day17: MCP tool calls of this run (absent when tools not enabled). */
+  toolInject?: ToolInject;
 };
 
 export type ClassifyMemoryOk = {
@@ -558,6 +580,23 @@ export function shouldAutoCompress(
   return dialogueSinceLastSummary(history) - keepLast >= every;
 }
 
+/** Tool-result clip for UI/payload evidence (design §4.2: ≤300 chars). */
+function clipToolResult(text: string): string {
+  return text.length > 300 ? `${text.slice(0, 299)}…` : text;
+}
+
+function parseToolArguments(raw: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(raw || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // model emitted non-JSON arguments — call the tool with nothing
+  }
+  return {};
+}
+
 /**
  * LlmAgent — entity for day06 (name avoids clash with undici.Agent).
  * Owns config + light I/O policies + 3 context layers + run().
@@ -568,6 +607,8 @@ export class LlmAgent {
     private readonly defaultModel: string,
     /** Day08 demo: >0 forces one small window for every model. */
     private readonly contextLimitOverride = 0,
+    /** Day17: loopback URL of our own MCP server; absent = tools disabled. */
+    private readonly ownMcpUrl?: string,
   ) {}
 
   /** Effective context window for a model (DEMO_CONTEXT_LIMIT wins). */
@@ -647,6 +688,27 @@ export class LlmAgent {
       history: historyChat,
       user: input,
     });
+    // Day17: tool schemas ride EVERY tools-run request (lecture: 6 tools ≈
+    // 5.4k/call) — they must be visible in the preflight estimate, not just
+    // in the billed usage afterwards.
+    const toolSpecs: ToolSpec[] =
+      overrides.tools && this.ownMcpUrl
+        ? OWN_MCP_TOOL_SCHEMAS.map((tool) => ({
+            type: "function" as const,
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.parameters,
+            },
+          }))
+        : [];
+    const toolSchemaTokens = toolSpecs.length
+      ? estimateTokens(JSON.stringify(toolSpecs))
+      : 0;
+    if (toolSchemaTokens > 0) {
+      estimate.total += toolSchemaTokens;
+      estimate.tools = toolSchemaTokens;
+    }
     const limit = this.contextLimit(model);
     const tokens: AgentRunTokens = {
       estimate,
@@ -675,29 +737,93 @@ export class LlmAgent {
       );
     }
 
-    let result: ChatResult;
-    try {
-      result = await this.deepSeek.chat(messages, {
-        maxTokens: AGENT_MAX_TOKENS,
-        temperature,
-        model,
-      });
-    } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      if (isContextLimitMessage(text)) {
-        throw new ContextLimitError(
-          `Провайдер отказал: переполнение контекста (${model}, лимит ≈${limit} ток). ${text}`,
-          {
-            source: "api",
-            estimate: estimate.total,
-            limit,
-            model,
-            historyMode,
-            breakdown: estimate,
-          },
-        );
+    const chatGuard = async (
+      chatMessages: ChatMessage[],
+      chatOptions: Parameters<DeepSeekService["chat"]>[1],
+    ): Promise<ChatResult> => {
+      try {
+        return await this.deepSeek.chat(chatMessages, chatOptions);
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        if (isContextLimitMessage(text)) {
+          throw new ContextLimitError(
+            `Провайдер отказал: переполнение контекста (${model}, лимит ≈${limit} ток). ${text}`,
+            {
+              source: "api",
+              estimate: estimate.total,
+              limit,
+              model,
+              historyMode,
+              breakdown: estimate,
+            },
+          );
+        }
+        throw error;
       }
-      throw error;
+    };
+
+    const baseChatOptions = {
+      maxTokens: AGENT_MAX_TOKENS,
+      temperature,
+      model,
+    };
+    let result = await chatGuard(messages, {
+      ...baseChatOptions,
+      ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
+    });
+
+    // Day17: one tool round — execute every tool_call of the first answer,
+    // feed results back as role:"tool" messages, and let the second call
+    // (tools omitted — a second round is structurally impossible) produce
+    // the final text that USES the results (demo criterion TR-3).
+    let toolInject: ToolInject | undefined;
+    if (result.toolCalls?.length && this.ownMcpUrl) {
+      const followup: ChatMessage[] = [
+        ...messages,
+        {
+          role: "assistant",
+          content: result.reply,
+          tool_calls: result.toolCalls,
+        },
+      ];
+      const trace: ToolCallTrace[] = [];
+      for (const call of result.toolCalls) {
+        const started = Date.now();
+        let content: string;
+        let ok = true;
+        try {
+          const toolResult = await callMcpTool(
+            this.ownMcpUrl,
+            call.function.name,
+            parseToolArguments(call.function.arguments),
+          );
+          content = toolResult.content;
+          ok = !toolResult.isError;
+        } catch (error) {
+          // Transport/timeout failure ≠ isError result — same degradation
+          // contract (design §4.2 F-D): tool row ok:false, agent answers
+          // without the point data.
+          content = JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+          });
+          ok = false;
+        }
+        trace.push({
+          name: call.function.name,
+          arguments: parseToolArguments(call.function.arguments),
+          ok,
+          latencyMs: Date.now() - started,
+          resultClip: clipToolResult(content),
+        });
+        followup.push({ role: "tool", tool_call_id: call.id, content });
+      }
+      const second = await chatGuard(followup, baseChatOptions);
+      toolInject = { calls: trace };
+      result = {
+        ...second,
+        usage: mergeUsage([result.usage, second.usage]),
+        latency_ms: result.latency_ms + second.latency_ms,
+      };
     }
 
     const reply = applyOutputPolicy(agent, result.reply);
@@ -742,6 +868,7 @@ export class LlmAgent {
             },
           }
         : {}),
+      ...(toolInject ? { toolInject } : {}),
     };
   }
 
@@ -1043,6 +1170,7 @@ export function createLlmAgent(
   deepSeek: DeepSeekService,
   defaultModel: string,
   contextLimitOverride = 0,
+  ownMcpUrl?: string,
 ): LlmAgent {
-  return new LlmAgent(deepSeek, defaultModel, contextLimitOverride);
+  return new LlmAgent(deepSeek, defaultModel, contextLimitOverride, ownMcpUrl);
 }
