@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/services/mcp-registry.baseline.json','dist/services/mcp-registry.baseline.json')\"",
     "start": "node dist/index.js"
   },
   "dependencies": {

@@ -11,3 +11,4 @@ build/
 **/recordings/*
 !**/recordings/.gitkeep
 .DS_Store
+var/

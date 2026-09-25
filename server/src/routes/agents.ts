@@ -681,6 +681,21 @@ export async function registerAgentRoutes(
         invariants,
         ...(strategy === "facts" ? { facts: factsForRun } : {}),
       };
+      // Day20 cust-fix (Костя 25.09): вопрос пишется в тред ДО рана — тогда
+      // стадии пайплайна (append во время рана) стоят ПОСЛЕ вопроса, а не
+      // «посередине чата» до него (сортировка по createdAt). Если ран упадёт —
+      // вопрос остаётся без ответа: честно, ошибка видна в статусе.
+      // runHistory захвачен выше — вопрос в промпт не задваивается.
+      deps.threads.append(
+        instanceId,
+        threadAgentId,
+        deps.threads.createMessage({
+          role: "user",
+          content: input.trim(),
+          agentId: agent.id,
+          label: agent.label,
+        }),
+      );
       const firstResult = await deps.llmAgent.run(
         agent,
         input,
@@ -765,14 +780,6 @@ export async function registerAgentRoutes(
             },
           }
         : firstResult;
-
-      const userMsg = deps.threads.createMessage({
-        role: "user",
-        content: input.trim(),
-        agentId: agent.id,
-        label: agent.label,
-      });
-      deps.threads.append(instanceId, threadAgentId, userMsg);
 
       const assistantMsg = deps.threads.createMessage({
         role: "assistant",

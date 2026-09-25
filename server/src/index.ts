@@ -27,7 +27,8 @@ import { createThreadStore } from "./services/agent/threads.js";
 import { createDeepSeekService } from "./services/deepseek.js";
 import { createPointsService } from "./services/points.js";
 import { createUsageLedgerService } from "./services/usage-ledger.js";
-import { ownMcpUrl, registerOwnMcpRoute } from "./services/mcp-server.js";
+import { registerOwnMcpRoute } from "./services/mcp-server.js";
+import { createMcpRegistry } from "./services/mcp-registry.js";
 import { createPipelinesService } from "./services/pipelines.js";
 import { createSchedulerService } from "./services/scheduler.js";
 
@@ -108,12 +109,16 @@ async function main(): Promise<void> {
     onChange: () => agentState.scheduleSave(),
   });
   invariantStore.load(savedState.invariantStates);
+  // Day20: MCP registry — own server (in-process specs) + optional externals
+  // (MCP_SERVERS). Async boot (tools/list, ≤10 s/server) is awaited before
+  // listen; external failures degrade instead of crashing (design §3.1/§3.3).
+  const mcpRegistry = await createMcpRegistry({ port: env.PORT });
   const llmAgent = createLlmAgent(
     deepSeekService,
     env.DEEPSEEK_MODEL,
     env.DEMO_CONTEXT_LIMIT,
-    // Day17: loopback URL of our own MCP server — enables overrides.tools
-    ownMcpUrl(env.PORT),
+    // Day20: registry (own + injected externals) — enables overrides.tools.
+    mcpRegistry,
   );
   agentState.setSnapshotProvider((): AgentStateSnapshot => {
     const state = registry.snapshotState();
@@ -157,8 +162,8 @@ async function main(): Promise<void> {
     taskStateStore,
     invariantStore,
   });
-  // Day16→19: MCP tools listing — own server only (public DeepWiki removed).
-  await registerMcpRoutes(app, { env });
+  // Day16→20: MCP tools listing — own (live) + external servers (snapshot).
+  await registerMcpRoutes(app, { env, registry: mcpRegistry });
   // Day17: own MCP server (product atlas) on POST /mcp — tools/call target.
   await registerOwnMcpRoute(app, { pointsService, scheduler, pipelines });
   // Day18: read-only scheduler state (jobs/counters/last summary).

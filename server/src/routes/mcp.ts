@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { estimateTokens } from "../services/agent/token-estimate.js";
 import { callMcpTool, listMcpTools } from "../services/mcp-client.js";
+import { toWireToolSpecs, type McpRegistry } from "../services/mcp-registry.js";
 import { ownMcpUrl } from "../services/mcp-server.js";
 
 /** One-line clip for payload/UI display; the full DTO keeps the raw text. */
@@ -12,9 +13,10 @@ function clipLine(text: string, max = 160): string {
 
 export async function registerMcpRoutes(
   app: FastifyInstance,
-  opts: { env: { PORT: number } },
+  opts: { env: { PORT: number }; registry: McpRegistry },
 ): Promise<void> {
   const ownUrl = ownMcpUrl(opts.env.PORT);
+  const registry = opts.registry;
 
   /**
    * Day16 shape, day19 source: tools/list of OUR OWN MCP server (loopback).
@@ -35,6 +37,13 @@ export async function registerMcpRoutes(
           inputSchema: tool.inputSchema,
         })),
       };
+      // Day20: per-server sections from the registry snapshot (boot cache —
+      // no re-fanout here, design D-8); own entry gets the live serverInfo.
+      const servers = registry
+        .snapshot()
+        .servers.map((server) =>
+          server.name === "own" ? { ...server, serverInfo: result.serverInfo } : server,
+        );
       return {
         server: result.server,
         transport: "streamable-http",
@@ -45,8 +54,13 @@ export async function registerMcpRoutes(
           description: clipLine(tool.description),
         })),
         own,
+        servers,
         meta: {
-          tokensEstimate: estimateTokens(JSON.stringify(result.tools)),
+          // Day20 D-8: tokens of what the LLM actually receives (own specs +
+          // injected externals, wrapped) — same array as chat().tools.
+          tokensEstimate: estimateTokens(
+            JSON.stringify(toWireToolSpecs(registry.getToolSpecs())),
+          ),
         },
       };
     } catch (error) {
@@ -66,7 +80,9 @@ type OwnSection =
     }
   | { ok: false; url: string; error: string };
 
-  /** Day17: raw tools/call against our own server — demo criterion + screencast. */
+  /** Day17: raw tools/call against our own server — demo criterion + screencast.
+   *  Day20: stays own-only — external tools run via the agent loop; manual
+   *  external checks go straight to their URL (R-1), no relay through us. */
   app.post("/api/mcp/call", async (request, reply) => {
     const parsed = z
       .object({

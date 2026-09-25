@@ -27,6 +27,14 @@ const envSchema = z.object({
   /** Day19: saved pipeline files dir (default: <repo>/var/pipelines). */
   PIPELINES_DIR: z.string().optional(),
   /**
+   * Day20: external MCP servers, comma-separated `name=url` (name: [a-z0-9]+).
+   * Own server is always registered from PORT; absent value = own-only (day19).
+   * Per-server LLM injection filter: MCP_INJECT_<NAME> (comma-list of native
+   * tool names) — read directly from process.env by mcp-registry.ts; a server
+   * without the key injects NOTHING (fail-closed, design D-3).
+   */
+  MCP_SERVERS: z.string().optional(),
+  /**
    * Daily cap for expensive models only (0 = off). Moscow calendar day.
    * DeepSeek / flash-lite / gpt-4o-mini / haiku — без лимита.
    */

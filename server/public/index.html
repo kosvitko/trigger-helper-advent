@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day19</title>
+  <title>Trigger Helper — Агент · day20</title>
   <style>
     :root {
       color-scheme: light;
@@ -641,6 +641,7 @@
     }
     .lab-lock input { margin: 0; }
     .msg.system { align-self: center; max-width: 96%; }
+    .msg.system.stage { align-self: flex-start; max-width: 86%; }
     .msg.system .bubble {
       background: var(--surface-muted);
       border: 1px dashed var(--border);
@@ -754,7 +755,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day19</span></h1>
+        <h1>Trigger Helper<span class="sub">Агент · day20</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -1403,7 +1404,11 @@
       }
       for (const m of drawList) {
         const wrap = document.createElement("div");
-        wrap.className = "msg " + m.role;
+        // Day20 cust-fix: стадии пайплайна (label «⚙️ …») — влево как обычные
+        // сообщения; прочие system (сводки сжатия) остаются по центру.
+        const isStage =
+          m.role === "system" && typeof m.label === "string" && m.label.startsWith("⚙️");
+        wrap.className = "msg " + m.role + (isStage ? " stage" : "");
         if (m.role === "user") {
           wrap.innerHTML = '<div class="bubble"></div>';
           wrap.querySelector(".bubble").textContent = m.content;
@@ -2999,7 +3004,7 @@
             const calls = data.context.tool.calls || [];
             state.toolInfo = {
               messageId: data.message?.id,
-              names: calls.map((c) => c.name + (c.ok ? "" : " ✕")).join(", "),
+              names: calls.map((c) => c.name + (c.server && c.server !== "own" ? " · " + c.server : "") + (c.ok ? "" : " ✕")).join(", "),
               anyFail: calls.some((c) => !c.ok),
             };
             state.toolInject = data.context.tool;
@@ -3357,6 +3362,14 @@
       return "инструментов";
     }
 
+    function mcpPluralServers(n) {
+      const m10 = n % 10,
+        m100 = n % 100;
+      if (m10 === 1 && m100 !== 11) return "сервер";
+      if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return "сервера";
+      return "серверов";
+    }
+
     /** Day17: last executed tool call inside #mcp-block (after every tools-run). */
     function renderMcpLastCall() {
       const box = document.getElementById("mcp-last-call");
@@ -3380,8 +3393,8 @@
       try {
         const data = await api("/api/mcp/tools");
         el.mcpBlock.hidden = false;
-        // Day19: single listing view — our own server (the public DeepWiki
-        // part was removed 24.09). Payload keeps the day16 top-level shape.
+        // Day19→20: own listing first, then external registry servers —
+        // ONE innerHTML write (boot-race day19 дубль 5 не возвращать).
         let listing = "";
         if (data.own && data.own.ok) {
           const ownRows = data.own.tools
@@ -3397,10 +3410,37 @@
           listing =
             '<div class="inv-text" style="color:#b33333">наш сервер · недоступен — ' + escAttr(data.own.error) + "</div>";
         }
+        // Day20: external servers from the registry snapshot — inject mark,
+        // degraded reason visible (fail-closed прозрачен для кадра).
+        const servers = Array.isArray(data.servers)
+          ? data.servers.filter((s) => s.name !== "own")
+          : [];
+        const serverCount = servers.length + 1;
+        const totalTools =
+          servers.reduce((n, s) => n + (s.toolCount || 0), 0) +
+          (data.own && data.own.ok ? data.own.tools.length : 0);
+        const extListing = servers
+          .map((s) => {
+            const head =
+              '<span class="ctx-title">' + escAttr(s.url) + " · " + escAttr(s.serverInfo.name) + "</span>";
+            if (!s.ok) {
+              return head + '<div class="inv-text" style="color:#b33333">' + escAttr(s.name) + " · degraded — " + escAttr(s.degradedReason || "недоступен") + "</div>";
+            }
+            const rows = s.tools
+              .map((t, i) => {
+                const injected = (s.injectNames || []).includes(t.name);
+                return '<div class="inv-row"><span class="inv-n">' + (i + 1) + "</span>" +
+                  '<span class="inv-text" title="' + escAttr(JSON.stringify(t.inputSchema)) + '">' + escAttr(t.name) +
+                  (injected ? ' <span style="color:var(--muted,#999)">→ LLM</span>' : "") + "</span></div>";
+              })
+              .join("");
+            return head + rows;
+          })
+          .join("");
         el.mcpBlock.innerHTML =
-          "<summary>MCP · " + escAttr(data.serverInfo.name) + " · " + data.toolCount + " " + mcpPluralTools(data.toolCount) + "</summary>" +
-          listing +
-          '<div class="inv-text" style="color:var(--muted,#999)">схема тулов ≈ ' + data.meta.tokensEstimate +
+          "<summary>MCP · " + serverCount + " " + mcpPluralServers(serverCount) + " · " + totalTools + " " + mcpPluralTools(totalTools) + "</summary>" +
+          listing + extListing +
+          '<div class="inv-text" style="color:var(--muted,#999)">схема тулов (инжект в LLM) ≈ ' + data.meta.tokensEstimate +
           " ток. на каждый вызов LLM — учёт для оркестрации</div>" +
           '<div id="mcp-last-call" hidden></div>' +
           '<div id="mcp-scheduler" hidden></div>' +
