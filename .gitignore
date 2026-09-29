@@ -11,3 +11,6 @@ build/
 **/recordings/*
 !**/recordings/.gitkeep
 .DS_Store
+# Runtime data (day18+: scheduler store, agent state) — не едут в outbox
+var/
+server/var/
