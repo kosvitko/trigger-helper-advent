@@ -22,10 +22,22 @@ const envSchema = z.object({
   AGENT_STATE_FILE: z.string().optional(),
   /** Day18: scheduler store (default: <repo>/var/scheduler.json). */
   SCHEDULER_FILE: z.string().optional(),
-  /** Day18: min seconds between proactive LLM summaries (default 900 = 15 min). */
-  SCHEDULE_SUMMARY_MIN_SEC: z.coerce.number().int().positive().default(900),
+   /** Day18: min seconds between proactive LLM summaries. Default 900 → 86400
+    *  (cust-fix 29.09): 15-min cadence burned ~₽40/day on the idle VPS —
+    *  ensureMaterial() kept pulling random archive articles to summarize. */
+   SCHEDULE_SUMMARY_MIN_SEC: z.coerce.number().int().positive().default(86_400),
   /** Day19: saved pipeline files dir (default: <repo>/var/pipelines). */
   PIPELINES_DIR: z.string().optional(),
+  /**
+   * Day21: embeddings model for the RAG index build
+   * (default: Xenova/multilingual-e5-small). Search always uses the model
+   * recorded in the index header — this env is the build default only.
+   */
+  RAG_EMBEDDINGS_MODEL: z.string().optional(),
+  /** Day21: RAG index dir (default: <repo>/data/rag). */
+  RAG_INDEX_DIR: z.string().optional(),
+  /** Day21: HuggingFace weights cache (default: <repo>/var/hf-cache). */
+  RAG_CACHE_DIR: z.string().optional(),
   /**
    * Day20: external MCP servers, comma-separated `name=url` (name: [a-z0-9]+).
    * Own server is always registered from PORT; absent value = own-only (day19).

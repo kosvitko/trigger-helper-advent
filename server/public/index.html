@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Trigger Helper — Агент · day20</title>
+   <title>Trigger Helper — Агент · day21</title>
   <style>
     :root {
       color-scheme: light;
@@ -584,8 +584,22 @@
     .invariant-panel .inv-row .inv-n { color: #888; font-size: 11px; min-width: 34px; }
     .invariant-panel .inv-row .inv-text { flex: 1; min-width: 0; }
     .invariant-panel .inv-row.off .inv-text { text-decoration: line-through; opacity: 0.55; }
-    /* Day16: MCP tools list reuses inv-row markup outside the invariant panel. */
-    #mcp-block .inv-row { display: flex; gap: 6px; align-items: baseline; margin: 2px 0; }
+     /* Day16: MCP tools list reuses inv-row markup outside the invariant panel. */
+     #mcp-block .inv-row { display: flex; gap: 6px; align-items: baseline; margin: 2px 0; }
+     /* Day21: RAG block — search row + hit rows reuse inv-row/inv-text. */
+      .rag-search { display: flex; gap: 6px; margin: 8px 0 4px; }
+      .rag-search input[type="search"] { flex: 1; min-width: 0; }
+      .rag-hit .inv-text { white-space: normal; }
+      /* Day21 fix-up (pick C, 29.09): pipeline story — шаги 1–4 раскрываются по клику. */
+      .rag-step { margin: 4px 0; }
+      .rag-step > summary { cursor: pointer; color: var(--accent); }
+      .rag-step .inv-text { white-space: normal; padding: 2px 0 2px 12px; }
+      /* Day21 R-1 (по слову Кости, 29.09): клик по хиту — чанк целиком. */
+      .rag-hit { margin: 6px 0; cursor: pointer; }
+      .rag-hit .rag-full { white-space: pre-wrap; border-left: 2px solid var(--accent); padding-left: 6px; margin: 3px 0; color: #ccc; }
+      /* Hit rows inside chat cards: keep score/text layout outside the panels. */
+      .rag-card .rag-hit { display: flex; gap: 6px; align-items: baseline; }
+      .rag-card .rag-hit .inv-n { white-space: nowrap; flex-shrink: 0; min-width: 34px; }
     #mcp-block .inv-row .inv-n { color: #888; font-size: 11px; min-width: 14px; }
     #mcp-block .inv-row .inv-text { flex: 1; min-width: 0; }
     .invariant-panel .chip { font-size: 10px; padding: 0 4px; border: 1px solid #bbb; border-radius: 6px; white-space: nowrap; }
@@ -755,7 +769,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-        <h1>Trigger Helper<span class="sub">Агент · day20</span></h1>
+         <h1>Trigger Helper<span class="sub">Агент · day21</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -807,6 +821,18 @@
         <div class="ctx-panel" id="facts-panel" hidden></div>
         <div class="ctx-panel branch-bar" id="branch-bar" hidden></div>
         <details class="techmode" id="mcp-block" hidden></details>
+        <details class="techmode" id="rag-block" hidden>
+          <summary>RAG</summary>
+          <div id="rag-stats"></div>
+          <div class="rag-search">
+            <input type="search" id="rag-query" placeholder="поиск по базе знаний docs/…" />
+            <select id="rag-strategy" title="стратегия чанкинга индекса (day21)">
+              <option value="fixed">fixed</option>
+              <option value="structured">structured</option>
+            </select>
+            <button type="button" id="rag-search-btn">Найти</button>
+          </div>
+        </details>
       </aside>
     </div>
 
@@ -978,7 +1004,8 @@
       memoryPanel: document.getElementById("memory-panel"),
       factsPanel: document.getElementById("facts-panel"),
       branchBar: document.getElementById("branch-bar"),
-      mcpBlock: document.getElementById("mcp-block"),
+       mcpBlock: document.getElementById("mcp-block"),
+       ragBlock: document.getElementById("rag-block"),
       ctxBanner: document.getElementById("ctx-banner"),
       undoToast: document.getElementById("undo-toast"),
       undoToastText: document.getElementById("undo-toast-text"),
@@ -3560,6 +3587,126 @@
       } catch (_) { /* тихо: лента перерисуется на следующем проходе */ }
     }
 
+    /** Day21 fix-up (pick C, 29.09): pipeline story — 4 step rows (corpus →
+        chunks → embeddings → index), numbers from /api/rag/stats (no
+        hardcode); steps open on click so the screencast unfolds the story.
+        Search row below is untouched. */
+    function renderRagStats(data) {
+      const block = el.ragBlock;
+      if (!block) return;
+      if (!data || !data.indexes || !data.indexes.length) {
+        block.hidden = true;
+        return;
+      }
+      const byStrategy = {};
+      for (const ix of data.indexes) byStrategy[ix.strategy] = ix;
+      const fixed = byStrategy.fixed;
+      const structured = byStrategy.structured;
+      if (!fixed || !structured) {
+        block.hidden = true;
+        return;
+      }
+      const kb = Math.round(structured.totalChars / 1024);
+      const pages = Math.max(1, Math.round(structured.totalChars / 2600));
+      const step = (id, title, body) =>
+        '<details class="rag-step" id="' + id + '"><summary>' + title + "</summary>" +
+        '<div class="inv-text">' + body + "</div></details>";
+      const overlap = fixed.overlapPct != null ? fixed.overlapPct + "%" : "—";
+      const steps =
+        step("rag-step-corpus", "1 · Корпус — что индексируем",
+          fixed.fileCount + " файлов (README + docs/, без private/ и _archive/)" +
+          " · ≈ " + kb + " КБ ≈ " + pages + "+ стр.") +
+        step("rag-step-chunks", "2 · Чанки — на какие куски порезано",
+          "fixed: " + fixed.chunks + " шт · окно ~450 токенов (~полстраницы), перекрытие " + overlap +
+          " · разрезов: внутри предложения " + Math.round(fixed.splitInsideSentencePct) + "%, внутри блока (списки/таблицы) " + Math.round(fixed.splitInsideBlockPct) + "%" +
+          "<br>structured: " + structured.chunks + " шт · рез по заголовкам секций #…###, таблицы — по границам строк" +
+          " · внутри предложения " + Math.round(structured.splitInsideSentencePct) + "%, внутри блока " + Math.round(structured.splitInsideBlockPct) + "%") +
+        step("rag-step-embeddings", "3 · Эмбеддинги — каждый чанк → вектор",
+          escAttr(fixed.model) + " · " + fixed.dim + "-dim · локально (ONNX) · ₽0, без ключей") +
+        step("rag-step-index", "4 · Индекс — векторы + метаданные",
+          "data/rag/rag-index-{fixed,structured}.json · собран " + escAttr(String(fixed.builtAt).slice(0, 10)) +
+          " · поиск = косинусная близость, топ-k с chunk_id/source/section");
+      const cmp = data.compare
+        ? '<div class="inv-text" style="margin-top:4px">пробы ' + data.compare.probes +
+          " · hit@1 " + Math.round(data.compare.byStrategy.fixed.hitAt1 * 100) + "/" + Math.round(data.compare.byStrategy.structured.hitAt1 * 100) +
+          "% · hit@5 " + Math.round(data.compare.byStrategy.fixed.hitAt5 * 100) + "/" + Math.round(data.compare.byStrategy.structured.hitAt5 * 100) +
+          "% · MRR " + data.compare.byStrategy.fixed.mrr + "/" + data.compare.byStrategy.structured.mrr +
+          " (fixed/structured)</div>"
+        : "";
+      block.hidden = false;
+      document.getElementById("rag-stats").innerHTML =
+        '<div class="inv-text"><b>RAG</b> — база знаний проекта, поиск по docs/ по смыслу</div>' +
+        steps + cmp;
+    }
+
+    async function loadRagState() {
+      try {
+        renderRagStats(await api("/api/rag/stats"));
+      } catch (_) {
+        if (el.ragBlock) el.ragBlock.hidden = true; // 503 / нет индекса — секция скрыта
+      }
+    }
+
+    async function searchRag() {
+      const input = document.getElementById("rag-query");
+      const strategy = document.getElementById("rag-strategy").value;
+      const q = (input.value || "").trim();
+      if (!q) return;
+      try {
+        const data = await api(
+          "/api/rag/search?q=" + encodeURIComponent(q) + "&strategy=" + encodeURIComponent(strategy) + "&k=3&full=1",
+        );
+        appendRagCard(q, strategy, data);
+      } catch (err) {
+        appendRagCard(q, strategy, null, err);
+      }
+    }
+    /* Day21 fix-up (решение Кости 29.09: демо — в центральной области чата):
+       результат поиска — карточка в ленте, как бейджи day19/20. Заголовок с
+       запросом и стратегией — сравнение fixed/structured видно по двум
+       карточкам друг под другом. Клик по хиту раскрывает чанк целиком. */
+    function appendRagCard(q, strategy, data, err) {
+      const empty = el.messages.querySelector(".empty");
+      if (empty) empty.remove();
+      const wrap = document.createElement("div");
+      wrap.className = "msg assistant rag-card";
+      let body;
+      if (err) {
+        body = '<div class="inv-text" style="color:#c9862b">' + escAttr(err.message || String(err)) + "</div>";
+      } else {
+        const hits = data.results.length
+          ? data.results
+              .map(
+                (r) =>
+                  '<div class="inv-row rag-hit"><span class="inv-n">' + r.score.toFixed(3) + '</span><span class="inv-text">' +
+                  escAttr(r.source + (r.section ? " › " + r.section : "")) +
+                  "<br>" + escAttr(r.excerpt) +
+                  '<div class="rag-full" hidden>' + escAttr(r.text || "") + "</div>" +
+                  '<br><span style="color:var(--muted,#999)">' + escAttr(r.chunk_id) + " · клик — чанк целиком</span></span></div>",
+              )
+              .join("")
+          : '<div class="inv-text" style="color:var(--muted,#999)">— ничего —</div>';
+        body =
+          '<div class="inv-text"><b>RAG</b> · запрос «' + escAttr(q) + "» · стратегия <b>" + escAttr(strategy) +
+          "</b> · топ-" + data.results.length + "</div>" + hits;
+      }
+      wrap.innerHTML = '<div class="bubble">' + body + "</div>";
+      el.messages.appendChild(wrap);
+      el.messages.scrollTop = el.messages.scrollHeight;
+      return wrap;
+    }
+    document.getElementById("rag-search-btn").addEventListener("click", searchRag);
+    document.getElementById("rag-query").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") searchRag();
+    });
+    /* Day21 R-1: клик по хиту в карточке раскрывает/скрывает полный текст чанка. */
+    el.messages.addEventListener("click", (e) => {
+      const hit = e.target.closest(".rag-hit");
+      if (!hit) return;
+      const full = hit.querySelector(".rag-full");
+      if (full) full.hidden = !full.hidden;
+    });
+
     (async function boot() {
       try {
         await api("/api/health");
@@ -3577,6 +3724,7 @@
         await loadMcpTools().catch(() => undefined);
         loadSchedulerState().catch(() => undefined);
         loadPipelines().catch(() => undefined);
+        loadRagState().catch(() => undefined); // Day21: индекс — артефакт в data/, статы на буте
         // Day18: the scheduler section is the only thing polled — a summary/tick
         // must appear on screen without user action (demo PASS #2/#3).
         setInterval(() => {

@@ -9,6 +9,7 @@ import { registerCompareRoutes } from "./routes/compare.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerMcpRoutes } from "./routes/mcp.js";
 import { registerPipelinesRoutes } from "./routes/pipelines.js";
+import { registerRagRoutes } from "./routes/rag.js";
 import { registerSchedulerRoutes } from "./routes/scheduler.js";
 import { registerUsageRoutes } from "./routes/usage.js";
 import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";import { createInstanceRegistry } from "./services/agent/instance-registry.js";
@@ -30,6 +31,7 @@ import { createUsageLedgerService } from "./services/usage-ledger.js";
 import { registerOwnMcpRoute } from "./services/mcp-server.js";
 import { createMcpRegistry } from "./services/mcp-registry.js";
 import { createPipelinesService } from "./services/pipelines.js";
+import { createRagService } from "./services/rag/store.js";
 import { createSchedulerService } from "./services/scheduler.js";
 
 const serverRoot = path.resolve(
@@ -82,6 +84,9 @@ async function main(): Promise<void> {
     deepSeek: deepSeekService,
     ledger: usageLedger,
   });
+  // Day21: RAG index over docs/ (build artifact in data/rag/, see rag:index).
+  // The service never touches the embeddings model at boot — lazy on search.
+  const rag = createRagService(env);
   const day10State = createDay10StateStore({
     onChange: () => agentState.scheduleSave(),
   });
@@ -170,6 +175,8 @@ async function main(): Promise<void> {
   await registerSchedulerRoutes(app, { scheduler });
   // Day19: saved pipeline files (list + ?name= content).
   await registerPipelinesRoutes(app, { pipelines });
+  // Day21: read-only RAG stats/search (GET — вне IP rate limit по дизайну).
+  await registerRagRoutes(app, { rag });
 
   await app.register(fastifyStatic, {
     root: path.join(serverRoot, "public"),
