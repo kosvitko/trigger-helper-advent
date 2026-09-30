@@ -11,12 +11,8 @@ import type { CorpusFile } from "./corpus.js";
  *   never inside code fences; oversized single paragraph (big fences/tables)
  *   falls back to sentence boundaries, then to a hard char cut (pass 04, F-C).
  * - structured: split by ATX headers level ≤3 ("####"+ stay inside their
- *   section); oversized sections are re-chunked with the fixed assembler;
- *   Day22 cust-fix (Костя 30.09, «порезать structured лучше»): sections no
- *   longer stay atomic — their slots pack ACROSS section boundaries up to
- *   the token budget (the old glue floor of 200 chars left 39% of chunks
- *   <300 chars on the points corpus), and every section start carries an
- *   anchor `[path]` so a packed chunk stays self-describing.
+ *   section); oversized sections are re-chunked with the fixed assembler,
+ *   tiny (<200 chars) sections merge into a sibling (pass 02, F3 / 02b).
  * - fixed chunks still carry `section`: the header path active at chunk
  *   start ("" before the first header) — pass 02b, CR-8.
  */
@@ -25,6 +21,7 @@ export const CHUNK_TOKEN_BUDGET = 450;
 export const OVERLAP_RATIO = 0.15;
 export const OVERLAP_TOKEN_BUDGET = Math.round(CHUNK_TOKEN_BUDGET * OVERLAP_RATIO);
 export const HARD_CHAR_CAP = 1500;
+export const MERGE_MIN_CHARS = 200;
 
 export type RagStrategy = "fixed" | "structured";
 
@@ -357,6 +354,32 @@ function scanSections(text: string, headers: Header[]): Section[] {
   return sections.filter((s) => s.end > s.start);
 }
 
+/** Merge tiny (<200 chars) sections into the previous sibling (or next). */
+function mergeTinySections(sections: Section[], text: string): Section[] {
+  const merged: Section[] = [];
+  for (const section of sections) {
+    const tiny = text.slice(section.start, section.end).trim().length < MERGE_MIN_CHARS;
+    if (tiny && merged.length > 0) {
+      merged[merged.length - 1].end = section.end;
+      continue;
+    }
+    if (tiny && merged.length === 0) {
+      // No previous sibling yet: keep and let the next section absorb it.
+      merged.push({ ...section });
+      continue;
+    }
+    const prev = merged[merged.length - 1];
+    if (prev && prev.path === "" && prev.end === section.start && text.slice(prev.start, prev.end).trim().length < MERGE_MIN_CHARS) {
+      // Absorb a leading tiny preamble into the first real section.
+      prev.end = section.end;
+      prev.path = section.path;
+      continue;
+    }
+    merged.push({ ...section });
+  }
+  return merged;
+}
+
 /* ------------------------------------------------------------------ */
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
@@ -381,56 +404,31 @@ export function chunkFile(file: CorpusFile, strategy: RagStrategy): ChunkDraft[]
     return toDrafts(file, strategy, slots, (start) => headerPathAt(headers, start));
   }
 
-  // Day22 cust-fix (Костя 30.09, «порезать structured лучше»): sections no
-  // longer stay atomic — slots pack ACROSS section boundaries up to the
-  // token budget (the 200-char glue floor left 39% of chunks <300 chars on
-  // the points corpus, i.e. thin ask-context at the same k). Every section
-  // start carries an anchor `[path]` so a packed chunk stays
-  // self-describing; `section` = path of the chunk's first section.
-  const sections = scanSections(file.text, headers);
-  const items: { text: string; start: number; path: string }[] = [];
+  const sections = mergeTinySections(scanSections(file.text, headers), file.text);
+  const drafts: ChunkDraft[] = [];
   for (const section of sections) {
     const pieces = scanPieces(file.text, section.start, section.end);
     const slots = assembleFixed(pieces, file.source);
-    slots.forEach((slot, i) => {
-      // Anchor on every section start (first slot of the section keeps it
-      // too — after packing it may sit mid-chunk and must stay readable).
-      const anchor = section.path && i === 0 ? `[${section.path}]\n` : "";
-      items.push({ text: anchor + slot.text, start: slot.start, path: section.path });
-    });
-  }
-
-  // Greedy pack across sections: never split a slot (slots are ≤ budget),
-  // flush when the next slot would overflow, carry the first section's path.
-  const packed: { text: string; start: number; path: string }[] = [];
-  let bucket: typeof items = [];
-  const flushBucket = () => {
-    if (!bucket.length) return;
-    packed.push({
-      text: bucket.map((i) => i.text).join("\n\n"),
-      start: bucket[0].start,
-      path: bucket[0].path,
-    });
-    bucket = [];
-  };
-  for (const item of items) {
-    if (bucket.length) {
-      const candidate = [...bucket, item].map((i) => i.text).join("\n\n");
-      if (estimateTokens(candidate) > CHUNK_TOKEN_BUDGET) flushBucket();
+    let first = true;
+    for (const slot of slots) {
+      // Cust-fix 29.09 (решение Кости — structured должен конкурировать):
+      // continuation chunks carry the section anchor, otherwise a packed
+      // continuation loses the topic in the embedding (probes atlas/context
+      // regressed without it — chunks themselves were unchanged).
+      const anchor = !first && section.path ? `[${section.path}]\n` : "";
+      first = false;
+      drafts.push({
+        chunk_id: "", // filled below with the running per-file index
+        source: file.source,
+        file: file.file,
+        title: file.title,
+        section: section.path,
+        position: drafts.length,
+        text: anchor + slot.text,
+      });
     }
-    bucket.push(item);
   }
-  flushBucket();
-
-  return packed.map((chunk, position) => ({
-    chunk_id: `structured:${file.source}:${position}`,
-    source: file.source,
-    file: file.file,
-    title: file.title,
-    section: chunk.path,
-    position,
-    text: chunk.text,
-  }));
+  return drafts.map((d, position) => ({ ...d, chunk_id: `structured:${file.source}:${position}` }));
 }
 
 /* ---------------- Boundary quality metrics (cust-fix 29.09) --------------- */
