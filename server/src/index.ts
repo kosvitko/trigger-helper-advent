@@ -31,6 +31,7 @@ import { createUsageLedgerService } from "./services/usage-ledger.js";
 import { registerOwnMcpRoute } from "./services/mcp-server.js";
 import { createMcpRegistry } from "./services/mcp-registry.js";
 import { createPipelinesService } from "./services/pipelines.js";
+import { createRagAnswerService } from "./services/rag/answer.js";
 import { createRagService } from "./services/rag/store.js";
 import { createSchedulerService } from "./services/scheduler.js";
 
@@ -87,6 +88,12 @@ async function main(): Promise<void> {
   // Day21: RAG index over docs/ (build artifact in data/rag/, see rag:index).
   // The service never touches the embeddings model at boot — lazy on search.
   const rag = createRagService(env);
+  // Day22: RAG answer (question → chunks → LLM), two fair modes (design D-2).
+  const ragAnswer = createRagAnswerService({
+    rag,
+    deepSeek: deepSeekService,
+    ledger: usageLedger,
+  });
   const day10State = createDay10StateStore({
     onChange: () => agentState.scheduleSave(),
   });
@@ -170,13 +177,15 @@ async function main(): Promise<void> {
   // Day16→20: MCP tools listing — own (live) + external servers (snapshot).
   await registerMcpRoutes(app, { env, registry: mcpRegistry });
   // Day17: own MCP server (product atlas) on POST /mcp — tools/call target.
-  await registerOwnMcpRoute(app, { pointsService, scheduler, pipelines });
+  // Day22: atlas tools read the point-cards corpus (data/points/*.md, D-12).
+  await registerOwnMcpRoute(app, { scheduler, pipelines });
   // Day18: read-only scheduler state (jobs/counters/last summary).
   await registerSchedulerRoutes(app, { scheduler });
   // Day19: saved pipeline files (list + ?name= content).
   await registerPipelinesRoutes(app, { pipelines });
   // Day21: read-only RAG stats/search (GET — вне IP rate limit по дизайну).
-  await registerRagRoutes(app, { rag });
+  // Day22: + POST /api/rag/ask (в вайтлисте ip-rate-limit, D-5; F-05-1).
+  await registerRagRoutes(app, { rag, ragAnswer, env, ledger: usageLedger });
 
   await app.register(fastifyStatic, {
     root: path.join(serverRoot, "public"),

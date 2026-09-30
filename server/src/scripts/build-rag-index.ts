@@ -42,29 +42,26 @@ interface Probe {
   expectSources: string[];
 }
 
-/** Curated 29.09 evening (cust-fix «ревизию проб — сейчас»): every probe
- *  targets unique canonical content. The old set was noisy — key terms of
- *  one probe lived in 6–33 files (STACK/README summarize everything,
- *  proposals+design pairs duplicate content), so file-level expectations
- *  counted legitimate answers as misses. */
+/** Day22 probes (design D-13, addendum): points corpus — symptom → expected
+ *  point card. Ground truth verified for uniqueness by grep over data/points/
+ *  (day-21 lesson: noisy probes wreck the metric); multi-label groups keep the
+ *  day-21 rule — rank = best position among the group. The day-21 docs corpus
+ *  and its 17 probes live on in tag week05-day21. */
 const PROBES: Probe[] = [
-  { q: "как задеплоить сервис на VPS h3llo", expectSources: ["docs/advent/DEPLOY_H3LLO.md"] },
-  { q: "как оформить сдачу Advent на GitHub", expectSources: ["docs/advent/GITHUB.md"] },
-  { q: "как монетизируется pro-тариф и что входит в подписку", expectSources: ["docs/product/monetization.md"] },
-  { q: "карта конкурентов прямые косвенные заменители", expectSources: ["docs/product/competitors.md"] },
-  { q: "медицинский дисклеймер отказ от ответственности", expectSources: ["docs/product/disclaimer.md"] },
-  { q: "источники контента справочники анатомия", expectSources: ["docs/product/content-sources.md"] },
-  { q: "риски mvp и как их закрываем", expectSources: ["docs/product/mvp-risks.md"] },
-  { q: "бэклог идей продукта", expectSources: ["docs/product/ideas.md"] },
-  { q: "графический атлас варианты показать точку на силуэте", expectSources: ["docs/product/atlas.md"] },
-  { q: "как работает планировщик фоновых задач и сбор pubmed", expectSources: ["docs/reviews/260924-day18-design.md", "docs/reviews/260924-day18-scheduler-proposals.md"] },
-  { q: "композиция mcp инструментов поиск summarize saveToFile", expectSources: ["docs/reviews/260924-day19-design.md", "docs/reviews/260924-day19-mcp-composition-proposals.md"] },
-  { q: "два mcp сервера свой и внешний pubmed", expectSources: ["docs/reviews/260925-day20-design.md", "docs/reviews/260925-day20-orchestration-proposals.md"] },
-  { q: "свой mcp сервер registry и вызов тулзы агентом", expectSources: ["docs/reviews/260923-day17-design.md", "docs/reviews/260923-mcp-server-tool-call-proposals.md"] },
-  { q: "конечный автомат задачи fsm планирование исполнение пауза", expectSources: ["docs/reviews/day13-task-fsm-consilium/design.md", "docs/reviews/260917-day13-task-state-machine-proposals.md"] },
-  { q: "инварианты правил безопасности hard soft подтверждение", expectSources: ["docs/reviews/day14-invariants-consilium/design.md", "docs/reviews/260918-day14-invariants-proposals.md"] },
-  { q: "стратегии контекста sliding facts branching сжатие истории", expectSources: ["docs/reviews/260914-day10-design.md", "docs/reviews/day10-consilium/architecture.md", "docs/reviews/260914-day10-context-strategies.md"] },
-  { q: "модель памяти агента слои классификация фактов", expectSources: ["docs/reviews/day11-consilium/architecture.md", "docs/reviews/260915-day11-memory-proposals.md"] },
+  // Unique: the symptom lives in exactly one card.
+  { q: "сухой приступообразный кашель — может ли это быть от триггерной точки", expectSources: ["data/points/sternocleidomastoideus.md"] },
+  { q: "слезотечение и птоз на одном глазу — какая мышца виновата", expectSources: ["data/points/sternocleidomastoideus.md"] },
+  { q: "точки от жвачки и ночного скрежета зубами — о какой мышце речь", expectSources: ["data/points/masseter.md"] },
+  { q: "боль в глубине уха и заложенность уха — какая мышца", expectSources: ["data/points/masseter.md"] },
+  { q: "хруст или треск в мышцах при движении плеча", expectSources: ["data/points/rhomboideus-major-et-minor.md"] },
+  { q: "зубы реагируют на перепады температуры, но стоматолог ничего не нашёл", expectSources: ["data/points/temporalis.md"] },
+  { q: "аритмия от триггерной точки между рёбрами — какая мышца", expectSources: ["data/points/pectoralis-major-et-subclavius.md"] },
+  { q: "мурашки по верху предплечья — от какой мышцы", expectSources: ["data/points/trapezius.md"] },
+  { q: "онемение большого пальца без потери чувствительности", expectSources: ["data/points/mm-scaleni-anterior-medius-posterior-minimus.md"] },
+  // Multi-label: the symptom honestly lives in several cards.
+  { q: "головокружение и шаткость при повороте головы", expectSources: ["data/points/masseter.md", "data/points/sternocleidomastoideus.md"] },
+  { q: "«синусит», который не поддаётся лечению", expectSources: ["data/points/masseter.md", "data/points/pterygoideus-lateralis.md"] },
+  { q: "боль в височно-нижнечелюстном суставе при жевании", expectSources: ["data/points/masseter.md", "data/points/pterygoideus-lateralis.md", "data/points/pterygoideus-medialis.md", "data/points/sternocleidomastoideus.md"] },
 ];
 
 function round4(n: number): number {

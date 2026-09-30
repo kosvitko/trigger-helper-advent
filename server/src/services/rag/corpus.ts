@@ -3,9 +3,10 @@ import path from "node:path";
 import { repoRoot } from "./paths.js";
 
 /**
- * Day21 corpus (design D-1): README.md + all markdown under docs/ (any
- * depth), excluding docs/private/ and docs/reviews/_archive/ — private
- * notes must not reach the search surface exposed by days 22–25.
+ * Day22 corpus (design D-12, addendum): point cards — one md file per muscle
+ * in data/points/ (rendered by tools/content-pipeline/render_cards.py from the
+ * pipeline draft). The day-21 docs/ corpus and its 17 probes live on in tag
+ * week05-day21; the product RAG surface is the points knowledge base.
  */
 
 export interface CorpusFile {
@@ -18,35 +19,23 @@ export interface CorpusFile {
   text: string;
 }
 
-const EXCLUDED_DIR_NAMES = new Set(["private", "_archive"]);
+const POINTS_DIR = "data/points";
 
 export class CorpusReader {
   constructor(private readonly root: string = repoRoot) {}
 
   async listSources(): Promise<string[]> {
     const sources: string[] = [];
-    const readme = path.join(this.root, "README.md");
-    if (await exists(readme)) {
-      sources.push("README.md");
-    }
-    const docsDir = path.join(this.root, "docs");
-    if (await exists(docsDir)) {
-      await this.walk(docsDir, "docs", sources);
+    const pointsDir = path.join(this.root, POINTS_DIR);
+    if (await exists(pointsDir)) {
+      for (const entry of await fs.readdir(pointsDir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+          sources.push(`${POINTS_DIR}/${entry.name}`);
+        }
+      }
     }
     sources.sort();
     return sources;
-  }
-
-  private async walk(absDir: string, relDir: string, out: string[]): Promise<void> {
-    for (const entry of await fs.readdir(absDir, { withFileTypes: true })) {
-      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        if (EXCLUDED_DIR_NAMES.has(entry.name)) continue;
-        await this.walk(path.join(absDir, entry.name), rel, out);
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-        out.push(rel);
-      }
-    }
   }
 
   async readAll(): Promise<CorpusFile[]> {

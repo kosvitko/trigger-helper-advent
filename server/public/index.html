@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-   <title>Trigger Helper — Агент · day21</title>
+   <title>Trigger Helper — Агент · day22</title>
   <style>
     :root {
       color-scheme: light;
@@ -769,7 +769,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-         <h1>Trigger Helper<span class="sub">Агент · day21</span></h1>
+         <h1>Trigger Helper<span class="sub">Агент · day22</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -825,12 +825,24 @@
           <summary>RAG</summary>
           <div id="rag-stats"></div>
           <div class="rag-search">
-            <input type="search" id="rag-query" placeholder="поиск по базе знаний docs/…" />
-            <select id="rag-strategy" title="стратегия чанкинга индекса (day21)">
-              <option value="fixed">fixed</option>
+            <input type="search" id="rag-query" placeholder="поиск по базе точек…" />
+            <select id="rag-strategy" title="стратегия чанкинга индекса (day22: structured лучше на карточках)">
               <option value="structured">structured</option>
+              <option value="fixed">fixed</option>
             </select>
             <button type="button" id="rag-search-btn">Найти</button>
+          </div>
+          <div class="rag-search">
+            <input type="search" id="rag-ask-q" placeholder="спросить по базе точек (day22)…" />
+            <select id="rag-ask-mode" title="сравнение ответов с RAG и без (day22)">
+              <option value="both">оба</option>
+              <option value="rag">с RAG</option>
+              <option value="baseline">без RAG</option>
+            </select>
+            <button type="button" id="rag-ask-btn">Спросить</button>
+          </div>
+          <div class="rag-search">
+            <button type="button" id="rag-eval-btn" style="flex:1" title="сводка 10 контрольных вопросов (day22) — карточкой в чат">10 контрольных вопросов · eval</button>
           </div>
         </details>
       </aside>
@@ -914,6 +926,9 @@
       models: [],
       session: { requests: 0, tokens: 0, cost_rub: 0 },
       usage: null,
+      /** Day22: RAG-ask pair cards — redrawn by renderMessages (poll-proof). */
+      ragCards: [],
+      ragAskBusy: false,
       busy: false,
       abort: null,
       /** Day08: GET .../tokens payload. */
@@ -1425,7 +1440,7 @@
       const drawList = [...state.messages].sort((a, b) =>
         String(a.createdAt).localeCompare(String(b.createdAt)),
       );
-      if (!drawList.length) {
+      if (!drawList.length && !state.ragCards.length) {
         el.messages.innerHTML = '<p class="empty">Нет сообщений в этом агенте</p>';
         return;
       }
@@ -1493,6 +1508,7 @@
         }
         el.messages.appendChild(wrap);
       }
+      drawRagCards();
       el.messages.scrollTop = el.messages.scrollHeight;
     }
 
@@ -3634,9 +3650,9 @@
           " (fixed/structured)</div>"
         : "";
       block.hidden = false;
-      document.getElementById("rag-stats").innerHTML =
-        '<div class="inv-text"><b>RAG</b> — база знаний проекта, поиск по docs/ по смыслу</div>' +
-        steps + cmp;
+       document.getElementById("rag-stats").innerHTML =
+         '<div class="inv-text"><b>RAG</b> — база точек (43 карточки), поиск по смыслу</div>' +
+         steps + cmp;
     }
 
     async function loadRagState() {
@@ -3706,6 +3722,180 @@
       const full = hit.querySelector(".rag-full");
       if (full) full.hidden = !full.hidden;
     });
+    /* Day22 (design D-1/D-9): ask по базе точек — два честных режима одним
+       эндпоинтом POST /api/rag/ask (baseline = та же модель без контекста).
+       Пара панелей «без RAG / с RAG» в одной карточке центрального чата.
+       Карточки живут в state.ragCards и дорисовываются в renderMessages() —
+       5-секундный poll иначе сносит raw appendChild (грабля day21). */
+    async function askRag() {
+      if (state.ragAskBusy) return;
+      const input = document.getElementById("rag-ask-q");
+      const q = (input.value || "").trim();
+      if (!q) return;
+      const mode = document.getElementById("rag-ask-mode").value;
+      const modes = mode === "both" ? ["baseline", "rag"] : [mode];
+      const btn = document.getElementById("rag-ask-btn");
+      state.ragAskBusy = true;
+      btn.disabled = true;
+      const card = {
+        q: q,
+        strategy: "structured",
+        k: 12,
+        panes: modes.map((m) => ({ mode: m, status: "pending" })),
+      };
+      state.ragCards.push(card);
+      renderMessages();
+      await Promise.all(
+        card.panes.map(async (pane) => {
+          try {
+            const res = await api("/api/rag/ask", {
+              method: "POST",
+              body: JSON.stringify({ q: q, mode: pane.mode, strategy: "structured", k: 12 }),
+            });
+            pane.status = "done";
+            pane.answer = res.answer;
+            pane.sources = res.sources;
+            pane.usage = res.usage;
+            pane.meta = res.meta;
+          } catch (err) {
+            pane.status = "error";
+            pane.error = (err && err.message) || String(err);
+          }
+        }),
+      );
+      state.ragAskBusy = false;
+      btn.disabled = false;
+      renderMessages();
+    }
+    function ragPaneHtml(pane) {
+      if (pane.status === "pending")
+        return '<div class="inv-text" style="color:var(--muted,#999)">⏳ ждёт ответа…</div>';
+      if (pane.status === "error")
+        return '<div class="inv-text" style="color:#c9862b">' + escAttr(pane.error) + "</div>";
+      const hits = (pane.sources || [])
+        .map(
+          (s) =>
+            '<div class="inv-row rag-hit"><span class="inv-n">' + s.score.toFixed(3) + '</span><span class="inv-text">' +
+            escAttr(s.source + (s.section ? " › " + s.section : "")) +
+            '<div class="rag-full" hidden>' + escAttr(s.source + " › " + s.section + " · " + s.chunk_id) + "</div>" +
+            '<br><span style="color:var(--muted,#999)">' + escAttr(s.chunk_id) + " · клик — источник</span></span></div>",
+        )
+        .join("");
+      return (
+        '<div class="inv-text">' + escAttr(pane.answer).replace(/\n/g, "<br>") + "</div>" +
+        '<div class="inv-text" style="margin:6px 0 2px;color:var(--muted,#999)">источников: ' +
+        (pane.sources || []).length +
+        " · " + (pane.usage ? pane.usage.total_tokens + " tok" : "—") +
+        " · " + (pane.meta ? (pane.meta.latencyMs / 1000).toFixed(1) + " s" : "—") +
+        (pane.meta && pane.meta.toolCalls ? " · тула: " + pane.meta.toolCalls : "") +
+        "</div>" + hits
+      );
+    }
+    function drawRagCards() {
+      const empty = el.messages.querySelector(".empty");
+      if (empty) empty.remove();
+      const label = (m) => (m === "rag" ? "с RAG" : "без RAG");
+      for (const card of state.ragCards) {
+        if (card.kind === "eval") {
+          drawEvalCard(card.data);
+          continue;
+        }
+        if (card.kind === "eval-error") {
+          const errWrap = document.createElement("div");
+          errWrap.className = "msg assistant rag-card";
+          errWrap.innerHTML =
+            '<div class="bubble"><div class="inv-text" style="color:#c9862b">eval: ' +
+            escAttr(card.error) + "</div></div>";
+          el.messages.appendChild(errWrap);
+          continue;
+        }
+        const wrap = document.createElement("div");
+        wrap.className = "msg assistant rag-card";
+        wrap.innerHTML =
+          '<div class="bubble"><div class="inv-text"><b>RAG-ask</b> · «' + escAttr(card.q) +
+          "» · fixed · k=" + card.k + "</div>" +
+          card.panes
+            .map(
+              (p) =>
+                '<div class="rag-pane" data-mode="' + p.mode + '" style="border-top:1px solid var(--edge,#444);margin:6px 0 0;padding-top:6px"><b>' +
+                label(p.mode) + "</b>" + ragPaneHtml(p) + "</div>",
+            )
+            .join("") +
+          "</div>";
+        el.messages.appendChild(wrap);
+      }
+      if (state.ragCards.length) el.messages.scrollTop = el.messages.scrollHeight;
+    }
+    document.getElementById("rag-ask-btn").addEventListener("click", askRag);
+    document.getElementById("rag-ask-q").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") askRag();
+    });
+    /* Day22: сводка eval — карточкой в центральный чат (не JSON-вкладкой):
+       итог по режимам + 10 строк «без RAG / с RAG» с токенами и временем. */
+    async function askEval() {
+      const btn = document.getElementById("rag-eval-btn");
+      btn.disabled = true;
+      try {
+        const res = await api("/api/rag/eval");
+        state.ragCards.push({ kind: "eval", data: res.eval });
+      } catch (err) {
+        state.ragCards.push({ kind: "eval-error", error: (err && err.message) || String(err) });
+      }
+      btn.disabled = false;
+      renderMessages();
+    }
+    function drawEvalCard(d) {
+      const wrap = document.createElement("div");
+      wrap.className = "msg assistant rag-card";
+      const byId = {};
+      for (const r of d.questions) (byId[r.id] = byId[r.id] || []).push(r);
+      const cell = (pair, mode) => {
+        const r = pair.find((x) => x.mode === mode);
+        return r
+          ? escAttr(r.verdict + " · " + r.usage.total_tokens + " tok · " + (r.latency_ms / 1000).toFixed(1) + " s")
+          : "—";
+      };
+      const rows = Object.keys(byId)
+        .sort()
+        .map((id) => {
+          const pair = byId[id];
+          const first = pair[0] || {};
+          const q = first.q || "";
+          const expectation = (first.expectation || []).map((e) => "«" + e + "»").join(", ");
+          const sources = (first.sources || []).map((s) => " " + s.split("/").pop()).join(",");
+          return (
+            '<div class="inv-row"><span class="inv-n">' + escAttr(id) + '</span><span class="inv-text">' +
+            "<b>вопрос:</b> " + escAttr(q) +
+            "<br><b>ожидание:</b> " + escAttr(expectation) +
+            "<br><b>источники:</b> " + escAttr(sources.trim()) +
+            "<br><b>без RAG:</b> " + cell(pair, "baseline") +
+            "<br><b>с RAG:</b> " + cell(pair, "rag") + "</span></div>"
+          );
+        })
+        .join("");
+      const agg = d.aggregate || {};
+      const b = (agg.byMode && agg.byMode.baseline) || {};
+      const r = (agg.byMode && agg.byMode.rag) || {};
+      const aggHtml =
+        '<div class="inv-text"><b>Итог</b> · качество + цена доступа</div>' +
+        '<div class="inv-text">без RAG: PASS ' + (b.pass ?? "—") + "/" + (b.total ?? "—") +
+        " · mean " + (b.meanContent != null ? b.meanContent.toFixed(2) : "—") +
+        " · ~" + (b.meanTokens != null ? Math.round(b.meanTokens) : "—") + " tok · " +
+        (b.meanLatencyMs != null ? (b.meanLatencyMs / 1000).toFixed(1) : "—") + " s</div>" +
+        '<div class="inv-text">с RAG: PASS ' + (r.pass ?? "—") + "/" + (r.total ?? "—") +
+        " · mean " + (r.meanContent != null ? r.meanContent.toFixed(2) : "—") +
+        " · ~" + (r.meanTokens != null ? Math.round(r.meanTokens) : "—") + " tok · " +
+        (r.meanLatencyMs != null ? (r.meanLatencyMs / 1000).toFixed(1) : "—") + " s</div>" +
+        '<div class="inv-text">retriever попадает в ожидаемый источник: ' +
+        (agg.retrievalHitRate != null ? Math.round(agg.retrievalHitRate * 100) + "%" : "—") +
+        " · цитаты в ответе: " + (agg.groundingRate != null ? Math.round(agg.groundingRate * 100) + "%" : "—") + "</div>";
+      wrap.innerHTML =
+        '<div class="bubble"><div class="inv-text"><b>Eval</b> · 10 контрольных вопросов · ' +
+        escAttr((d.strategy || "?") + " · k=" + (d.k ?? "?")) + "</div>" +
+        aggHtml + rows + "</div>";
+      el.messages.appendChild(wrap);
+    }
+    document.getElementById("rag-eval-btn").addEventListener("click", askEval);
 
     (async function boot() {
       try {

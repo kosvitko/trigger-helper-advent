@@ -8,6 +8,7 @@ function isRateLimitedPath(method: string, url: string): boolean {
   const path = url.split("?")[0] ?? "";
   if (path === "/api/ask") return true;
   if (path === "/api/compare") return true;
+  if (path === "/api/rag/ask") return true; // Day22: costly LLM ask (design D-5)
   if (path === "/api/agent/run") return true;
   if (path === "/api/spawn/instances") return true;
   if (path === "/api/instances") return true;

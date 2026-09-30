@@ -2,10 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { Point } from "@trigger-helper/shared";
-import type { PointsService } from "./points.js";
 import type { SchedulerService } from "./scheduler.js";
 import { PipelineError, type PipelinesService } from "./pipelines.js";
+import { listPointCards, readPointCard } from "./rag/point-cards.js";
 
 /**
  * Day17: own MCP server around the product atlas. Day18: scheduler tools.
@@ -14,9 +13,12 @@ import { PipelineError, type PipelinesService } from "./pipelines.js";
  * which revises the day17 "tools never call the LLM" invariant (design D-4);
  * saveToFile is the first writing tool (hard root var/pipelines/, sanitized
  * name, caps, atomic write). All other tools remain read-only, no secrets.
+ * Day22 (design addendum §7.4, решение Кости): atlas tools upgraded to the
+ * point-cards format (data/points/*.md) — list_points = overview, get_point =
+ * full card; the same helpers feed the /api/rag/ask baseline tool-loop.
  */
 
-const ZONE_VALUES = ["head", "arm", "shoulder"] as const;
+const ZONE_VALUES = ["head", "arm", "shoulder", "other"] as const;
 
 const listPointsShape = {
   zone: z
@@ -26,7 +28,7 @@ const listPointsShape = {
 };
 
 const getPointShape = {
-  id: z.string().min(1).describe("id точки из list_points"),
+  id: z.string().min(1).describe("slug карточки из list_points (например, masseter)"),
 };
 
 // Day18: scheduler tools — schedule/cancel digest jobs, read the summary.
@@ -111,8 +113,9 @@ export const OWN_MCP_TOOL_SCHEMAS = [
   {
     name: "list_points",
     description:
-      "Список триггерных точек атласа самопомощи с техниками и предостережениями; " +
-      "опциональный фильтр по зоне отражённой боли (head — голова, arm — рука, shoulder — плечо/шея).",
+      "Обзор базы точек (карточки data/points/*.md): slug, название мышцы, зоны отражённой боли; " +
+      "опциональный фильтр по зоне (head — голова, arm — рука, shoulder — плечо/шея, other — прочее). " +
+      "Полный текст карточки — get_point по slug.",
     parameters: {
       type: "object",
       properties: {
@@ -128,7 +131,7 @@ export const OWN_MCP_TOOL_SCHEMAS = [
   {
     name: "get_point",
     description:
-      "Одна триггерная точка атласа по id (id взять из list_points): имя, зоны боли, техника самомассажа, предостережения.",
+      "Полный текст карточки точки по slug (взять из list_points): отражённая боль, ключевые симптомы, техника, осторожности, источники.",
     parameters: {
       type: "object",
       properties: {
@@ -280,7 +283,6 @@ function pipelineErrorText(prefix: string, error: unknown): string {
 }
 
 function createOwnMcpServer(
-  pointsService: PointsService,
   scheduler: SchedulerService,
   pipelines: PipelinesService,
 ): McpServer {
@@ -296,20 +298,7 @@ function createOwnMcpServer(
       inputSchema: listPointsShape,
     },
     async ({ zone }) => {
-      const points = await pointsService.loadAll();
-      const filtered = zone
-        ? points.filter((p: Point) => p.pain_zones.includes(zone))
-        : points;
-      return toolText({
-        count: filtered.length,
-        points: filtered.map((p) => ({
-          id: p.id,
-          name: p.name,
-          pain_zones: p.pain_zones,
-          technique: p.technique,
-          cautions: p.cautions,
-        })),
-      });
+      return toolText(await listPointCards(zone));
     },
   );
 
@@ -320,21 +309,18 @@ function createOwnMcpServer(
       inputSchema: getPointShape,
     },
     async ({ id }) => {
-      const point = await pointsService.findById(id);
-      if (!point) {
+      const card = await readPointCard(id);
+      if (!card) {
         return {
-          ...toolText({ error: `Точка «${id}» не найдена — см. list_points` }),
+          ...toolText({ error: `Карточка «${id}» не найдена — см. list_points` }),
           isError: true,
         };
       }
       return toolText({
-        point: {
-          id: point.id,
-          name: point.name,
-          pain_zones: point.pain_zones,
-          technique: point.technique,
-          cautions: point.cautions,
-        },
+        slug: card.slug,
+        source: card.source,
+        title: card.title,
+        card: card.text,
       });
     },
   );
@@ -503,7 +489,6 @@ export function ownMcpUrl(port: number): string {
 export async function registerOwnMcpRoute(
   app: FastifyInstance,
   opts: {
-    pointsService: PointsService;
     scheduler: SchedulerService;
     pipelines: PipelinesService;
   },
@@ -515,7 +500,6 @@ export async function registerOwnMcpRoute(
       enableJsonResponse: true,
     });
     const server = createOwnMcpServer(
-      opts.pointsService,
       opts.scheduler,
       opts.pipelines,
     );

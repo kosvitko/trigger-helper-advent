@@ -1,0 +1,67 @@
+{
+  "generatedAt": "2026-09-30T12:30:00+03:00",
+  "model": "deepseek-chat",
+  "_comment": "Day22 контрольные вопросы (design D-14): ответ-уровень, expectation = must-mention факты карточки (normalized contains), sources = data/points/*.md. Вопросы — по базе точек (addendum §7.4); уникальность ожиданий проверена по карточкам.",
+  "questions": [
+    {
+      "id": "q01",
+      "q": "Сухой приступообразный кашель может быть от триггерной точки? В какой мышце?",
+      "expectation": ["грудино-ключично-сосцевидн", "кашл"],
+      "sources": ["data/points/sternocleidomastoideus.md"]
+    },
+    {
+      "id": "q02",
+      "q": "Зубы реагируют на горячее и холодное, но стоматолог ничего не находит. Какая мышца может быть причиной и что она ещё даёт?",
+      "expectation": ["височн", "зуб"],
+      "sources": ["data/points/temporalis.md"]
+    },
+    {
+      "id": "q03",
+      "q": "Точки от жвачки и ночного скрежета зубами — о какой мышце речь и как её массировать?",
+      "expectation": ["жевательн", "внутрирот"],
+      "sources": ["data/points/masseter.md"]
+    },
+    {
+      "id": "q04",
+      "q": "Боль и заложенность в глубине уха — какая мышца даёт такой паттерн?",
+      "expectation": ["жевательн", "ух"],
+      "sources": ["data/points/masseter.md"]
+    },
+    {
+      "id": "q05",
+      "q": "Хруст или треск в мышцах при движении плеча — какие мышцы и где они сидят?",
+      "expectation": ["ромбовидн", "хруст", "лопатк"],
+      "sources": ["data/points/rhomboideus-major-et-minor.md"]
+    },
+    {
+      "id": "q06",
+      "q": "Аритмия без боли от точки между рёбрами — правда? Где искать точку?",
+      "expectation": ["аритм", "v и vi", "грудн"],
+      "sources": ["data/points/pectoralis-major-et-subclavius.md"]
+    },
+    {
+      "id": "q07",
+      "q": "«Мурашки» по верху предплечья — от точки в какой мышце и где она сидит?",
+      "expectation": ["трапециевидн", "мурашк", "лопатк"],
+      "sources": ["data/points/trapezius.md"]
+    },
+    {
+      "id": "q08",
+      "q": "Онемение большого пальца без потери чувствительности — какая мышца?",
+      "expectation": ["лестничн", "онемен"],
+      "sources": ["data/points/mm-scaleni-anterior-medius-posterior-minimus.md"]
+    },
+    {
+      "id": "q09",
+      "q": "Головокружение и шаткость при повороте головы — от каких мышц бывает?",
+      "expectation": ["головокружен", "грудино-ключично-сосцевидн"],
+      "sources": ["data/points/masseter.md", "data/points/sternocleidomastoideus.md"]
+    },
+    {
+      "id": "q10",
+      "q": "«Синусит», который не поддаётся лечению: боль под глазами и выделения из пазух. Какие мышцы так маскируются?",
+      "expectation": ["жевательн", "крыловидн"],
+      "sources": ["data/points/masseter.md", "data/points/pterygoideus-lateralis.md"]
+    }
+  ]
+}
