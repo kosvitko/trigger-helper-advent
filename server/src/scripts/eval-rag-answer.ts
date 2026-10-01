@@ -7,18 +7,22 @@ import { createUsageLedgerService } from "../services/usage-ledger.js";
 import { createRagService, writeJsonAtomic } from "../services/rag/store.js";
 import { repoRoot } from "../services/rag/paths.js";
 import { createRagAnswerService, type RagAskResult } from "../services/rag/answer.js";
+import { createReranker } from "../services/rag/rerank.js";
+import { createRewriteQueries } from "../services/rag/rewrite.js";
 import { getBudgetSnapshot } from "../services/cost-aware-throttle.js";
 
 /**
- * Day22 answer-level eval (design D-8/D-14): 10 control questions × 2 modes
- * (baseline | rag), scored deterministically — no LLM judge (gate D-6).
+ * Day23 answer-level eval (design D-6): the 10 control questions × 4 rag
+ * arms (base / rerank / rewrite / full) — deterministic scoring, no LLM
+ * judge. The day-22 baseline is NOT re-run (gate D-1): its committed
+ * aggregate is lifted into aggregate.anchorDay22 before the write (F-05-3).
  *
- *   npm run rag:eval
+ *   npm run rag:eval    (run rag:tune first — rerank arms need the artifact)
  *
  * Reads data/rag/eval-questions.json, calls RagAnswerService directly
  * (no HTTP, no rate-limit; budget ceiling NOT enforced on this path — F-B2 —
- * warn-only snapshot below), writes data/rag/eval-answers.json and prints the
- * 10×2 verdict table.
+ * warn-only snapshot below), writes data/rag/eval-answers.json (v2: stage +
+ * rewrite_tokens per row, aggregate.byStage) and prints the matrix table.
  *
  * ⚠ Ledger single-writer (F-05-2): UsageLedgerService is read-modify-write of
  * one JSON with an in-process cache — run this with the server STOPPED, or
@@ -41,6 +45,15 @@ const OUT_FILE =
 /** k — нормируется по объёму контекста (structured чанки мельче → k больше). */
 const K = Number(process.argv.find((a) => a.startsWith("--k="))?.split("=")[1] ?? 12);
 
+/** Day23 arms (design D-5): the rag-stage matrix. Baseline is not re-run —
+ *  the day-22 committed aggregate rides along as the anchor (gate D-1). */
+const STAGES = [
+  { stage: "base", rerank: false, rewrite: false },
+  { stage: "rerank", rerank: true, rewrite: false },
+  { stage: "rewrite", rerank: false, rewrite: true },
+  { stage: "full", rerank: true, rewrite: true },
+] as const;
+
 const questionSchema = z.object({
   id: z.string().min(1),
   q: z.string().min(1),
@@ -59,10 +72,13 @@ type Score = { content: number; retrieval: boolean | null; grounding: boolean | 
 type Row = {
   id: string;
   q: string;
-  mode: "baseline" | "rag";
+  /** Day23 eval arm (design D-5); baseline rows are not re-run (anchor). */
+  stage: string;
   answer: string;
   sourcesUsed: string[];
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  /** Rewrite share of usage.total_tokens (F-04-5: usage is summed). */
+  rewriteTokens: number;
   latencyMs: number;
   scores: Score;
   verdict: "PASS" | "PARTIAL" | "FAIL";
@@ -122,13 +138,21 @@ async function main(): Promise<number> {
   const rag = createRagService(env);
   const deepSeek = createDeepSeekService(env);
   const ledger = createUsageLedgerService(env.USAGE_FILE);
-  const service = createRagAnswerService({ rag, deepSeek, ledger });
+  // F-04-1: the eval script builds the SAME deps as index.ts — rerank arms
+  // additionally require the committed tune artifact (order: tune → eval).
+  const service = createRagAnswerService({
+    rag,
+    deepSeek,
+    ledger,
+    reranker: createReranker(env),
+    rewriter: createRewriteQueries(deepSeek),
+  });
 
   // Warn-only budget snapshot (F-B2): the run bypasses the route throttle.
   const budget = await getBudgetSnapshot(ledger, env);
   console.log(
-    `[rag:eval] бюджет дня: использовано ₽${budget.used_rub} из ₽${budget.limit_rub}` +
-      ` · прогон ~20 вызовов deepseek-chat ≈ ₽2`,
+    "[rag:eval] бюджет дня: использовано ₽" + String(budget.used_rub) + " из ₽" + String(budget.limit_rub) +
+      " · прогон ~40 вызовов deepseek-chat ≈ ₽4",
   );
   if (budget.remaining_rub !== null && budget.remaining_rub < 5) {
     console.warn(`[rag:eval] ВНИМАНИЕ: остаток дня ₽${budget.remaining_rub} — может не хватить на прогон`);
@@ -139,20 +163,23 @@ async function main(): Promise<number> {
 
   const rows: Row[] = [];
   for (const question of questions) {
-    for (const mode of ["baseline", "rag"] as const) {
-      process.stdout.write(`[rag:eval] ${question.id} ${mode} … `);
+    for (const arm of STAGES) {
+      process.stdout.write(`[rag:eval] ${question.id} ${arm.stage} … `);
       try {
         const result = await service.ask({
           q: question.q,
-          mode,
+          mode: "rag",
           strategy: STRATEGY,
           k: K,
+          rerank: arm.rerank,
+          rewrite: arm.rewrite,
         });
         const scores = scoreAnswer(result.answer, question, result);
+        const rewriteTokens = result.meta.rewrite?.tokens ?? 0;
         rows.push({
           id: question.id,
           q: question.q,
-          mode,
+          stage: arm.stage,
           answer: result.answer,
           sourcesUsed: result.sources.map((s) => s.chunk_id),
           usage: {
@@ -160,6 +187,7 @@ async function main(): Promise<number> {
             completion_tokens: result.usage.completion_tokens,
             total_tokens: result.usage.total_tokens,
           },
+          rewriteTokens,
           latencyMs: result.meta.latencyMs,
           scores,
           verdict: verdictOf(scores.content),
@@ -170,39 +198,52 @@ async function main(): Promise<number> {
         rows.push({
           id: question.id,
           q: question.q,
-          mode,
+          stage: arm.stage,
           answer: `(error) ${err instanceof Error ? err.message : String(err)}`,
           sourcesUsed: [],
           usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          rewriteTokens: 0,
           latencyMs: 0,
-          scores: { content: 0, retrieval: mode === "rag" ? false : null, grounding: mode === "rag" ? false : null },
+          scores: { content: 0, retrieval: false, grounding: false },
           verdict: "FAIL",
         });
       }
     }
   }
 
-  const byMode = {
-    baseline: summarize(rows.filter((r) => r.mode === "baseline")),
-    rag: summarize(rows.filter((r) => r.mode === "rag")),
-  };
-  const ragRows = rows.filter((r) => r.mode === "rag");
+  const byStage: Record<string, ReturnType<typeof summarize>> = {};
+  for (const { stage } of STAGES) byStage[stage] = summarize(rows.filter((r) => r.stage === stage));
+  // Anchor lift (F-05-3): this run OVERWRITES the only in-repo copy of the
+  // day-22 baseline aggregate — lift it BEFORE writing (idempotent: later runs
+  // carry the already-lifted anchorDay22 forward as-is).
+  let anchorDay22: unknown = null;
+  try {
+    const existing = JSON.parse(await fs.readFile(path.join(repoRoot, OUT_FILE), "utf8")) as {
+      aggregate?: { anchorDay22?: unknown; byMode?: { baseline?: unknown } };
+    };
+    anchorDay22 = existing.aggregate?.anchorDay22 ?? existing.aggregate?.byMode?.baseline ?? null;
+  } catch {
+    anchorDay22 = null; // no committed predecessor — nothing to lift
+  }
   const artifact = {
     generatedAt: new Date().toISOString(),
     model: parsed.data.model,
     strategy: STRATEGY,
     k: K,
+    // Day23 v2: stage arms; usage is the FULL price (answer + rewrite summed,
+    // F-04-5) — rewrite_tokens splits the rewrite share back out.
     questions: rows.map((r) => {
       const question = questions.find((qq) => qq.id === r.id);
       return {
         id: r.id,
         q: r.q,
-        mode: r.mode,
+        stage: r.stage,
         answer: r.answer,
-        // chunk_id strings of the injected context / read cards (F-B3); baseline: []
+        // chunk_id strings of the injected context (F-B3)
         sourcesUsed: r.sourcesUsed,
         // Cost of access is mandatory in the comparison (решение Кости 30.09)
         usage: r.usage,
+        rewrite_tokens: r.rewriteTokens,
         latency_ms: r.latencyMs,
         scores: r.scores,
         verdict: r.verdict,
@@ -213,45 +254,55 @@ async function main(): Promise<number> {
       };
     }),
     aggregate: {
-      byMode,
-      retrievalHitRate: rate(ragRows.map((r) => r.scores.retrieval)),
-      groundingRate: rate(ragRows.map((r) => r.scores.grounding)),
+      byStage,
+      retrievalHitRate: rate(rows.map((r) => r.scores.retrieval)),
+      groundingRate: rate(rows.map((r) => r.scores.grounding)),
+      anchorDay22,
     },
   };
 
   await writeJsonAtomic(path.join(repoRoot, OUT_FILE), artifact);
 
-  console.log("\n[rag:eval] таблица 10×2 (контент / цена доступа: токены · время):");
+  console.log("\n[rag:eval] матрица (этап · контент / цена доступа: токены · время):");
   console.table(
     rows.map((r) => ({
       id: r.id,
-      mode: r.mode,
+      stage: r.stage,
       content: r.scores.content.toFixed(2),
       verdict: r.verdict,
       retrieval: r.scores.retrieval === null ? "—" : r.scores.retrieval ? "✓" : "✗",
       grounding: r.scores.grounding === null ? "—" : r.scores.grounding ? "✓" : "✗",
       tokens: r.usage.total_tokens,
+      "из них rewrite": r.rewriteTokens || "—",
       ms: r.latencyMs,
     })),
   );
+  for (const { stage } of STAGES) {
+    const s = byStage[stage];
+    console.log(
+      `[rag:eval] ${stage}: PASS ${s.pass}/${s.total} · mean ${s.meanContent.toFixed(2)}` +
+        ` · ~${Math.round(s.meanTokens)} tok · ${(s.meanLatencyMs / 1000).toFixed(1)} s` +
+        ` · retrieval ${rate(rows.filter((r) => r.stage === stage).map((r) => r.scores.retrieval)).toFixed(2)}`,
+    );
+  }
+  const base = byStage.base;
+  const best = STAGES.map(({ stage }) => ({ stage, s: byStage[stage] })).sort(
+    (a, b) => b.s.meanContent - a.s.meanContent,
+  )[0];
+  const win =
+    best.stage !== "base" &&
+    best.s.meanContent > base.meanContent &&
+    best.s.pass >= base.pass &&
+    best.s.meanTokens <= base.meanTokens * 1.15;
   console.log(
-    `[rag:eval] агрегат: baseline PASS ${byMode.baseline.pass}/${byMode.baseline.total}` +
-      ` · rag PASS ${byMode.rag.pass}/${byMode.rag.total}` +
-      ` · meanContent ${byMode.baseline.meanContent.toFixed(2)} → ${byMode.rag.meanContent.toFixed(2)}` +
-      ` · retrieval ${artifact.aggregate.retrievalHitRate.toFixed(2)} · grounding ${artifact.aggregate.groundingRate.toFixed(2)}`,
+    `[rag:eval] вывод: лучший arm «${best.stage}» ${best.s.meanContent.toFixed(2)} vs base ${base.meanContent.toFixed(2)} — ` +
+      (win
+        ? "критерий победы выполнен; решение о дефолте — гейт с Костей по артефакту (D-5)"
+        : "критерий победы НЕ выполнен — дефолт не меняем (D-5)"),
   );
   console.log(
-    `[rag:eval] цена доступа: baseline ~${Math.round(byMode.baseline.meanTokens)} tok / ` +
-      `${(byMode.baseline.meanLatencyMs / 1000).toFixed(1)} s  →  ` +
-      `rag ~${Math.round(byMode.rag.meanTokens)} tok / ${(byMode.rag.meanLatencyMs / 1000).toFixed(1)} s`,
-  );
-  const ragBetter = byMode.rag.meanContent > byMode.baseline.meanContent;
-  console.log(
-    `[rag:eval] вывод: RAG ${ragBetter ? "повышает" : "НЕ повышает"} качество ответов` +
-      ` (${byMode.baseline.meanContent.toFixed(2)} → ${byMode.rag.meanContent.toFixed(2)});` +
-      ` ретрив попадает в ожидаемый источник в ${Math.round(artifact.aggregate.retrievalHitRate * 100)}% вопросов` +
-      ` · базлайн дешевле/быстрее в ${Math.max(1, Math.round(byMode.baseline.meanTokens / Math.max(1, byMode.rag.meanTokens)))}× по токенам` +
-      `, время — см. строку выше`,
+    "[rag:eval] анкер дня 22 (baseline, из прошлого артефакта): " +
+      (anchorDay22 ? JSON.stringify(anchorDay22) : "нет"),
   );
   console.log("[rag:eval] артефакт: " + OUT_FILE);
   return 0;

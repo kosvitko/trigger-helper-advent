@@ -32,6 +32,8 @@ import { registerOwnMcpRoute } from "./services/mcp-server.js";
 import { createMcpRegistry } from "./services/mcp-registry.js";
 import { createPipelinesService } from "./services/pipelines.js";
 import { createRagAnswerService } from "./services/rag/answer.js";
+import { createReranker } from "./services/rag/rerank.js";
+import { createRewriteQueries } from "./services/rag/rewrite.js";
 import { createRagService } from "./services/rag/store.js";
 import { createSchedulerService } from "./services/scheduler.js";
 
@@ -89,10 +91,14 @@ async function main(): Promise<void> {
   // The service never touches the embeddings model at boot — lazy on search.
   const rag = createRagService(env);
   // Day22: RAG answer (question → chunks → LLM), two fair modes (design D-2).
+  // Day23 (design F-04-1): + reranker (cross-encoder, tune-artifact threshold)
+  // and rewriter (multi-query) — lazy init inside the services, boot untouched.
   const ragAnswer = createRagAnswerService({
     rag,
     deepSeek: deepSeekService,
     ledger: usageLedger,
+    reranker: createReranker(env),
+    rewriter: createRewriteQueries(deepSeekService),
   });
   const day10State = createDay10StateStore({
     onChange: () => agentState.scheduleSave(),

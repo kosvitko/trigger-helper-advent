@@ -4,6 +4,8 @@ import type { DeepSeekService, ChatMessage, ChatResult, ToolSpec } from "../deep
 import { estimateTokens } from "../agent/token-estimate.js";
 import { RagService, type RagStrategy, type SearchHit } from "./store.js";
 import { listPointCards, readPointCard } from "./point-cards.js";
+import type { Reranker } from "./rerank.js";
+import type { QueryRewriter, RewriteResult } from "./rewrite.js";
 
 /**
  * Day22 RAG-answer service (design D-2…D-6 + addendum §7.4): question → chunks
@@ -19,6 +21,15 @@ import { listPointCards, readPointCard } from "./point-cards.js";
  *
  * RagService stays LLM-free; budget throttle lives in the route (F-05-1);
  * the agent chat loop is NOT touched (day 24 wraps ask()).
+ *
+ * Day23 (design D-4/D-5, consilium 260930): optional second stage via flags
+ * {rerank, rewrite} — cross-encoder rerank (threshold owned by the committed
+ * tune artifact) and multi-query rewrite (union by per-chunk max in
+ * store.rankByQueries). Arms: base (day-22 canon) / rerank / rewrite / full.
+ * Rewrite feeds RETRIEVAL only — the answer call keeps the original question
+ * and the day-22 «полноценный рассказ» prompt unchanged. The ledger and
+ * result.usage carry answer+rewrite SUMMED (F-04-5); the split stays visible
+ * in meta.rewrite. Rerank precheck runs before the rewrite spend (F-04-2).
  */
 
 const RAG_ASK_MODEL = "deepseek-chat";
@@ -30,6 +41,9 @@ const RAG_ASK_PROMPT_TOKEN_BUDGET = 3_000;
 /** Baseline tool-loop caps (smaller than the chat agent's 8/8 — eval path). */
 const BASELINE_MAX_ROUNDS = 4;
 const BASELINE_MAX_CALLS = 6;
+/** Day23 (design D-3): rerank arms ignore the route k — k_final is a code
+ *  constant (16–20 band; the 3k-token budget cuts the tail anyway). */
+const RAG_K_FINAL = 16;
 
 export type RagAskMode = "rag" | "baseline";
 
@@ -38,6 +52,9 @@ export interface RagAskInput {
   mode: RagAskMode;
   strategy: RagStrategy;
   k: number;
+  /** Day23 rag-stage flags (design D-5); base = false/false = day-22 canon. */
+  rerank?: boolean;
+  rewrite?: boolean;
 }
 
 export interface RagAskSource {
@@ -66,6 +83,19 @@ export interface RagAskResult {
     /** Baseline tool-loop counters (0 for rag mode). */
     toolRounds: number;
     toolCalls: number;
+    /** Day23 rag-stage extras (rag mode only, design D-5). */
+    stage?: "base" | "rerank" | "rewrite" | "full";
+    poolRanked?: number;
+    keptAfterFilter?: number;
+    injectedCount?: number;
+    rerankLatencyMs?: number;
+    rewrite?: {
+      variants: string[];
+      tokens: number;
+      latencyMs: number;
+      fallback: boolean;
+      error?: string;
+    };
   };
 }
 
@@ -74,6 +104,8 @@ export class RagAnswerService {
     private readonly rag: RagService,
     private readonly deepSeek: DeepSeekService,
     private readonly ledger: UsageLedgerService,
+    private readonly reranker: Reranker,
+    private readonly rewriter: QueryRewriter,
   ) {}
 
   async ask(input: RagAskInput): Promise<RagAskResult> {
@@ -86,12 +118,50 @@ export class RagAnswerService {
     let contextTokens = 0;
     let toolRounds = 0;
     let toolCalls = 0;
+    // Day23 rag-stage extras (design D-5): set in the rag branch only.
+    let stageExtras: Partial<RagAskResult["meta"]> & {
+      stage: "base" | "rerank" | "rewrite" | "full";
+      poolRanked: number;
+      keptAfterFilter: number;
+      injectedCount: number;
+    } | null = null;
 
     if (mode === "rag") {
-      const { hits } = await this.rag.search(q, input.strategy, input.k);
+      const useRerank = input.rerank === true;
+      const useRewrite = input.rewrite === true;
+      // F-04-2: the rerank precheck (model + tune artifact load) runs BEFORE
+      // the rewrite spend — a broken artifact costs 0 tokens, not ~200.
+      if (useRerank) await this.reranker.ensureReady();
+      let rewrite: RewriteResult | null = null;
+      if (useRewrite) rewrite = await this.rewriter.rewriteQueries(q);
+
+      // Rewrite guard (a): union by per-chunk max — the original question is
+      // always in the pool (store.rankByQueries); fallback → plain rankAll.
+      const ranked =
+        rewrite && !rewrite.fallback && rewrite.queries.length > 0
+          ? await this.rag.rankByQueries([q, ...rewrite.queries], input.strategy)
+          : await this.rag.rankAll(q, input.strategy);
+      let hits = ranked.hits;
+      const poolRanked = hits.length;
+      let keptAfterFilter: number;
+      let rerankLatencyMs: number | undefined;
+      if (useRerank) {
+        // Rerank arms ignore the route k (design D-3): k_final is a const.
+        const reranked = await this.reranker.rerank(q, hits);
+        hits = reranked.hits.slice(0, RAG_K_FINAL);
+        keptAfterFilter = reranked.kept;
+        rerankLatencyMs = reranked.latencyMs;
+      } else {
+        // base/rewrite arms keep the day-22 k normalization.
+        hits = hits.slice(0, input.k);
+        keptAfterFilter = hits.length;
+      }
+
       const assembled = assembleContext(hits);
       contextTokens = assembled.tokens;
       sources = assembled.sources;
+      // Rewrite guard (b): the ANSWER call keeps the original question —
+      // variants feed retrieval only (day-22 prompt untouched, D-4).
       const result = await this.chat(
         [
           { role: "system", content: RAG_SYSTEM },
@@ -101,6 +171,29 @@ export class RagAnswerService {
       );
       answer = result.reply;
       usage = result.usage;
+
+      // F-04-5: ledger + result.usage see the FULL price (answer + rewrite
+      // summed); the split stays visible in meta.rewrite below.
+      if (rewrite?.usage) usage = sumUsages([usage, rewrite.usage]);
+
+      stageExtras = {
+        stage: useRerank && useRewrite ? "full" : useRerank ? "rerank" : useRewrite ? "rewrite" : "base",
+        poolRanked,
+        keptAfterFilter,
+        injectedCount: sources.length,
+        ...(rerankLatencyMs !== undefined ? { rerankLatencyMs } : {}),
+        ...(rewrite
+          ? {
+              rewrite: {
+                variants: rewrite.queries,
+                tokens: rewrite.usage?.total_tokens ?? 0,
+                latencyMs: rewrite.latencyMs,
+                fallback: rewrite.fallback,
+                ...(rewrite.error ? { error: rewrite.error } : {}),
+              },
+            }
+          : {}),
+      };
     } else {
       const loop = await this.baselineLoop(q);
       answer = loop.answer;
@@ -129,6 +222,7 @@ export class RagAnswerService {
         contextTokens,
         toolRounds,
         toolCalls,
+        ...(stageExtras ?? {}),
       },
     };
   }
@@ -386,6 +480,8 @@ export function createRagAnswerService(deps: {
   rag: RagService;
   deepSeek: DeepSeekService;
   ledger: UsageLedgerService;
+  reranker: Reranker;
+  rewriter: QueryRewriter;
 }): RagAnswerService {
-  return new RagAnswerService(deps.rag, deps.deepSeek, deps.ledger);
+  return new RagAnswerService(deps.rag, deps.deepSeek, deps.ledger, deps.reranker, deps.rewriter);
 }

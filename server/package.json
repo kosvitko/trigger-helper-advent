@@ -8,7 +8,8 @@
     "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/services/mcp-registry.baseline.json','dist/services/mcp-registry.baseline.json')\"",
     "start": "node dist/index.js",
     "rag:index": "tsx src/scripts/build-rag-index.ts",
-    "rag:eval": "tsx src/scripts/eval-rag-answer.ts"
+    "rag:eval": "tsx src/scripts/eval-rag-answer.ts",
+    "rag:tune": "tsx src/scripts/tune-rerank.ts"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",

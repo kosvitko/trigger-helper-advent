@@ -238,24 +238,48 @@ export class RagService {
     return pending;
   }
 
+  /** Day23 (design D-5): the FULL ranked list — search() minus the slice.
+   *  Zero-regression refactor: the score loop is the original one. */
+  async rankAll(query: string, strategy: RagStrategy): Promise<{ index: RagIndex; hits: SearchHit[] }> {
+    return this.rankByQueries([query], strategy);
+  }
+
+  /** Day23 rewrite-union (design D-4/D-5): embed every query (original +
+   *  rewrite variants) and keep the PER-CHUNK MAX score — the original
+   *  question can never be displaced (red-team guard). The embedder is
+   *  private to RagService, so the union lives here, not in answer.ts
+   *  (pass 02 F-3). */
+  async rankByQueries(queries: string[], strategy: RagStrategy): Promise<{ index: RagIndex; hits: SearchHit[] }> {
+    const index = await this.loadIndex(strategy);
+    const embedder = await this.getEmbedder(index.model);
+    const queryVectors: number[][] = [];
+    for (const query of queries) {
+      const vector = await embedder.embedQuery(query);
+      if (vector.length !== index.dim) {
+        throw new RagUnavailableError(`query dim ${vector.length} != index dim ${index.dim}`);
+      }
+      queryVectors.push(vector);
+    }
+    // Vectors are stored normalized → dot product == cosine.
+    const hits: SearchHit[] = index.chunks.map((chunk) => {
+      let best = -Infinity;
+      for (const queryVector of queryVectors) {
+        let score = 0;
+        for (let i = 0; i < index.dim; i++) score += queryVector[i] * chunk.vector[i];
+        if (score > best) best = score;
+      }
+      return { chunk, score: best };
+    });
+    hits.sort((a, b) => b.score - a.score);
+    return { index, hits };
+  }
+
   async search(
     query: string,
     strategy: RagStrategy,
     k: number,
   ): Promise<{ index: RagIndex; hits: SearchHit[] }> {
-    const index = await this.loadIndex(strategy);
-    const embedder = await this.getEmbedder(index.model);
-    const queryVector = await embedder.embedQuery(query);
-    if (queryVector.length !== index.dim) {
-      throw new RagUnavailableError(`query dim ${queryVector.length} != index dim ${index.dim}`);
-    }
-    // Vectors are stored normalized → dot product == cosine.
-    const hits: SearchHit[] = index.chunks.map((chunk) => {
-      let score = 0;
-      for (let i = 0; i < index.dim; i++) score += queryVector[i] * chunk.vector[i];
-      return { chunk, score };
-    });
-    hits.sort((a, b) => b.score - a.score);
+    const { index, hits } = await this.rankAll(query, strategy);
     return { index, hits: hits.slice(0, k) };
   }
 }

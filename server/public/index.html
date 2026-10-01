@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-   <title>Trigger Helper — Агент · day22</title>
+   <title>Trigger Helper — Агент · day23</title>
   <style>
     :root {
       color-scheme: light;
@@ -769,7 +769,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-         <h1>Trigger Helper<span class="sub">Агент · day22</span></h1>
+         <h1>Trigger Helper<span class="sub">Агент · day23</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -838,6 +838,12 @@
               <option value="both">оба</option>
               <option value="rag">с RAG</option>
               <option value="baseline">без RAG</option>
+            </select>
+            <select id="rag-ask-stage" title="этап RAG (day23): base — как day22; rerank — кросс-энкодер + порог; rewrite — мульти-запрос; full — оба">
+              <option value="base">base</option>
+              <option value="rerank">rerank</option>
+              <option value="rewrite">rewrite</option>
+              <option value="full">full</option>
             </select>
             <button type="button" id="rag-ask-btn">Спросить</button>
           </div>
@@ -3734,6 +3740,13 @@
       if (!q) return;
       const mode = document.getElementById("rag-ask-mode").value;
       const modes = mode === "both" ? ["baseline", "rag"] : [mode];
+      // Day23 (design D-8): stage selector applies to the rag side only.
+      const stage = document.getElementById("rag-ask-stage").value;
+      const stageFlags = {
+        rerank: { rerank: true, rewrite: false },
+        rewrite: { rerank: false, rewrite: true },
+        full: { rerank: true, rewrite: true },
+      }[stage] || { rerank: false, rewrite: false };
       const btn = document.getElementById("rag-ask-btn");
       state.ragAskBusy = true;
       btn.disabled = true;
@@ -3741,6 +3754,7 @@
         q: q,
         strategy: "structured",
         k: 12,
+        stage: stage,
         panes: modes.map((m) => ({ mode: m, status: "pending" })),
       };
       state.ragCards.push(card);
@@ -3750,7 +3764,13 @@
           try {
             const res = await api("/api/rag/ask", {
               method: "POST",
-              body: JSON.stringify({ q: q, mode: pane.mode, strategy: "structured", k: 12 }),
+              body: JSON.stringify({
+                q: q,
+                mode: pane.mode,
+                strategy: "structured",
+                k: 12,
+                ...(pane.mode === "rag" ? stageFlags : {}),
+              }),
             });
             pane.status = "done";
             pane.answer = res.answer;
@@ -3788,6 +3808,18 @@
         " · " + (pane.usage ? pane.usage.total_tokens + " tok" : "—") +
         " · " + (pane.meta ? (pane.meta.latencyMs / 1000).toFixed(1) + " s" : "—") +
         (pane.meta && pane.meta.toolCalls ? " · тула: " + pane.meta.toolCalls : "") +
+        (pane.meta && pane.meta.stage ? " · этап " + escAttr(pane.meta.stage) : "") +
+        (pane.meta && pane.meta.poolRanked != null
+          ? " · топ: " + pane.meta.poolRanked + " → " + (pane.meta.keptAfterFilter ?? "—") + " → " + (pane.meta.injectedCount ?? "—")
+          : "") +
+        (pane.meta && pane.meta.rerankLatencyMs != null
+          ? " · реранк " + (pane.meta.rerankLatencyMs / 1000).toFixed(1) + " s"
+          : "") +
+        (pane.meta && pane.meta.rewrite
+          ? " · rewrite: " + (pane.meta.rewrite.fallback
+              ? "фолбэк" + (pane.meta.rewrite.error ? " (" + escAttr(pane.meta.rewrite.error) + ")" : "")
+              : pane.meta.rewrite.variants.length + " вар. · " + pane.meta.rewrite.tokens + " tok · " + (pane.meta.rewrite.latencyMs / 1000).toFixed(1) + " s")
+          : "") +
         "</div>" + hits
       );
     }
@@ -3813,7 +3845,7 @@
         wrap.className = "msg assistant rag-card";
         wrap.innerHTML =
           '<div class="bubble"><div class="inv-text"><b>RAG-ask</b> · «' + escAttr(card.q) +
-          "» · fixed · k=" + card.k + "</div>" +
+          "» · " + escAttr(card.strategy || "structured") + " · этап " + escAttr(card.stage || "base") + " · k=" + card.k + "</div>" +
           card.panes
             .map(
               (p) =>
@@ -3844,7 +3876,78 @@
       btn.disabled = false;
       renderMessages();
     }
+    /* Day23 (design D-8): eval v2 — матрица 4 arms × 10 вопросов; usage
+       кумулятивный (ответ + rewrite, F-04-5), rewrite_tokens — доля rewrite;
+       анкер дня 22 (без RAG) виден рядом с матрицей. */
+    function drawEvalCardV2(d) {
+      const wrap = document.createElement("div");
+      wrap.className = "msg assistant rag-card";
+      const byId = {};
+      for (const r of d.questions) (byId[r.id] = byId[r.id] || []).push(r);
+      const stageNames = { base: "base", rerank: "+реранк", rewrite: "+rewrite", full: "full" };
+      const cell = (pair, stage) => {
+        const r = pair.find((x) => x.stage === stage);
+        return r
+          ? escAttr(
+              r.verdict + " · " + r.usage.total_tokens + " tok" +
+                (r.rewrite_tokens ? " (+" + r.rewrite_tokens + " rewrite)" : "") +
+                " · " + (r.latency_ms / 1000).toFixed(1) + " s",
+            )
+          : "—";
+      };
+      const rows = Object.keys(byId)
+        .sort()
+        .map((id) => {
+          const pair = byId[id];
+          const first = pair[0] || {};
+          const q = first.q || "";
+          const expectation = (first.expectation || []).map((e) => "«" + e + "»").join(", ");
+          const sources = (first.sources || []).map((s) => " " + s.split("/").pop()).join(",");
+          return (
+            '<div class="inv-row"><span class="inv-n">' + escAttr(id) + '</span><span class="inv-text">' +
+            "<b>вопрос:</b> " + escAttr(q) +
+            "<br><b>ожидание:</b> " + escAttr(expectation) +
+            "<br><b>источники:</b> " + escAttr(sources.trim()) +
+            Object.keys(stageNames)
+              .map((st) => "<br><b>" + stageNames[st] + ":</b> " + cell(pair, st))
+              .join("") +
+            "</span></div>"
+          );
+        })
+        .join("");
+      const agg = d.aggregate || {};
+      const stageLine = (name, s) =>
+        '<div class="inv-text">' + name + ": PASS " + (s.pass ?? "—") + "/" + (s.total ?? "—") +
+        " · mean " + (s.meanContent != null ? s.meanContent.toFixed(2) : "—") +
+        " · ~" + (s.meanTokens != null ? Math.round(s.meanTokens) : "—") + " tok · " +
+        (s.meanLatencyMs != null ? (s.meanLatencyMs / 1000).toFixed(1) : "—") + " s</div>";
+      const anchor = agg.anchorDay22;
+      const aggHtml =
+        '<div class="inv-text"><b>Итог</b> · матрица day23: качество + цена доступа</div>' +
+        stageLine("base", (agg.byStage && agg.byStage.base) || {}) +
+        stageLine("+реранк", (agg.byStage && agg.byStage.rerank) || {}) +
+        stageLine("+rewrite", (agg.byStage && agg.byStage.rewrite) || {}) +
+        stageLine("full", (agg.byStage && agg.byStage.full) || {}) +
+        (anchor && anchor.pass != null
+          ? '<div class="inv-text" style="color:var(--muted,#999)">анкер day22 (без RAG): PASS ' +
+            anchor.pass + "/" + (anchor.total ?? "—") +
+            " · mean " + (anchor.meanContent != null ? anchor.meanContent.toFixed(2) : "—") +
+            " · ~" + (anchor.meanTokens != null ? Math.round(anchor.meanTokens) : "—") + " tok</div>"
+          : "") +
+        '<div class="inv-text">ретрив попадает в ожидаемый источник: ' +
+        (agg.retrievalHitRate != null ? Math.round(agg.retrievalHitRate * 100) + "%" : "—") +
+        " · цитаты в ответе: " + (agg.groundingRate != null ? Math.round(agg.groundingRate * 100) + "%" : "—") + "</div>";
+      wrap.innerHTML =
+        '<div class="bubble"><div class="inv-text"><b>Eval</b> · 10 контрольных · ' +
+        escAttr((d.strategy || "?") + " · k=" + (d.k ?? "?")) + "</div>" +
+        aggHtml + rows + "</div>";
+      el.messages.appendChild(wrap);
+    }
     function drawEvalCard(d) {
+      if (d.aggregate && d.aggregate.byStage) {
+        drawEvalCardV2(d);
+        return;
+      }
       const wrap = document.createElement("div");
       wrap.className = "msg assistant rag-card";
       const byId = {};

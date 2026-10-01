@@ -40,6 +40,10 @@ const askBodySchema = z.object({
   // retrieval 90%); k=12 — нормировка по объёму контекста (мелкие секции).
   strategy: z.enum(RAG_STRATEGIES).default("structured"),
   k: z.coerce.number().int().min(1).max(15).default(12),
+  // Day23 (design D-5): rag-stage flags — base arm (false/false) = day-22 canon.
+  // Rerank arms ignore route k inside the service (k_final const, D-3).
+  rerank: z.boolean().default(false),
+  rewrite: z.boolean().default(false),
 });
 
 export interface RagRoutesOptions {

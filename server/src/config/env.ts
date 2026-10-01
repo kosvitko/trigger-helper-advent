@@ -39,6 +39,14 @@ const envSchema = z.object({
   /** Day21: HuggingFace weights cache (default: <repo>/var/hf-cache). */
   RAG_CACHE_DIR: z.string().optional(),
   /**
+   * Day23: host capability switch for the cross-encoder reranker (design D-11
+   * hardening, OOM measured 01.10). "0"/"false" → rerank/full arms answer 503
+   * BEFORE any model load (mode-scoped degradation, base/rewrite keep working)
+   * — the 568M q8 model does not fit next to the server on the 1.9 GB VPS.
+   * Default: enabled (absent/any other value).
+   */
+  RAG_RERANK_ENABLED: z.string().optional(),
+  /**
    * Day20: external MCP servers, comma-separated `name=url` (name: [a-z0-9]+).
    * Own server is always registered from PORT; absent value = own-only (day19).
    * Per-server LLM injection filter: MCP_INJECT_<NAME> (comma-list of native
