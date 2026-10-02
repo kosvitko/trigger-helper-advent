@@ -6,9 +6,11 @@ import { createDeepSeekService } from "../services/deepseek.js";
 import { createUsageLedgerService } from "../services/usage-ledger.js";
 import { createRagService, writeJsonAtomic } from "../services/rag/store.js";
 import { repoRoot } from "../services/rag/paths.js";
-import { createRagAnswerService, type RagAskResult } from "../services/rag/answer.js";
+import { createRagAnswerService, type RagAskResult, type RagAskQuote } from "../services/rag/answer.js";
 import { createReranker } from "../services/rag/rerank.js";
 import { createRewriteQueries } from "../services/rag/rewrite.js";
+import { normalizeRu } from "../services/rag/text.js";
+import { PROBES } from "../services/rag/probes.js";
 import { getBudgetSnapshot } from "../services/cost-aware-throttle.js";
 
 /**
@@ -33,6 +35,15 @@ import { getBudgetSnapshot } from "../services/cost-aware-throttle.js";
  * the injected top-k (rag rows only); grounding = normalized answer contains
  * an expected source path or basename (rag rows only). Baseline rows carry
  * retrieval/grounding = null (F-05-4).
+ *
+ * Day24 (design D-5, Δ-5): rows gain hasSources/hasQuotes/quotesVerbatim +
+ * the meaning proxy (доля нормализованных токенов ответа len ≥ 4 из
+ * цитируемых чанков; ≥ 0.3 — «опирается»); the 5 off-corpus probes run on
+ * the base arm with their own verdict branch (expectation derived from
+ * the committed tune-dontknow threshold — near-miss probes above it are
+ * EXPECTED to answer with quotes) and stay OUT
+ * of byStage/meanContent — a separate artifact section. Normalizer imported
+ * from services/rag/text.ts (no local copy).
  */
 
 /** Day22: canonical eval config = structured + k=12 (замер 30.09 — лучший
@@ -82,19 +93,69 @@ type Row = {
   latencyMs: number;
   scores: Score;
   verdict: "PASS" | "PARTIAL" | "FAIL";
+  /** Day24 (Δ-5): the three checks of the day + the meaning proxy. */
+  hasSources: boolean;
+  hasQuotes: boolean;
+  quotesVerbatim: boolean;
+  /** Share of distinct normalized answer tokens (len ≥ 4) found in the
+   *  quoted chunks' texts; null = no quotes to lean on. */
+  meaningProxy: number | null;
+  /** Day24: payload quotes + provenance — ground truth visible for the
+   *  manual meaning-vs-quotes pass (the organizer's third check). */
+  quotes: RagAskQuote[];
+  quotesSource: "model" | "server_fallback" | null;
 };
 
-function normalize(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/ё/g, "е")
-    .replace(/[^a-zа-я0-9 ]+/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+/** Day24 (Δ-5): off-corpus row — the verdict derives from the COMMITTED
+ * gate threshold (single source of truth): below → «не знаю» = PASS,
+ * above (near-miss) → answer WITH quotes = PASS; excluded from
+ * byStage/meanContent, rendered as a separate section. */
+type OffRow = {
+  id: string;
+  q: string;
+  kind: "offCorpus";
+  stage: "base";
+  answer: string;
+  sourcesUsed: string[];
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  rewrite_tokens: number;
+  latency_ms: number;
+  expected: "dontKnow" | "answer";
+  dontKnow: boolean;
+  topCosine: number | null;
+  threshold: number | null;
+  verdict: "PASS" | "FAIL";
+};
 
 function containsAny(haystack: string, needles: string[]): boolean {
-  return needles.some((n) => haystack.includes(normalize(n)));
+  return needles.some((n) => haystack.includes(normalizeRu(n)));
+}
+
+/** Day24 (Δ-5): independent verbatim recheck of the payload quotes against
+ *  the full chunk texts (the service guarantees it; eval re-proves it). */
+function quotesAreVerbatim(quotes: RagAskQuote[], textById: Map<string, string>): boolean {
+  if (quotes.length === 0) return false;
+  return quotes.every((qt) => {
+    const text = textById.get(qt.chunk_id);
+    return text !== undefined && normalizeRu(text).includes(normalizeRu(qt.quote));
+  });
+}
+
+/** Day24 (Δ-5) «смысл vs цитаты» proxy: share of DISTINCT normalized answer
+ *  tokens (len ≥ 4) occurring in the texts of the quoted chunks; ≥ 0.3 —
+ *  «опирается». Null = no quotes. */
+function meaningProxyRatio(
+  answer: string,
+  quotes: RagAskQuote[],
+  textById: Map<string, string>,
+): number | null {
+  if (quotes.length === 0) return null;
+  const quotedText = normalizeRu(
+    quotes.map((qt) => textById.get(qt.chunk_id) ?? qt.quote).join("\n"),
+  );
+  const tokens = [...new Set(normalizeRu(answer).split(" ").filter((t) => t.length >= 4))];
+  if (tokens.length === 0) return 0;
+  return tokens.filter((t) => quotedText.includes(t)).length / tokens.length;
 }
 
 function scoreAnswer(
@@ -102,8 +163,8 @@ function scoreAnswer(
   question: EvalQuestion,
   result: RagAskResult,
 ): Score {
-  const norm = normalize(answer);
-  const hits = question.expectation.filter((e) => norm.includes(normalize(e))).length;
+  const norm = normalizeRu(answer);
+  const hits = question.expectation.filter((e) => norm.includes(normalizeRu(e))).length;
   const content = hits / question.expectation.length;
   if (result.mode !== "rag") {
     return { content, retrieval: null, grounding: null };
@@ -163,6 +224,11 @@ async function main(): Promise<number> {
 
   const rows: Row[] = [];
   for (const question of questions) {
+    // Day24 (Δ-5): chunk text lookup for the quote recheck + meaning proxy —
+    // one local rankAll per question covers every chunk_id (full ranked
+    // list, all 220 chunks — valid for every arm).
+    const { hits: allHits } = await rag.rankAll(question.q, STRATEGY);
+    const textById = new Map(allHits.map((h) => [h.chunk.chunk_id, h.chunk.text]));
     for (const arm of STAGES) {
       process.stdout.write(`[rag:eval] ${question.id} ${arm.stage} … `);
       try {
@@ -191,6 +257,12 @@ async function main(): Promise<number> {
           latencyMs: result.meta.latencyMs,
           scores,
           verdict: verdictOf(scores.content),
+          hasSources: result.sources.length > 0,
+          hasQuotes: result.quotes.length > 0,
+          quotesVerbatim: quotesAreVerbatim(result.quotes, textById),
+          meaningProxy: meaningProxyRatio(result.answer, result.quotes, textById),
+          quotes: result.quotes,
+          quotesSource: result.meta.quotes_source ?? null,
         });
         console.log(`${scores.content.toFixed(2)} → ${verdictOf(scores.content)}`);
       } catch (err) {
@@ -206,8 +278,101 @@ async function main(): Promise<number> {
           latencyMs: 0,
           scores: { content: 0, retrieval: false, grounding: false },
           verdict: "FAIL",
+          hasSources: false,
+          hasQuotes: false,
+          quotesVerbatim: false,
+          meaningProxy: null,
+          quotes: [],
+          quotesSource: null,
         });
       }
+    }
+  }
+
+  // Day24 (Δ-5, tune-outcome): expectation derives from the COMMITTED gate
+  // threshold in data/rag/tune-dontknow.json (conservative → near-miss
+  // probes land ABOVE it and are expected to answer with quotes; missing /
+  // broken artifact → legacy fallback: expect «не знаю» for all off-corpus).
+  type TuneProbeRow = { id?: string; q?: string; topCosine?: number };
+  let tuneGate: { threshold: number; byQ: Map<string, TuneProbeRow> } | null = null;
+  try {
+    const tuneRaw = JSON.parse(
+      await fs.readFile(path.join(repoRoot, "data", "rag", "tune-dontknow.json"), "utf8"),
+    ) as { threshold?: { value?: number }; probes?: TuneProbeRow[] };
+    if (typeof tuneRaw.threshold?.value === "number" && Array.isArray(tuneRaw.probes)) {
+      tuneGate = {
+        threshold: tuneRaw.threshold.value,
+        byQ: new Map(tuneRaw.probes.filter((p) => typeof p.q === "string").map((p) => [p.q as string, p])),
+      };
+    }
+  } catch {
+    console.warn("[rag:eval] tune-dontknow.json недоступен — off-corpus ожидание: dontKnow для всех");
+  }
+  const offCorpusProbes = PROBES.filter((p) => p.kind === "offCorpus");
+  const offRows: OffRow[] = [];
+  for (const [i, probe] of offCorpusProbes.entries()) {
+    process.stdout.write(`[rag:eval] off-corpus ${i + 1}/${offCorpusProbes.length} «${probe.q}» … `);
+    try {
+      const result = await service.ask({
+        q: probe.q,
+        mode: "rag",
+        strategy: STRATEGY,
+        k: K,
+        rerank: false,
+        rewrite: false,
+      });
+      const dontKnow = result.meta.dontKnow === true;
+      const tuneRow = tuneGate?.byQ.get(probe.q) ?? undefined;
+      const expected: "dontKnow" | "answer" =
+        tuneGate && tuneRow && typeof tuneRow.topCosine === "number"
+          ? tuneRow.topCosine < tuneGate.threshold
+            ? "dontKnow"
+            : "answer"
+          : "dontKnow";
+      const pass = expected === "dontKnow" ? dontKnow : !dontKnow && result.quotes.length > 0;
+      const topCosine = result.meta.topCosine ?? tuneRow?.topCosine ?? null;
+      const threshold = result.meta.threshold ?? tuneGate?.threshold ?? null;
+      offRows.push({
+        id: `off-${String(i + 1).padStart(2, "0")}`,
+        q: probe.q,
+        kind: "offCorpus",
+        stage: "base",
+        answer: result.answer,
+        sourcesUsed: result.sources.map((s) => s.chunk_id),
+        usage: {
+          prompt_tokens: result.usage.prompt_tokens,
+          completion_tokens: result.usage.completion_tokens,
+          total_tokens: result.usage.total_tokens,
+        },
+        rewrite_tokens: 0,
+        latency_ms: result.meta.latencyMs,
+        expected,
+        dontKnow,
+        topCosine,
+        threshold,
+        verdict: pass ? "PASS" : "FAIL",
+      });
+      console.log(
+        `${pass ? "PASS" : "FAIL"} · ожидание ${expected} · dontKnow=${dontKnow} · top-1 ${topCosine ?? "—"} · порог ${threshold ?? "—"}`,
+      );
+    } catch (err) {
+      console.error(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      offRows.push({
+        id: `off-${String(i + 1).padStart(2, "0")}`,
+        q: probe.q,
+        kind: "offCorpus",
+        stage: "base",
+        answer: `(error) ${err instanceof Error ? err.message : String(err)}`,
+        sourcesUsed: [],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        rewrite_tokens: 0,
+        latency_ms: 0,
+        expected: "dontKnow",
+        dontKnow: false,
+        topCosine: null,
+        threshold: null,
+        verdict: "FAIL",
+      });
     }
   }
 
@@ -251,13 +416,23 @@ async function main(): Promise<number> {
         // every row carries its question's expectation + expected sources.
         expectation: question?.expectation ?? [],
         sources: question?.sources ?? [],
+        // Day24 (Δ-5): the three checks of the day + the meaning proxy.
+        hasSources: r.hasSources,
+        hasQuotes: r.hasQuotes,
+        quotesVerbatim: r.quotesVerbatim,
+        meaningProxy: r.meaningProxy,
       };
     }),
+    // Day24 (Δ-5): separate off-corpus section — dontKnow verdicts only.
+    offCorpus: offRows,
     aggregate: {
       byStage,
       retrievalHitRate: rate(rows.map((r) => r.scores.retrieval)),
       groundingRate: rate(rows.map((r) => r.scores.grounding)),
       anchorDay22,
+      offCorpusPass: offRows.length
+        ? offRows.filter((r) => r.verdict === "PASS").length / offRows.length
+        : 0,
     },
   };
 
@@ -272,6 +447,11 @@ async function main(): Promise<number> {
       verdict: r.verdict,
       retrieval: r.scores.retrieval === null ? "—" : r.scores.retrieval ? "✓" : "✗",
       grounding: r.scores.grounding === null ? "—" : r.scores.grounding ? "✓" : "✗",
+      ист: r.hasSources ? "✓" : "✗",
+      цит: r.hasQuotes ? "✓" : "—",
+      верб: r.quotesVerbatim ? "✓" : "✗",
+      смысл:
+        r.meaningProxy === null ? "—" : r.meaningProxy >= 0.3 ? "опирается" : "слабо",
       tokens: r.usage.total_tokens,
       "из них rewrite": r.rewriteTokens || "—",
       ms: r.latencyMs,
@@ -285,6 +465,21 @@ async function main(): Promise<number> {
         ` · retrieval ${rate(rows.filter((r) => r.stage === stage).map((r) => r.scores.retrieval)).toFixed(2)}`,
     );
   }
+  console.log("\n[rag:eval] off-corpus (ожидание: «не знаю»):");
+  console.table(
+    offRows.map((r) => ({
+      id: r.id,
+      вопрос: r.q.slice(0, 40),
+      dontKnow: r.dontKnow ? "✓" : "✗",
+      "top-1": r.topCosine ?? "—",
+      порог: r.threshold ?? "—",
+      verdict: r.verdict,
+    })),
+  );
+  console.log(
+    `[rag:eval] off-corpus: PASS ${offRows.filter((r) => r.verdict === "PASS").length}/${offRows.length}`,
+  );
+
   const base = byStage.base;
   const best = STAGES.map(({ stage }) => ({ stage, s: byStage[stage] })).sort(
     (a, b) => b.s.meanContent - a.s.meanContent,

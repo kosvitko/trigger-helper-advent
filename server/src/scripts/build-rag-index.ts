@@ -75,6 +75,10 @@ function scoreIndex(
   return scored;
 }
 
+/** Day24 (Δ-3): off-corpus probes (no expectSources) stay out of the
+ *  retrieval comparison — they tune the dontKnow gate, not hit@k. */
+const ON_CORPUS_PROBES = PROBES.filter((p) => p.kind !== "offCorpus");
+
 async function runProbeComparison(
   indexes: Map<RagStrategy, RagIndex>,
   embedder: Embedder,
@@ -90,7 +94,7 @@ async function runProbeComparison(
     let hit1 = 0;
     let hit5 = 0;
     let rrSum = 0;
-    for (const probe of PROBES) {
+    for (const probe of ON_CORPUS_PROBES) {
       const qvec = await embedder.embedQuery(probe.q);
       const ranked = scoreIndex(qvec, index);
       const rank =
@@ -103,9 +107,9 @@ async function runProbeComparison(
       );
     }
     byStrategy[strategy] = {
-      hitAt1: round4(hit1 / PROBES.length),
-      hitAt5: round4(hit5 / PROBES.length),
-      mrr: round4(rrSum / PROBES.length),
+      hitAt1: round4(hit1 / ON_CORPUS_PROBES.length),
+      hitAt5: round4(hit5 / ON_CORPUS_PROBES.length),
+      mrr: round4(rrSum / ON_CORPUS_PROBES.length),
     };
   }
   return { byStrategy, probeRows };
@@ -116,7 +120,7 @@ function printReport(
   byStrategy: Record<RagStrategy, { hitAt1: number; hitAt5: number; mrr: number }>,
   probeRows: string[],
 ): void {
-  console.log(`\n[rag] probe retrieval (${PROBES.length} RU probes, expected source = file-level):`);
+  console.log(`\n[rag] probe retrieval (${ON_CORPUS_PROBES.length} RU probes, expected source = file-level):`);
   for (const row of probeRows) console.log("  " + row);
   console.log("\n[rag] сравнение стратегий чанкинга:");
   console.table(
@@ -165,7 +169,7 @@ async function main(): Promise<void> {
     const compareStats = {
       generatedAt: new Date().toISOString(),
       model,
-      probes: PROBES.length,
+      probes: ON_CORPUS_PROBES.length,
       byStrategy,
       buildStats,
     };
@@ -214,7 +218,7 @@ async function main(): Promise<void> {
   const compareStats = {
     generatedAt: new Date().toISOString(),
     model,
-    probes: PROBES.length,
+    probes: ON_CORPUS_PROBES.length,
     byStrategy,
     buildStats,
   };

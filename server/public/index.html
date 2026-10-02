@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-   <title>Trigger Helper — Агент · day23</title>
+   <title>Trigger Helper — Агент · day24</title>
   <style>
     :root {
       color-scheme: light;
@@ -769,7 +769,7 @@
   <div class="app">
     <header class="topbar">
       <div>
-         <h1>Trigger Helper<span class="sub">Агент · day23</span></h1>
+         <h1>Trigger Helper<span class="sub">Агент · day24</span></h1>
       </div>
       <div class="meta">
         <span class="status" id="status">загрузка…</span>
@@ -3777,6 +3777,10 @@
             pane.sources = res.sources;
             pane.usage = res.usage;
             pane.meta = res.meta;
+            /* Day24 (design D-6): цитаты в state.ragCards — иначе блок «Цитаты»
+               пропадает при 5-с перерисовке poll'а (04-F2). meta копируется
+               целиком — новые поля (quotes_source, degraded, dontKnow, …) едут сами. */
+            pane.quotes = res.quotes;
           } catch (err) {
             pane.status = "error";
             pane.error = (err && err.message) || String(err);
@@ -3792,17 +3796,59 @@
         return '<div class="inv-text" style="color:var(--muted,#999)">⏳ ждёт ответа…</div>';
       if (pane.status === "error")
         return '<div class="inv-text" style="color:#c9862b">' + escAttr(pane.error) + "</div>";
+      const meta = pane.meta || {};
+      /* Day24 (design D-6): бейдж происхождения/деградации цитат. */
+      const badge = (t) =>
+        ' <span style="display:inline-block;margin-left:6px;padding:0 6px;border:1px solid var(--border,#ddd6cc);border-radius:8px;background:var(--surface-muted,#faf8f5);color:var(--muted,#999);font-size:0.85em">' + t + "</span>";
+      /* Day24 (design D-4/D-6): карточка «не знаю» — гейт слабого контекста
+         сработал до ответ-вызова: бейдж + косинус top-1 против порога;
+         блоков цитат/источников нет (они пустые). */
+      if (meta.dontKnow) {
+        const num = (v) => (typeof v === "number" ? v.toFixed(3) : escAttr(v));
+        return (
+          '<div class="inv-text">' + badge("не знаю · слабый контекст") + "</div>" +
+          '<div class="inv-text" style="margin:6px 0 2px">' + escAttr(pane.answer).replace(/\n/g, "<br>") + "</div>" +
+          (meta.topCosine != null && meta.threshold != null
+            ? '<div class="inv-text" style="color:var(--muted,#999)">косинус top-1 = ' + num(meta.topCosine) + " &lt; порог " + num(meta.threshold) + "</div>"
+            : "")
+        );
+      }
+      const quotes = pane.quotes || [];
+      /* Day24 (design D-6): источник с валидной цитатой (chunk_id совпал)
+         помечается «▣». */
+      const cited = new Set(quotes.map((q) => q.chunk_id));
       const hits = (pane.sources || [])
         .map(
           (s) =>
             '<div class="inv-row rag-hit"><span class="inv-n">' + s.score.toFixed(3) + '</span><span class="inv-text">' +
+            (cited.has(s.chunk_id) ? "▣ " : "") +
             escAttr(s.source + (s.section ? " › " + s.section : "")) +
             '<div class="rag-full" hidden>' + escAttr(s.source + " › " + s.section + " · " + s.chunk_id) + "</div>" +
             '<br><span style="color:var(--muted,#999)">' + escAttr(s.chunk_id) + " · клик — источник</span></span></div>",
         )
         .join("");
+      /* Day24 (design D-3/D-6): блок «Цитаты» под ответом; длинная цитата
+         обрезается до 200 символов, полная — в title. */
+      const quotesHtml = quotes.length
+        ? '<div class="inv-text" style="margin:6px 0 2px"><b>Цитаты</b>' +
+          (meta.quotes_source === "server_fallback" ? badge("цитаты: серверный фолбэк") : "") +
+          (meta.degraded === "format" ? badge("деградация формата") : "") +
+          "</div>" +
+          quotes
+            .map((q) => {
+              const full = String(q.quote || "");
+              const short = full.length > 200 ? full.slice(0, 200) + "…" : full;
+              return (
+                '<div class="inv-row"' + (short !== full ? ' title="' + escAttr(full) + '"' : "") +
+                '><span class="inv-text">„' + escAttr(short) + "“ — " +
+                escAttr((q.source || "") + (q.section ? " › " + q.section : "")) + "</span></div>"
+              );
+            })
+            .join("")
+        : "";
       return (
         '<div class="inv-text">' + escAttr(pane.answer).replace(/\n/g, "<br>") + "</div>" +
+        quotesHtml +
         '<div class="inv-text" style="margin:6px 0 2px;color:var(--muted,#999)">источников: ' +
         (pane.sources || []).length +
         " · " + (pane.usage ? pane.usage.total_tokens + " tok" : "—") +
@@ -3820,6 +3866,7 @@
               ? "фолбэк" + (pane.meta.rewrite.error ? " (" + escAttr(pane.meta.rewrite.error) + ")" : "")
               : pane.meta.rewrite.variants.length + " вар. · " + pane.meta.rewrite.tokens + " tok · " + (pane.meta.rewrite.latencyMs / 1000).toFixed(1) + " s")
           : "") +
+        " · цитат: " + quotes.length + " · верифицировано: " + (meta.quotesValid ?? quotes.length) +
         "</div>" + hits
       );
     }
@@ -3878,13 +3925,20 @@
     }
     /* Day23 (design D-8): eval v2 — матрица 4 arms × 10 вопросов; usage
        кумулятивный (ответ + rewrite, F-04-5), rewrite_tokens — доля rewrite;
-       анкер дня 22 (без RAG) виден рядом с матрицей. */
+       анкер дня 22 (без RAG) виден рядом с матрицей.
+       Day24 (design D-5/D-6): в ячейке — hasSources/hasQuotes/quotesVerbatim
+       (✓/✗) и смысл-прокси (2 знака); off-corpus — отдельной секцией. */
     function drawEvalCardV2(d) {
       const wrap = document.createElement("div");
       wrap.className = "msg assistant rag-card";
       const byId = {};
-      for (const r of d.questions) (byId[r.id] = byId[r.id] || []).push(r);
+      for (const r of d.questions) {
+        if (r.kind === "offCorpus") continue; // day24: рендерится отдельной секцией
+        (byId[r.id] = byId[r.id] || []).push(r);
+      }
       const stageNames = { base: "base", rerank: "+реранк", rewrite: "+rewrite", full: "full" };
+      /* day24: поля дня 23 отсутствуют → «—» (старый артефакт рендерится как раньше). */
+      const flag = (v) => (v === true ? "✓" : v === false ? "✗" : "—");
       const cell = (pair, stage) => {
         const r = pair.find((x) => x.stage === stage);
         return r
@@ -3892,7 +3946,11 @@
               r.verdict + " · " + r.usage.total_tokens + " tok" +
                 (r.rewrite_tokens ? " (+" + r.rewrite_tokens + " rewrite)" : "") +
                 " · " + (r.latency_ms / 1000).toFixed(1) + " s",
-            )
+            ) +
+            " · ист " + flag(r.hasSources) +
+            " · цит " + flag(r.hasQuotes) +
+            " · досл " + flag(r.quotesVerbatim) +
+            " · смысл " + (typeof r.meaningProxy === "number" ? r.meaningProxy.toFixed(2) : "—")
           : "—";
       };
       const rows = Object.keys(byId)
@@ -3923,7 +3981,7 @@
         (s.meanLatencyMs != null ? (s.meanLatencyMs / 1000).toFixed(1) : "—") + " s</div>";
       const anchor = agg.anchorDay22;
       const aggHtml =
-        '<div class="inv-text"><b>Итог</b> · матрица day23: качество + цена доступа</div>' +
+        '<div class="inv-text"><b>Итог</b> · матрица этапов: качество + цена доступа</div>' +
         stageLine("base", (agg.byStage && agg.byStage.base) || {}) +
         stageLine("+реранк", (agg.byStage && agg.byStage.rerank) || {}) +
         stageLine("+rewrite", (agg.byStage && agg.byStage.rewrite) || {}) +
@@ -3936,11 +3994,27 @@
           : "") +
         '<div class="inv-text">ретрив попадает в ожидаемый источник: ' +
         (agg.retrievalHitRate != null ? Math.round(agg.retrievalHitRate * 100) + "%" : "—") +
-        " · цитаты в ответе: " + (agg.groundingRate != null ? Math.round(agg.groundingRate * 100) + "%" : "—") + "</div>";
+        " · заземление (источник в тексте ответа): " + (agg.groundingRate != null ? Math.round(agg.groundingRate * 100) + "%" : "—") + "</div>";
+      /* Day24 (design D-5/D-6): off-corpus пробы — ожидание «не знаю»;
+         PASS = гейт сработал (dontKnow-ответ), иначе FAIL; вне матрицы byStage. */
+      const ocRows =
+        Array.isArray(d.offCorpus) && d.offCorpus.length
+          ? d.offCorpus
+          : (d.questions || []).filter((r) => r.kind === "offCorpus");
+      const ocHtml = ocRows.length
+        ? '<div class="inv-text" style="margin:6px 0 0"><b>off-corpus (не знаю)</b></div>' +
+          ocRows
+            .map(
+              (r) =>
+                '<div class="inv-row"><span class="inv-n">' + escAttr(r.id || "oc") + '</span><span class="inv-text">' +
+                escAttr(r.q || "") + " — <b>" + escAttr(r.verdict || "—") + "</b></span></div>",
+            )
+            .join("")
+        : "";
       wrap.innerHTML =
         '<div class="bubble"><div class="inv-text"><b>Eval</b> · 10 контрольных · ' +
         escAttr((d.strategy || "?") + " · k=" + (d.k ?? "?")) + "</div>" +
-        aggHtml + rows + "</div>";
+        aggHtml + rows + ocHtml + "</div>";
       el.messages.appendChild(wrap);
     }
     function drawEvalCard(d) {
@@ -3991,7 +4065,7 @@
         (r.meanLatencyMs != null ? (r.meanLatencyMs / 1000).toFixed(1) : "—") + " s</div>" +
         '<div class="inv-text">retriever попадает в ожидаемый источник: ' +
         (agg.retrievalHitRate != null ? Math.round(agg.retrievalHitRate * 100) + "%" : "—") +
-        " · цитаты в ответе: " + (agg.groundingRate != null ? Math.round(agg.groundingRate * 100) + "%" : "—") + "</div>";
+        " · заземление (источник в тексте ответа): " + (agg.groundingRate != null ? Math.round(agg.groundingRate * 100) + "%" : "—") + "</div>";
       wrap.innerHTML =
         '<div class="bubble"><div class="inv-text"><b>Eval</b> · 10 контрольных вопросов · ' +
         escAttr((d.strategy || "?") + " · k=" + (d.k ?? "?")) + "</div>" +

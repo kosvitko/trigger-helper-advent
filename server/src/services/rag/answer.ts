@@ -1,8 +1,13 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { z } from "zod";
 import type { UsageLedgerService } from "../usage-ledger.js";
 import type { LlmUsage } from "@trigger-helper/shared";
 import type { DeepSeekService, ChatMessage, ChatResult, ToolSpec } from "../deepseek.js";
 import { estimateTokens } from "../agent/token-estimate.js";
 import { RagService, type RagStrategy, type SearchHit } from "./store.js";
+import { repoRoot } from "./paths.js";
+import { normalizeRu } from "./text.js";
 import { listPointCards, readPointCard } from "./point-cards.js";
 import type { Reranker } from "./rerank.js";
 import type { QueryRewriter, RewriteResult } from "./rewrite.js";
@@ -30,11 +35,24 @@ import type { QueryRewriter, RewriteResult } from "./rewrite.js";
  * and the day-22 «полноценный рассказ» prompt unchanged. The ledger and
  * result.usage carry answer+rewrite SUMMED (F-04-5); the split stays visible
  * in meta.rewrite. Rerank precheck runs before the rewrite spend (F-04-2).
+ *
+ * Day24 (design D-2/D-3/D-4): the rag branch answers in jsonMode
+ * {answer, quotes} — quotes are verified SERVER-side against the injected
+ * chunks (validateQuotes; 0 valid → server_fallback fragments); a json
+ * format failure degrades in ONE step to the flat day-22 call; a cosine
+ * top-1 dontKnow gate (data/rag/tune-dontknow.json, per-read) returns a
+ * canned «не знаю» with zero LLM spend. Baseline arm untouched (quotes: []).
  */
 
 const RAG_ASK_MODEL = "deepseek-chat";
 const RAG_ASK_TEMPERATURE = 0;
 const RAG_ASK_MAX_TOKENS = 900;
+/** Day24 (design D-2 + smoke 03): the structured jsonMode answer call gets
+ *  a per-call 2200 budget — the ear-question narrative alone blew past 1400
+ *  (JSON truncated mid-string → format degradation); quotes are OUTPUT tokens
+ *  on top of the day-22 narrative (900 stays the ceiling for baseline and
+ *  the flat degraded call). */
+const RAG_ASK_JSON_MAX_TOKENS = 2200;
 const RAG_ASK_TIMEOUT_MS = 60_000; // deepseek default is 1 h — unacceptable here (deepseek.ts:60)
 /** Total prompt budget (system + question + context), Cyrillic ≈ ÷2.5 (D-3). */
 const RAG_ASK_PROMPT_TOKEN_BUDGET = 3_000;
@@ -66,6 +84,15 @@ export interface RagAskSource {
   section: string;
 }
 
+/** Day24 (design D-3/Δ-6): a verified verbatim quote — source/section are
+ *  filled server-side from the injected-chunk map by chunk_id. */
+export interface RagAskQuote {
+  quote: string;
+  chunk_id: string;
+  source: string;
+  section: string;
+}
+
 export interface RagAskResult {
   ok: true;
   mode: RagAskMode;
@@ -75,6 +102,9 @@ export interface RagAskResult {
   /** Requested k (F-04-3); actual injected count is sources.length. */
   k: number;
   sources: RagAskSource[];
+  /** Day24 (design D-1/Δ-6): verified quotes — rag mode only; the baseline
+   *  anchor arm returns [] (no quotes on baseline). */
+  quotes: RagAskQuote[];
   usage: LlmUsage;
   meta: {
     model: string;
@@ -96,6 +126,19 @@ export interface RagAskResult {
       fallback: boolean;
       error?: string;
     };
+    /** Day24 (design D-3/D-4, Δ-6): quote provenance — model-verified vs
+     *  server-picked fallback fragments. */
+    quotes_source?: "model" | "server_fallback";
+    /** Model quotes that survived verification (0 when fallback engaged). */
+    quotesValid?: number;
+    /** One-step format degradation fired (flat day-22 call used). */
+    degraded?: "format";
+    /** Weak grounding flag — no content-word answer/chunk overlap (not a block). */
+    grounding?: "weak";
+    /** The dontKnow gate fired — canned reply, answer call skipped (₽0). */
+    dontKnow?: boolean;
+    topCosine?: number;
+    threshold?: number;
   };
 }
 
@@ -114,6 +157,7 @@ export class RagAnswerService {
 
     let answer: string;
     let sources: RagAskSource[] = [];
+    let quotes: RagAskQuote[] = [];
     let usage: LlmUsage;
     let contextTokens = 0;
     let toolRounds = 0;
@@ -143,6 +187,47 @@ export class RagAnswerService {
           : await this.rag.rankAll(q, input.strategy);
       let hits = ranked.hits;
       const poolRanked = hits.length;
+      const stage: "base" | "rerank" | "rewrite" | "full" =
+        useRerank && useRewrite ? "full" : useRerank ? "rerank" : useRewrite ? "rewrite" : "base";
+
+      // Day24 (design D-4): dontKnow gate — cosine top-1 right after ranking,
+      // BEFORE rerank/assembly. Missing/broken tune artifact = gate OFF + warn
+      // (loadCompare pattern: per-read, no cache) — never a 503.
+      const threshold = await loadDontKnowThreshold();
+      const cosineTop1 = hits[0]?.score ?? 0;
+      if (threshold !== null && cosineTop1 < threshold) {
+        // Canned reply — the answer call is skipped (₽0). The rewrite spend
+        // (if any) still lands in the ledger; the payload carries the zero
+        // usage literal (design D-4).
+        await this.ledger.record(rewrite?.usage ?? zeroUsage(), { countExpensive: false });
+        return {
+          ok: true,
+          mode,
+          question: q,
+          answer: DONT_KNOW_ANSWER,
+          strategy: input.strategy,
+          k: input.k,
+          sources: [],
+          quotes: [],
+          usage: zeroUsage(),
+          meta: {
+            model: RAG_ASK_MODEL,
+            latencyMs: Date.now() - t0,
+            contextTokens: 0,
+            toolRounds: 0,
+            toolCalls: 0,
+            stage,
+            poolRanked,
+            keptAfterFilter: 0,
+            injectedCount: 0,
+            dontKnow: true,
+            topCosine: round4(cosineTop1),
+            threshold,
+            ...rewriteExtras(rewrite),
+          },
+        };
+      }
+
       let keptAfterFilter: number;
       let rerankLatencyMs: number | undefined;
       if (useRerank) {
@@ -160,39 +245,61 @@ export class RagAnswerService {
       const assembled = assembleContext(hits);
       contextTokens = assembled.tokens;
       sources = assembled.sources;
-      // Rewrite guard (b): the ANSWER call keeps the original question —
-      // variants feed retrieval only (day-22 prompt untouched, D-4).
-      const result = await this.chat(
+
+      // Day24 (design D-2): structured jsonMode call. Rewrite guard (b) still
+      // holds — the ANSWER call keeps the original question; the day-22
+      // narrative prompt rides along intact, extended by the json block.
+      const structured = await this.chat(
         [
-          { role: "system", content: RAG_SYSTEM },
+          { role: "system", content: RAG_SYSTEM_JSON },
           { role: "user", content: `${CONTEXT_HEADER}${assembled.block}\n\nВопрос: ${q}` },
         ],
         false,
+        undefined,
+        { jsonMode: true, maxTokens: RAG_ASK_JSON_MAX_TOKENS },
       );
-      answer = result.reply;
-      usage = result.usage;
+      const usages: LlmUsage[] = [structured.usage];
+      const parsed = parseStructuredReply(structured.reply);
+      let degraded: "format" | undefined;
+      if (parsed) {
+        answer = parsed.answer;
+      } else {
+        // D-3: ONE-STEP degradation, no retry (temp 0 is deterministic) — a
+        // flat day-22 call; the server picks the quotes itself.
+        const flat = await this.chat(
+          [
+            { role: "system", content: RAG_SYSTEM },
+            { role: "user", content: `${CONTEXT_HEADER}${assembled.block}\n\nВопрос: ${q}` },
+          ],
+          false,
+        );
+        usages.push(flat.usage);
+        answer = flat.reply;
+        degraded = "format";
+      }
 
-      // F-04-5: ledger + result.usage see the FULL price (answer + rewrite
-      // summed); the split stays visible in meta.rewrite below.
+      // D-3: verify quotes against the actually injected chunks; 0 valid →
+      // server_fallback top-fragments (quotes ≥ 1 on every answer path).
+      const checked = validateQuotes(parsed?.quotes ?? [], assembled.chunks);
+      quotes = checked.valid.length > 0 ? checked.valid : serverFallbackQuotes(assembled.chunks);
+      const weakGrounding = isWeakGrounding(answer, assembled.chunks);
+
+      // F-04-5: ledger + result.usage see the FULL price (answer + degradation
+      // + rewrite summed); the split stays visible in meta below.
+      usage = sumUsages(usages);
       if (rewrite?.usage) usage = sumUsages([usage, rewrite.usage]);
 
       stageExtras = {
-        stage: useRerank && useRewrite ? "full" : useRerank ? "rerank" : useRewrite ? "rewrite" : "base",
+        stage,
         poolRanked,
         keptAfterFilter,
         injectedCount: sources.length,
         ...(rerankLatencyMs !== undefined ? { rerankLatencyMs } : {}),
-        ...(rewrite
-          ? {
-              rewrite: {
-                variants: rewrite.queries,
-                tokens: rewrite.usage?.total_tokens ?? 0,
-                latencyMs: rewrite.latencyMs,
-                fallback: rewrite.fallback,
-                ...(rewrite.error ? { error: rewrite.error } : {}),
-              },
-            }
-          : {}),
+        ...rewriteExtras(rewrite),
+        quotes_source: checked.valid.length > 0 ? "model" : "server_fallback",
+        quotesValid: checked.valid.length,
+        ...(degraded ? { degraded } : {}),
+        ...(weakGrounding ? { grounding: "weak" } : {}),
       };
     } else {
       const loop = await this.baselineLoop(q);
@@ -215,6 +322,7 @@ export class RagAnswerService {
       strategy: input.strategy,
       k: input.k,
       sources,
+      quotes,
       usage,
       meta: {
         model: RAG_ASK_MODEL,
@@ -233,14 +341,19 @@ export class RagAnswerService {
     messages: ChatMessage[],
     wrapLlmError: boolean,
     tools?: ToolSpec[],
+    /** Day24 (design D-2): per-call overrides — the structured jsonMode
+     *  answer call gets jsonMode + a 1400 budget; baseline/flat calls stay
+     *  at 900. */
+    overrides?: { jsonMode?: boolean; maxTokens?: number },
   ): Promise<ChatResult> {
     try {
       return await this.deepSeek.chat(messages, {
         model: RAG_ASK_MODEL,
         temperature: RAG_ASK_TEMPERATURE,
-        maxTokens: RAG_ASK_MAX_TOKENS,
+        maxTokens: overrides?.maxTokens ?? RAG_ASK_MAX_TOKENS,
         timeoutMs: RAG_ASK_TIMEOUT_MS,
         ...(tools?.length ? { tools } : {}),
+        ...(overrides?.jsonMode ? { jsonMode: true } : {}),
       });
     } catch (err) {
       if (!wrapLlmError) throw err;
@@ -369,6 +482,16 @@ const RAG_SYSTEM = [
   "Отвечай по-русски.",
 ].join("\n");
 
+/** Day24 (design D-2): jsonMode extension of the day-22 prompt — every
+ *  narrative rule and the inline-label rule above stay INTACT; the appended
+ *  block carries the literal word «json» (DeepSeek JSON Output requirement,
+ *  F-05-4), the minimal schema example and the verbatim-quotes rule. */
+const RAG_SYSTEM_JSON = `${RAG_SYSTEM}\n${[
+  'Ответ верни только в виде json {"answer": "...", "quotes": [{"quote": "...", "chunk_id": "..."}]} — без markdown-обёрток и пояснений.',
+  "В поле answer — тот же полноценный рассказ по правилам выше.",
+  "В поле quotes — 2–5 дословных фрагментов из контекста без изменений и пропусков, каждый с chunk_id блока, откуда взят фрагмент.",
+].join("\n")}`;
+
 const BASELINE_SYSTEM = [
   "Ты — ассистент по документации проекта Trigger Helper.",
   "Тебе доступны инструменты базы точек: list_points (обзор: slug, название мышцы, зоны) и get_point (полный текст карточки по slug).",
@@ -411,6 +534,180 @@ const BASELINE_TOOLS: ToolSpec[] = [
   },
 ];
 
+/** Day24 (design D-4): canonical canned reply — the answer call is skipped. */
+const DONT_KNOW_ANSWER =
+  "Не знаю — в базе знаний нет ничего релевантного. Уточните вопрос (мышца, симптом, техника)?";
+
+/** Zero-usage literal (design D-4): the canned dontKnow path spends nothing
+ *  on the answer call — same field set as sumUsages' zero seed. */
+function zeroUsage(): LlmUsage {
+  return {
+    model: RAG_ASK_MODEL,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    prompt_cache_hit_tokens: 0,
+    prompt_cache_miss_tokens: 0,
+    estimated_cost_usd: 0,
+    estimated_cost_rub: 0,
+  };
+}
+
+function round4(n: number): number {
+  return Math.round(n * 10_000) / 10_000;
+}
+
+/** Rewrite meta block (the F-04-5 split), shared by the answer path and the
+ *  canned dontKnow return. */
+function rewriteExtras(rewrite: RewriteResult | null): Partial<RagAskResult["meta"]> {
+  return rewrite
+    ? {
+        rewrite: {
+          variants: rewrite.queries,
+          tokens: rewrite.usage?.total_tokens ?? 0,
+          latencyMs: rewrite.latencyMs,
+          fallback: rewrite.fallback,
+          ...(rewrite.error ? { error: rewrite.error } : {}),
+        },
+      }
+    : {};
+}
+
+/** Day24 (design D-3): an injected chunk — body text WITHOUT the header line
+ *  `[source | section | chunk_id]`, plus the quote payload fill. */
+interface InjectedChunk {
+  text: string;
+  source: string;
+  section: string;
+}
+
+const dontKnowArtifactSchema = z.object({
+  builtAt: z.string().min(1),
+  threshold: z.object({
+    value: z.number().min(0).max(1),
+    kind: z.enum(["gap-midpoint", "conservative"]),
+  }),
+});
+
+/** Day24 (design D-4): per-read threshold load (loadCompare pattern — NO
+ *  cache, safeParse, warn + gate-off). A missing/broken artifact disables
+ *  the gate with a warning; it must never turn an ask into a 503. */
+async function loadDontKnowThreshold(): Promise<number | null> {
+  try {
+    const raw = await fs.readFile(path.join(repoRoot, "data", "rag", "tune-dontknow.json"), "utf8");
+    const parsed = dontKnowArtifactSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) {
+      console.warn("[rag/answer] tune-dontknow.json schema mismatch — dontKnow гейт выключен");
+      return null;
+    }
+    return parsed.data.threshold.value;
+  } catch {
+    console.warn("[rag/answer] tune-dontknow.json отсутствует — dontKnow гейт выключен");
+    return null;
+  }
+}
+
+const structuredReplySchema = z.object({
+  answer: z.string().min(1),
+  quotes: z
+    .array(z.object({ quote: z.string().min(1), chunk_id: z.string().min(1) }))
+    .default([]),
+});
+
+/** Lenient parse (rewrite.ts pattern): the model may wrap the JSON in code
+ *  fences or prose — grab the outermost braces. Null = format failure →
+ *  one-step degradation. */
+function parseStructuredReply(
+  reply: string,
+): { answer: string; quotes: { quote: string; chunk_id: string }[] } | null {
+  try {
+    const match = reply.match(/\{[\s\S]*\}/);
+    const parsed = structuredReplySchema.safeParse(JSON.parse(match ? match[0] : reply));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Day24 (design D-3): verify model quotes against the actually injected
+ *  chunks (post token-trim — not the k-sliced hits). A quote is valid when
+ *  its normalized text is a CONTINUOUS substring of the normalized body of
+ *  its chunk: leading/trailing trims are fine (normalization eats them),
+ *  internal «…»/omissions break the substring and are rejected. A
+ *  hallucinated chunk_id is rebound when the fragment matches exactly one
+ *  injected chunk; everything else drops silently into the counter. */
+function validateQuotes(
+  quotes: { quote: string; chunk_id: string }[],
+  injected: Map<string, InjectedChunk>,
+): { valid: RagAskQuote[]; dropped: number } {
+  const valid: RagAskQuote[] = [];
+  const seen = new Set<string>();
+  let dropped = 0;
+  for (const { quote, chunk_id } of quotes) {
+    const norm = normalizeRu(quote);
+    if (!norm) {
+      dropped += 1;
+      continue;
+    }
+    const direct = injected.get(chunk_id);
+    let id = chunk_id;
+    let chunk: InjectedChunk | undefined =
+      direct && normalizeRu(direct.text).includes(norm) ? direct : undefined;
+    if (!chunk) {
+      const matches = [...injected.entries()].filter(([, c]) => normalizeRu(c.text).includes(norm));
+      if (matches.length !== 1) {
+        dropped += 1;
+        continue;
+      }
+      id = matches[0][0];
+      chunk = matches[0][1];
+    }
+    const key = `${id}|${norm}`;
+    if (seen.has(key)) {
+      dropped += 1; // duplicate fragment
+      continue;
+    }
+    seen.add(key);
+    valid.push({ quote: quote.trim(), chunk_id: id, source: chunk.source, section: chunk.section });
+  }
+  return { valid, dropped };
+}
+
+/** D-3 server_fallback: the first clean prose paragraph (up to ~240 chars)
+ * of the leading injected chunks — markdown headings (#/##…) and bracket
+ * title lines are skipped (smoke 03: raw "[title › section]" / "## …"
+ * fragments are not readable quotes) — cut from the chunk body, verbatim by
+ * construction. */
+function serverFallbackQuotes(injected: Map<string, InjectedChunk>, limit = 2): RagAskQuote[] {
+  const out: RagAskQuote[] = [];
+  for (const [chunk_id, c] of injected) {
+    if (out.length >= limit) break;
+    const clean = c.text
+      .split("\n")
+      .filter((ln) => {
+        const t = ln.trim();
+        return t && !/^#{1,6}\s/.test(t) && !/^\[.*\]$/.test(t);
+      })
+      .join("\n");
+    const paragraph = (clean.split(/\n\s*\n/)[0] ?? clean).trim();
+    if (!paragraph) continue;
+    const quote = paragraph.length > 240 ? paragraph.slice(0, 240).trimEnd() : paragraph;
+    out.push({ quote, chunk_id, source: c.source, section: c.section });
+  }
+  return out;
+}
+
+/** D-3: weak-grounding flag — no content word (len ≥ 4) of the normalized
+ *  answer occurs in the normalized injected texts. A flag, not a block. */
+function isWeakGrounding(answer: string, injected: Map<string, InjectedChunk>): boolean {
+  const normAnswer = normalizeRu(answer);
+  if (!normAnswer) return true;
+  const texts = normalizeRu([...injected.values()].map((c) => c.text).join("\n"));
+  const tokens = normAnswer.split(" ").filter((t) => t.length >= 4);
+  if (tokens.length === 0) return true;
+  return !tokens.some((t) => texts.includes(t));
+}
+
 /** Greedy whole-chunk assembly: never cut inside a chunk (D-3); the tail is
  *  dropped first when over budget; at least one chunk always stays.
  *  Effective injected count may be < requested k — envelope echoes requested
@@ -419,12 +716,19 @@ function assembleContext(hits: SearchHit[]): {
   block: string;
   tokens: number;
   sources: RagAskSource[];
+  /** Day24 (design D-3): kept chunks by chunk_id — body WITHOUT the header
+   *  line (a quote swallowing the header honestly fails validation and falls
+   *  into server_fallback); feeds validateQuotes, server_fallback and the
+   *  source/section fill of payload quotes. */
+  chunks: Map<string, InjectedChunk>;
 } {
-  type Piece = { text: string; source: RagAskSource };
+  type Piece = { text: string; body: string; source: RagAskSource };
   const pieces: Piece[] = hits.map(({ chunk, score }) => {
     const header = `[${chunk.source} | ${chunk.section || "—"} | ${chunk.chunk_id}]`;
+    const body = chunk.text.trim();
     return {
-      text: `${header}\n${chunk.text.trim()}`,
+      text: `${header}\n${body}`,
+      body,
       source: {
         chunk_id: chunk.chunk_id,
         score: Math.round(score * 10_000) / 10_000,
@@ -447,7 +751,17 @@ function assembleContext(hits: SearchHit[]): {
   }
 
   const block = kept.map((p) => p.text).join("\n\n---\n\n");
-  return { block, tokens, sources: kept.map((p) => p.source) };
+  return {
+    block,
+    tokens,
+    sources: kept.map((p) => p.source),
+    chunks: new Map(
+      kept.map((p) => [
+        p.source.chunk_id,
+        { text: p.body, source: p.source.source, section: p.source.section },
+      ]),
+    ),
+  };
 }
 
 /** Sum token/cost counters across loop rounds (model is pinned, so it stays). */

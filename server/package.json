@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "rag:index": "tsx src/scripts/build-rag-index.ts",
     "rag:eval": "tsx src/scripts/eval-rag-answer.ts",
-    "rag:tune": "tsx src/scripts/tune-rerank.ts"
+    "rag:tune": "tsx src/scripts/tune-dontknow.ts && tsx src/scripts/tune-rerank.ts"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",

@@ -17,6 +17,11 @@ export interface Probe {
    *  proposals+design pairs describe the same work, rank = best position
    *  among the group; single unique docs keep one entry. */
   expectSources: string[];
+  /** Day24 (design D-4, Δ-3): off-corpus probes tune the dontKnow gate —
+   *  no expectSources, excluded from the rerank sweep and retrieval compare
+   *  (tune-rerank/build-rag-index skip them). On-corpus probes carry no
+   *  flag (undefined = onCorpus). */
+  kind?: "offCorpus";
 }
 
 export const PROBES: Probe[] = [
@@ -34,4 +39,12 @@ export const PROBES: Probe[] = [
   { q: "головокружение и шаткость при повороте головы", expectSources: ["data/points/masseter.md", "data/points/sternocleidomastoideus.md"] },
   { q: "«синусит», который не поддаётся лечению", expectSources: ["data/points/masseter.md", "data/points/pterygoideus-lateralis.md"] },
   { q: "боль в височно-нижнечелюстном суставе при жевании", expectSources: ["data/points/masseter.md", "data/points/pterygoideus-lateralis.md", "data/points/pterygoideus-medialis.md", "data/points/sternocleidomastoideus.md"] },
+  // Day24 (design D-4, Δ-3): off-corpus — порог «не знаю» обязан пройти
+  // через near-miss дистракторы (массаж/растяжка спины — про тело, но не
+  // триггерные точки) + дальний домен; expectSources пуст по определению.
+  { q: "как делать массаж спины", expectSources: [], kind: "offCorpus" },
+  { q: "растяжка для спины", expectSources: [], kind: "offCorpus" },
+  { q: "какая завтра будет погода в Москве", expectSources: [], kind: "offCorpus" },
+  { q: "как настроить VPN на компьютере", expectSources: [], kind: "offCorpus" },
+  { q: "рецепт борща на 4 порции", expectSources: [], kind: "offCorpus" },
 ];

@@ -45,8 +45,11 @@ async function main(): Promise<number> {
   const env = loadEnv();
   const rag = createRagService(env);
   const scorer = await createRerankScorer(env);
+  // Day24 (Δ-4): off-corpus probes have no expectSources — the rerank sweep
+  // skips them (they tune the dontKnow gate in tune-dontknow.ts).
+  const onCorpus = PROBES.filter((p) => p.kind !== "offCorpus");
   console.log(
-    `[rag:tune] модель ${scorer.model} · пул ${POOL} · стратегия ${STRATEGY} · проб ${PROBES.length}`,
+    `[rag:tune] модель ${scorer.model} · пул ${POOL} · стратегия ${STRATEGY} · проб ${onCorpus.length}`,
   );
 
   const rows: ProbeRow[] = [];
@@ -55,7 +58,7 @@ async function main(): Promise<number> {
   let totalMs = 0;
   let batches = 0;
 
-  for (const probe of PROBES) {
+  for (const probe of onCorpus) {
     const { hits } = await rag.rankAll(probe.q, STRATEGY);
     const poolHits = hits.slice(0, POOL);
     const cosineRank = poolHits.findIndex((h) => probe.expectSources.includes(h.chunk.source)) + 1;
@@ -110,7 +113,7 @@ async function main(): Promise<number> {
     : `глобального зазора нет (minExpected ${minExpected} ≤ maxDistractor ${maxDistractor}) → D-3 рунг 2: относительная маржа top1 − ${value}; точечная обрезка, не рычаг полноты`;
 
   const perBatch = batches ? Math.round(totalMs / batches) : 0;
-  const perPool = PROBES.length ? Math.round(totalMs / PROBES.length) : 0;
+  const perPool = onCorpus.length ? Math.round(totalMs / onCorpus.length) : 0;
 
   const artifact = {
     generatedAt: new Date().toISOString(),
