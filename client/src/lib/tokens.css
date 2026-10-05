@@ -1,0 +1,106 @@
+/* tokens.css — валидированный дизайн-язык (proposals §2.1, D-6 + 05-M-6).
+   Единый источник токенов; компоненты используют только var(--…). */
+
+:root {
+  /* Светлая палитра (тёмная — Stage 3, не блокер S1) */
+  --bg: #f4f1ec;
+  --surface: #ffffff;
+  --ink: #223330; /* 11.8:1 */
+  --muted: #5c6b66; /* 5.0:1 — ink-muted */
+  --accent: #2f6f68; /* 5.8:1 */
+  --accent-deep: #275e58; /* 6.6:1 — текст-ссылки */
+  --accent-soft: #e1ece9;
+  --line: #e5e0d8; /* волосяная граница */
+  --warn: #8a5a10;
+  --danger: #a03d2d; /* приглушённый кирпичный, не сигнальный красный */
+
+  /* Дополнения 05-M-6: фон чипов + тёплые поощрения */
+  --chip: #f1ede5;
+  --warm: #8a5232;
+  --warm-soft: #ecd9c4;
+
+  /* Тени: очень мягкие, крупные (§2.1) */
+  --shadow-1: 0 2px 8px rgba(31, 45, 42, 0.06);
+  --shadow-2: 0 2px 8px rgba(31, 45, 42, 0.06), 0 8px 24px rgba(31, 45, 42, 0.08);
+
+  /* Радиусы: 12–16 контейнеры, 20–24 крупные */
+  --radius-s: 12px;
+  --radius-m: 16px;
+  --radius-l: 20px;
+  --radius-xl: 24px;
+}
+
+/* База: системный стек, тело 16/1.6, высота приложения */
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font: 16px/1.6 system-ui, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+#root {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Тёмная тема (D-6, Stage 3): авто — следует системе (без data-theme);
+ * ручная — data-theme="dark"/"light" на <html> из настроек («Интерфейс»).
+ * Контрасты сохранены: ink/surface ≈ 11:1, muted/surface ≈ 5:1, accent ≈ 5:1. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #1a1f1d;
+    --surface: #232a27;
+    --ink: #e7e3d8;
+    --muted: #9aa8a1;
+    --accent: #63a89e;
+    --accent-deep: #82bdb4;
+    --accent-soft: #2a3b37;
+    --line: #343f3a;
+    --warn: #d9a441;
+    --danger: #d08770;
+    --chip: #2b322e;
+    --warm: #d9a441;
+    --warm-soft: #3a3226;
+    --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.28);
+    --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.28), 0 8px 24px rgba(0, 0, 0, 0.36);
+  }
+}
+
+/* Ручное закрепление (Костя 051005: «не понял, как включать самому») */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1a1f1d;
+  --surface: #232a27;
+  --ink: #e7e3d8;
+  --muted: #9aa8a1;
+  --accent: #63a89e;
+  --accent-deep: #82bdb4;
+  --accent-soft: #2a3b37;
+  --line: #343f3a;
+  --warn: #d9a441;
+  --danger: #d08770;
+  --chip: #2b322e;
+  --warm: #d9a441;
+  --warm-soft: #3a3226;
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.28);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.28), 0 8px 24px rgba(0, 0, 0, 0.36);
+}
+
+/* prefers-reduced-motion — глобальный стоп-кран (WCAG 2.3.3; «пять не» №3) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

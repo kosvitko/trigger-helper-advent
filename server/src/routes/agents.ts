@@ -1,33 +1,19 @@
 import {
   AddAgentRequestSchema,
   AgentRunRequestSchema,
-  BranchCheckpointRequestSchema,
-  BranchSwitchRequestSchema,
-  CompressThreadRequestSchema,
+  ChatTaskStatePatchSchema,
   CreateInstanceRequestSchema,
   FACT_KEYS,
-  MemoryFactCreateSchema,
-  MemoryFactPatchSchema,
   OPEN_TASK_MODE,
-  ProfileActivateSchema,
   RestoreAgentRequestSchema,
   RestoreInstanceRequestSchema,
-  SpawnRequestSchema,
-  TaskCreateSchema,
-  TaskPatchSchema,
-  TaskTransitionSchema,
-  InvariantCreateSchema,
-  InvariantPatchSchema,
-  UserProfileCreateSchema,
-  UserProfilePatchSchema,
-  type AgentContextStrategy,
   type AgentRunContext,
   type AgentRunResponse,
   type AgentRunTokensDto,
+  type ChatTaskState,
   type CompressThreadResponse,
   type AgentMessage,
   type FactsMap,
-  type TaskStage,
 } from "@trigger-helper/shared";
 import type { FastifyInstance } from "fastify";
 import type { Env } from "../config/env.js";
@@ -42,20 +28,17 @@ import {
 } from "../services/agent/task-state.js";
 import type { TaskStateStore } from "../services/agent/task-state.js";
 import type { InvariantStateStore } from "../services/agent/invariant-state.js";
+import type { ChatTaskStateStore } from "../services/agent/chat-task-state.js";
 import {
   AGENT_HISTORY_CAPS,
   AgentPolicyError,
   ContextLimitError,
-  EXTRACT_HISTORY_TAIL,
   shouldAutoCompress,
    stickyFromClassifyItems,
    type LlmAgent,
  } from "../services/agent/llm-agent.js";
 import { PIPELINE_STAGE_LABEL } from "../services/agent/llm-agent.js";
-import {
-  messageCostRub,
-  sumThreadTokens,
-} from "../services/agent/token-estimate.js";
+import { sumThreadTokens } from "../services/agent/token-estimate.js";
 import {
   InstanceRegistryError,
   type InstanceRegistry,
@@ -80,6 +63,7 @@ type AgentRouteDeps = {
   profileState: ProfileStateStore;
   taskStateStore: TaskStateStore;
   invariantStore: InvariantStateStore;
+  chatTaskStateStore: ChatTaskStateStore;
 };
 
 const CONTEXT_STRATEGIES = ["sliding", "facts", "branching"] as const;
@@ -248,50 +232,6 @@ export async function registerAgentRoutes(
     }
   });
 
-  app.post("/api/instances/:id/spawn", async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const parsed = SpawnRequestSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({
-        error: "Invalid request body",
-        details: parsed.error.flatten(),
-      });
-    }
-    try {
-      const result = deps.registry.spawn(parsed.data.kind, parsed.data.count, {
-        instanceId: id,
-        presetId: parsed.data.presetId,
-      });
-      return {
-        ...result,
-        note: "spawn без LLM-вызовов",
-      };
-    } catch (error) {
-      return sendRegistryError(reply, error);
-    }
-  });
-
-  app.post("/api/spawn/instances", async (request, reply) => {
-    const parsed = SpawnRequestSchema.safeParse({
-      ...(request.body as object),
-      kind: "instances",
-    });
-    if (!parsed.success) {
-      return reply.status(400).send({
-        error: "Invalid request body",
-        details: parsed.error.flatten(),
-      });
-    }
-    try {
-      const result = deps.registry.spawn("instances", parsed.data.count, {
-        presetId: parsed.data.presetId,
-      });
-      return { ...result, note: "spawn без LLM-вызовов" };
-    } catch (error) {
-      return sendRegistryError(reply, error);
-    }
-  });
-
   app.get(
     "/api/instances/:id/agents/:agentId/messages",
     async (request, reply) => {
@@ -327,184 +267,6 @@ export async function registerAgentRoutes(
     },
   );
 
-  /** Day08: token series for the whole thread (0 LLM calls). */
-  app.get(
-    "/api/instances/:id/agents/:agentId/tokens",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const found = deps.registry.getAgent(id, agentId);
-      if (!found) {
-        return reply.status(404).send({ error: "Instance or agent not found" });
-      }
-
-      const strategy = deps.day10State.getStrategy(id, agentId);
-      const threadAgentId = deps.day10State.resolveThreadAgentId(
-        id,
-        agentId,
-        strategy,
-      );
-      const messages = deps.threads.list(id, threadAgentId);
-      const model = found.agent.defaultModel ?? deps.env.DEEPSEEK_MODEL;
-
-      let cumTokens = 0;
-      let cumCostRub = 0;
-      const series = messages.map((m) => {
-        const costRub = messageCostRub(m);
-        cumTokens += m.usage?.total_tokens ?? 0;
-        cumCostRub += costRub;
-        return {
-          id: m.id,
-          role: m.role,
-          createdAt: m.createdAt,
-          promptTokens: m.usage?.prompt_tokens ?? 0,
-          completionTokens: m.usage?.completion_tokens ?? 0,
-          costRub: Number(costRub.toFixed(4)),
-          cumTokens,
-          cumCostRub: Number(cumCostRub.toFixed(4)),
-        };
-      });
-
-      return {
-        instanceId: id,
-        agentId,
-        threadAgentId,
-        model,
-        limit: deps.llmAgent.contextLimit(model),
-        caps: AGENT_HISTORY_CAPS,
-        thread: sumThreadTokens(messages),
-        series,
-      };
-    },
-  );
-
-  /** Day08: compress the old thread into one system summary (cheap model). */
-  app.post(
-    "/api/instances/:id/agents/:agentId/compress",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const parsed = CompressThreadRequestSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const found = deps.registry.getAgent(id, agentId);
-      if (!found) {
-        return reply.status(404).send({ error: "Instance or agent not found" });
-      }
-
-      const strategy = deps.day10State.getStrategy(id, agentId);
-      const threadAgentId = deps.day10State.resolveThreadAgentId(
-        id,
-        agentId,
-        strategy,
-      );
-
-      try {
-        // Day09: persist+billing moved into compressAndPersist() — same body,
-        // same response shape (C-6: manual «Сжать» behavior unchanged).
-        return await compressAndPersist(deps, {
-          instanceId: id,
-          agentId: threadAgentId,
-          label: found.agent.label,
-          keepLast: parsed.data.keepLast,
-          model: parsed.data.model,
-        });
-      } catch (error) {
-        if (error instanceof ContextLimitError) {
-          return sendContextLimit(reply, error);
-        }
-        if (error instanceof AgentPolicyError) {
-          return reply.status(400).send({
-            error: "Nothing to compress",
-            message: error.message,
-          });
-        }
-        request.log.error(error);
-        return reply.status(502).send({
-          error: "Compress failed",
-          message: error instanceof Error ? error.message : "Unknown error",
-        });
-      }
-    },
-  );
-
-  /** Day08+: idle economics probe — 4 real calls, thread NOT touched, replies discarded. */
-  app.post(
-    "/api/instances/:id/agents/:agentId/compress/probe",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const parsed = CompressThreadRequestSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const found = deps.registry.getAgent(id, agentId);
-      if (!found) {
-        return reply.status(404).send({ error: "Instance or agent not found" });
-      }
-
-      const strategy = deps.day10State.getStrategy(id, agentId);
-      const threadAgentId = deps.day10State.resolveThreadAgentId(
-        id,
-        agentId,
-        strategy,
-      );
-      const history = deps.threads.list(id, threadAgentId);
-      try {
-        const probe = await deps.llmAgent.probeCompressEconomics({
-          agent: found.agent,
-          history,
-          question: parsed.data.question,
-          keepLast: parsed.data.keepLast,
-          model: parsed.data.model,
-        });
-        // Idle calls are real spend: bill them; the thread stays untouched.
-        const countExpensive = OPEN_TASK_MODE === "public";
-        let totals = await deps.usageLedger.record(probe.full.usage, {
-          countExpensive,
-        });
-        totals = await deps.usageLedger.record(probe.compress.usage, {
-          countExpensive,
-        });
-        totals = await deps.usageLedger.record(probe.compressedCold.usage, {
-          countExpensive,
-        });
-        totals = await deps.usageLedger.record(probe.compressedWarm.usage, {
-          countExpensive,
-        });
-        return { ...probe, totals };
-      } catch (error) {
-        if (error instanceof ContextLimitError) {
-          return sendContextLimit(reply, error);
-        }
-        if (error instanceof AgentPolicyError) {
-          return reply.status(400).send({
-            error: "Nothing to compress",
-            message: error.message,
-          });
-        }
-        request.log.error(error);
-        return reply.status(502).send({
-          error: "Probe failed",
-          message: error instanceof Error ? error.message : "Unknown error",
-        });
-      }
-    },
-  );
-
   app.post("/api/agent/run", async (request, reply) => {
     const parsed = AgentRunRequestSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -515,8 +277,55 @@ export async function registerAgentRoutes(
     }
 
     const { instanceId, agentId, input, overrides } = parsed.data;
+
+    // Day25 UX SSE: если клиент просит event-stream — стримим шаги + финальный JSON.
+    // Обычный JSON-путь не трогаем (старый UI, curl, eval — работают как раньше).
+    const wantsSse = (request.headers.accept ?? "").includes("text/event-stream");
+    const sseSend = wantsSse
+      ? (data: unknown): void => {
+          reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+        }
+      : null;
+    // QA 041003 (F2): после hijack() обычный reply.status().send() НЕ доходит
+    // до клиента (заголовки 200 event-stream уже ушли) — поток висит вечно,
+    // клиент показывает вечное «⏳ Выполняется…». Любой ранний отказ после
+    // hijack обязан уйти SSE-ошибкой и закрыть поток.
+    const sseFail = (message: string): void => {
+      sseSend!({ type: "error", error: message });
+      reply.raw.write("data: [DONE]\n\n");
+      reply.raw.end();
+    };
+    if (wantsSse) {
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+      });
+      reply.hijack(); // Fastify: raw-сокет — обычный JSON-return выключен
+      // 041005 (грабля таймлапса): nginx рвёт SSE при ~60 с тишины — длинные
+      // ходи (нарратив на большом контексте > 60 с) умирали у клиента, хотя
+      // сервер завершал их. Keepalive-комментарий каждые 15 с держит поток.
+      const ka = setInterval(() => {
+        try {
+          reply.raw.write(": ping\n\n"); // SSE-комментарий: клиент игнорирует
+        } catch {
+          /* сокет уже закрыт — close-обработчик снимет интервал */
+        }
+      }, 15_000);
+      reply.raw.on("close", () => clearInterval(ka));
+    }
+    const onProgress = sseSend
+      ? (step: string, text: string): void => {
+          sseSend({ type: "step", step, text });
+        }
+      : undefined;
+
     const found = deps.registry.getAgent(instanceId, agentId);
     if (!found) {
+      if (wantsSse) {
+        sseFail("Instance or agent not found");
+        return reply;
+      }
       return reply.status(404).send({ error: "Instance or agent not found" });
     }
     const { agent } = found;
@@ -528,9 +337,14 @@ export async function registerAgentRoutes(
     if (countExpensive && freeCap > 0 && isExpensiveModel(requestedModel)) {
       const used = await deps.usageLedger.getExpensiveAsksToday();
       if (used >= freeCap) {
+        const message = `Дневной лимит дорогих моделей: ${freeCap} (МСК).`;
+        if (wantsSse) {
+          sseFail(message);
+          return reply;
+        }
         return reply.status(429).send({
           error: "Ask limit reached",
-          message: `Дневной лимит дорогих моделей: ${freeCap} (МСК).`,
+          message,
           limit: freeCap,
           used,
           model: requestedModel,
@@ -539,6 +353,16 @@ export async function registerAgentRoutes(
     }
 
     const budget = await getBudgetSnapshot(deps.usageLedger, deps.env);
+    // QA 041003 (F2): reject-ветка троттлинга после hijack ломала поток;
+    // для SSE проверяем отказ по снапшоту сами — до applyCostAwareThrottle.
+    if (wantsSse && budget.rejected) {
+      sseFail(
+        budget.reason === "daily_budget_expensive_rub"
+          ? `Дневной бюджет дорогих моделей: ₽${budget.expensive_limit_rub} (МСК).`
+          : `Дневной бюджет: ₽${budget.limit_rub} (МСК).`,
+      );
+      return reply;
+    }
     if ((await applyCostAwareThrottle(reply, budget)) === "rejected") {
       return;
     }
@@ -629,6 +453,11 @@ export async function registerAgentRoutes(
           ? { latency_ms: classified.latency_ms }
           : {}),
       };
+      // Средняя стадия в живой трейс (Костя 041004): классификация — до рана
+      onProgress?.(
+        "memory_class",
+        `факты из реплики → слои (LLM${classified.usage ? `, ${classified.usage.total_tokens} ток` : ""})`,
+      );
       if (classified.usage) {
         await deps.usageLedger.record(classified.usage, { countExpensive });
       }
@@ -671,6 +500,16 @@ export async function registerAgentRoutes(
           ? "tail"
           : (overrides?.historyMode ?? "tail");
 
+      // Day25 (04-F-9): effective ragTool — пресет-дефолт + точечный override
+      // (паттерн effectiveHistoryMode); llm-agent пресет-агностичен.
+      const effectiveRagTool =
+        overrides?.ragTool ?? agent.presetId === "rag_chat";
+      // Day25 (D-4): память задачи — ключ threadAgentId, тот же, что у треда.
+      const chatTaskState = deps.chatTaskStateStore.get(
+        instanceId,
+        threadAgentId,
+      );
+
       const runOverrides = {
         ...(overrides ?? {}),
         historyMode: effectiveHistoryMode,
@@ -679,6 +518,8 @@ export async function registerAgentRoutes(
         activeProfile,
         taskState,
         invariants,
+        ragTool: effectiveRagTool,
+        chatTaskState,
         ...(strategy === "facts" ? { facts: factsForRun } : {}),
       };
       // Day20 cust-fix (Костя 25.09): вопрос пишется в тред ДО рана — тогда
@@ -702,6 +543,7 @@ export async function registerAgentRoutes(
         runHistory,
         runOverrides,
         onStage,
+        onProgress, // Day25 UX SSE: события шагов в реальном времени
       );
 
       // Day13 D-7 / Day15 D-2: fail-open checks — evidence only, taskState is
@@ -781,6 +623,13 @@ export async function registerAgentRoutes(
           }
         : firstResult;
 
+      // Рельса-чек — живой трейс (Костя 041004)
+      onProgress?.(
+        "rail",
+        result.railViolated === true
+          ? "рельса нарушена → был re-prompt"
+          : "rag-вызов ✓ · метки источников ✓",
+      );
       const assistantMsg = deps.threads.createMessage({
         role: "assistant",
         content: result.reply,
@@ -802,6 +651,37 @@ export async function registerAgentRoutes(
       const totals = await deps.usageLedger.record(result.usage, {
         countExpensive,
       });
+
+      // Day25 (D-4, 02-F-6): экстракт памяти задачи — in-request сразу после
+      // run(), fail-open (состояние не меняется при ошибке). Только rag-ходы:
+      // прочие пресеты не платят лишний вызов.
+      let chatTaskEcho: ChatTaskState = chatTaskState;
+      if (effectiveRagTool) {
+        const extracted = await deps.llmAgent.classifyChatTaskState({
+          userText: input,
+          assistantReply: result.reply,
+          historyTail: runHistory,
+          model: deps.env.DEEPSEEK_MODEL,
+          // 041005: экстрактор видит текущее состояние — не плодит парафразы
+          current: chatTaskState,
+        });
+        chatTaskEcho = deps.chatTaskStateStore.upsertExtracted(
+          instanceId,
+          threadAgentId,
+          extracted.extracted,
+        );
+        if (extracted.usage) {
+          await deps.usageLedger.record(extracted.usage, { countExpensive });
+        }
+      }
+
+      // Экстракт памяти задачи — живой трейс (Костя 041004)
+      if (effectiveRagTool) {
+        onProgress?.(
+          "chattask",
+          `уточн.: ${chatTaskEcho.clarified.length} · огранич.: ${chatTaskEcho.constraints_terms.length}`,
+        );
+      }
 
       const tokens: AgentRunTokensDto = {
         ...result.tokens,
@@ -885,8 +765,11 @@ export async function registerAgentRoutes(
             }
           : {}),
         // Day17: MCP tool-call frame — present only in tools-runs (calls is
-        // always an array there; failure = rows with ok:false).
+        // always an array there; failure = rows with ok:false). Day25: rag-ходы
+        // несут структурный payload в calls[].payload.
         ...(result.toolInject ? { tool: result.toolInject } : {}),
+        // Day25: эхо памяти задачи после экстракта хода (панель обновляется).
+        ...(effectiveRagTool ? { chatTaskState: chatTaskEcho } : {}),
       };
 
       const body: AgentRunResponse = {
@@ -911,10 +794,28 @@ export async function registerAgentRoutes(
         tokens,
         autoCompression,
         context,
+        // Day25 (05-M-2): рельса «RAG каждый ход + источники» — только meta.
+        ...(effectiveRagTool
+          ? { meta: { railViolated: result.railViolated === true } }
+          : {}),
         totals,
       };
+      // Day25 UX SSE: отправляем финальный JSON последним событием и закрываем
+      if (wantsSse) {
+        sseSend!({ type: "done", result: body });
+        reply.raw.write("data: [DONE]\n\n");
+        reply.raw.end();
+        return reply;
+      }
       return body;
     } catch (error) {
+      if (wantsSse) {
+        // SSE-ошибка: отправляем событие ошибки и закрываем поток
+        sseSend!({ type: "error", error: error instanceof Error ? error.message : String(error) });
+        reply.raw.write("data: [DONE]\n\n");
+        reply.raw.end();
+        return reply;
+      }
       if (error instanceof ContextLimitError) {
         return sendContextLimit(reply, error);
       }
@@ -932,10 +833,22 @@ export async function registerAgentRoutes(
     }
   });
 
-  // --- Day11 memory endpoints ---
+  // --- Day25 ChatTaskState endpoints (панель «Память задачи», 02b-F-1/04-F-6) ---
+
+  /** threadAgentId — как в run: day10-strategy резолвит ветку (04-F-10:
+   *  edge «Lab strategy ≠ последняя персистентная» принят и зафиксирован). */
+  const chatTaskThreadAgentId = (
+    id: string,
+    agentId: string,
+  ): string =>
+    deps.day10State.resolveThreadAgentId(
+      id,
+      agentId,
+      deps.day10State.getStrategy(id, agentId),
+    );
 
   app.get(
-    "/api/instances/:id/agents/:agentId/memory",
+    "/api/instances/:id/agents/:agentId/chat-task-state",
     async (request, reply) => {
       const { id, agentId } = request.params as {
         id: string;
@@ -948,19 +861,23 @@ export async function registerAgentRoutes(
       if (!instance.agents.some((a) => a.id === agentId)) {
         return reply.status(404).send({ error: "Agent not found" });
       }
-      return { memory: deps.memoryState.get(id, agentId) };
+      return {
+        chatTaskState: deps.chatTaskStateStore.get(
+          id,
+          chatTaskThreadAgentId(id, agentId),
+        ),
+      };
     },
   );
 
   app.patch(
-    "/api/instances/:id/agents/:agentId/memory/facts/:factId",
+    "/api/instances/:id/agents/:agentId/chat-task-state",
     async (request, reply) => {
-      const { id, agentId, factId } = request.params as {
+      const { id, agentId } = request.params as {
         id: string;
         agentId: string;
-        factId: string;
       };
-      const parsed = MemoryFactPatchSchema.safeParse(request.body ?? {});
+      const parsed = ChatTaskStatePatchSchema.safeParse(request.body ?? {});
       if (!parsed.success) {
         return reply.status(400).send({
           error: "Invalid request body",
@@ -973,651 +890,22 @@ export async function registerAgentRoutes(
       }
       if (!instance.agents.some((a) => a.id === agentId)) {
         return reply.status(404).send({ error: "Agent not found" });
-      }
-      const updated = deps.memoryState.setLayer(
-        id,
-        agentId,
-        factId,
-        parsed.data.layer,
-      );
-      if (!updated) {
-        return reply.status(404).send({ error: "Fact not found" });
       }
       return {
-        fact: updated,
-        memory: deps.memoryState.get(id, agentId),
+        chatTaskState: deps.chatTaskStateStore.patch(
+          id,
+          chatTaskThreadAgentId(id, agentId),
+          parsed.data,
+        ),
       };
-    },
-  );
-
-  app.delete(
-    "/api/instances/:id/agents/:agentId/memory/facts/:factId",
-    async (request, reply) => {
-      const { id, agentId, factId } = request.params as {
-        id: string;
-        agentId: string;
-        factId: string;
-      };
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      const threadAgentId = deps.day10State.resolveThreadAgentId(id, agentId);
-      const historySeq = deps.threads.list(id, threadAgentId).length;
-      const removed = deps.memoryState.removeFact(id, agentId, factId, {
-        historySeq,
-        windowSize: EXTRACT_HISTORY_TAIL,
-      });
-      if (!removed) {
-        return reply.status(404).send({ error: "Fact not found" });
-      }
-      return { removed: true, memory: deps.memoryState.get(id, agentId) };
-    },
-  );
-
-  app.post(
-    "/api/instances/:id/agents/:agentId/memory/facts",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const parsed = MemoryFactCreateSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      const fact = deps.memoryState.addManual(
-        id,
-        agentId,
-        parsed.data.text,
-        parsed.data.layer ?? "working",
-      );
-      return reply.status(201).send({
-        fact,
-        memory: deps.memoryState.get(id, agentId),
-      });
-    },
-  );
-
-  // --- Day12 profile endpoints (instance-level personalization) ---
-
-  /** GET also seeds the two contrast profiles once for a fresh instance (D-2);
-   *  an emptied record stays empty — the seed never resurrects deletions. */
-  app.get("/api/instances/:id/profiles", async (request, reply) => {
-    const { id } = request.params as { id: string };
-    if (!deps.registry.get(id)) {
-      return reply.status(404).send({ error: "Instance not found" });
-    }
-    const state = deps.profileState.ensureSeed(id);
-    return state;
-  });
-
-  app.post("/api/instances/:id/profiles", async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const parsed = UserProfileCreateSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      return reply.status(400).send({
-        error: "Invalid request body",
-        details: parsed.error.flatten(),
-      });
-    }
-    if (!deps.registry.get(id)) {
-      return reply.status(404).send({ error: "Instance not found" });
-    }
-    // No auto-activation: the router is strictly manual (design §3.4).
-    const profile = deps.profileState.create(id, parsed.data);
-    return reply
-      .status(201)
-      .send({ profile, activeProfileId: deps.profileState.get(id).activeProfileId });
-  });
-
-  app.patch(
-    "/api/instances/:id/profiles/:profileId",
-    async (request, reply) => {
-      const { id, profileId } = request.params as {
-        id: string;
-        profileId: string;
-      };
-      const parsed = UserProfilePatchSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      if (!deps.registry.get(id)) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      const updated = deps.profileState.update(id, profileId, parsed.data);
-      if (!updated) {
-        return reply.status(404).send({ error: "Profile not found" });
-      }
-      return {
-        profile: updated,
-        activeProfileId: deps.profileState.get(id).activeProfileId,
-      };
-    },
-  );
-
-  app.delete(
-    "/api/instances/:id/profiles/:profileId",
-    async (request, reply) => {
-      const { id, profileId } = request.params as {
-        id: string;
-        profileId: string;
-      };
-      if (!deps.registry.get(id)) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      const removed = deps.profileState.remove(id, profileId);
-      if (removed === "not_found") {
-        return reply.status(404).send({ error: "Profile not found" });
-      }
-      if (removed === "active") {
-        return reply.status(409).send({
-          error: "Profile is active",
-          message: "Сначала деактивируйте или переключите профиль",
-        });
-      }
-      const state = deps.profileState.get(id);
-      return { removed: true, profiles: state.profiles, activeProfileId: state.activeProfileId };
-    },
-  );
-
-  /** Manual router: profileId=null = explicit deactivation (D-5). */
-  app.post("/api/instances/:id/profiles/activate", async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const parsed = ProfileActivateSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      return reply.status(400).send({
-        error: "Invalid request body",
-        details: parsed.error.flatten(),
-      });
-    }
-    if (!deps.registry.get(id)) {
-      return reply.status(404).send({ error: "Instance not found" });
-    }
-    const state = deps.profileState.activate(id, parsed.data.profileId);
-    if (!state) {
-      return reply.status(404).send({ error: "Profile not found" });
-    }
-    return { activeProfileId: state.activeProfileId };
-  });
-
-  // --- Day13 task FSM endpoints (0 LLM — not rate-limited) ---
-
-  app.get(
-    "/api/instances/:id/agents/:agentId/task",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      return { task: deps.taskStateStore.get(id, agentId) };
-    },
-  );
-
-  app.post(
-    "/api/instances/:id/agents/:agentId/task",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const parsed = TaskCreateSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      const created = deps.taskStateStore.create(id, agentId, parsed.data);
-      if (created === "exists") {
-        return reply.status(409).send({
-          error: "Task already exists",
-          message: "У агента уже есть задача — удалите её, чтобы начать новую",
-        });
-      }
-      return reply.status(201).send({ task: created });
-    },
-  );
-
-  app.post(
-    "/api/instances/:id/agents/:agentId/task/transition",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const parsed = TaskTransitionSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      const result = deps.taskStateStore.transition(id, agentId, parsed.data);
-      if (result.kind === "ok") {
-        return { task: result.state };
-      }
-      if (result.kind === "not_found") {
-        return reply.status(404).send({ error: "Task not found" });
-      }
-      return reply.status(409).send({
-        error: "Transition rejected",
-        from: result.from,
-        ...(result.to !== undefined ? { to: result.to } : {}),
-        ...(result.allowed ? { allowed: result.allowed } : {}),
-        ...(result.consentRequired ? { consentRequired: true } : {}),
-        message: result.message,
-      });
-    },
-  );
-
-  app.patch(
-    "/api/instances/:id/agents/:agentId/task",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const parsed = TaskPatchSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      const task = deps.taskStateStore.patch(id, agentId, parsed.data);
-      if (!task) {
-        return reply.status(404).send({ error: "Task not found" });
-      }
-      return { task };
-    },
-  );
-
-  app.delete(
-    "/api/instances/:id/agents/:agentId/task",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      const removed = deps.taskStateStore.remove(id, agentId);
-      if (!removed) {
-        return reply.status(404).send({ error: "Task not found" });
-      }
-      return { removed: true };
-    },
-  );
-
-  // --- Day14 invariant endpoints (owner rules, agent-level) ---
-
-  /** GET also seeds the six owner rules once for a fresh agent (D-8);
-   *  an emptied record stays empty — the seed never resurrects deletions. */
-  app.get(
-    "/api/instances/:id/agents/:agentId/invariants",
-    async (request, reply) => {
-      const { id, agentId } = request.params as { id: string; agentId: string };
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      return deps.invariantStore.ensureSeed(id, agentId);
-    },
-  );
-
-  /** RegExp guard (D-9): syntactically invalid or empty/blank source → 400
-   *  (05 Fix-1: RegExp("") matches everything → phantom criticals). */
-  function compilePatternGuard(source: string): string | null {
-    if (source.trim() === "") return "pattern не может быть пустым";
-    try {
-      new RegExp(source);
-      return null;
-    } catch {
-      return "pattern — невалидное регулярное выражение";
-    }
-  }
-
-  app.post(
-    "/api/instances/:id/agents/:agentId/invariants",
-    async (request, reply) => {
-      const { id, agentId } = request.params as { id: string; agentId: string };
-      const parsed = InvariantCreateSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      if (parsed.data.pattern !== undefined) {
-        const guard = compilePatternGuard(parsed.data.pattern);
-        if (guard) {
-          return reply.status(400).send({ error: guard });
-        }
-      }
-      const created = deps.invariantStore.create(id, agentId, parsed.data);
-      if (created === "cap") {
-        return reply.status(409).send({
-          error: "Invariant cap reached",
-          cap: 8,
-          message: "Инвариантов максимум 8 — удалите лишний",
-        });
-      }
-      return reply.status(201).send({ invariant: created });
-    },
-  );
-
-  app.patch(
-    "/api/instances/:id/agents/:agentId/invariants/:invariantId",
-    async (request, reply) => {
-      const { id, agentId, invariantId } = request.params as {
-        id: string;
-        agentId: string;
-        invariantId: string;
-      };
-      const parsed = InvariantPatchSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      // D-9 (04 Fix-3): read the current row before update — pattern/hard
-      // consistency needs the merged result, not the patch alone.
-      const current = deps.invariantStore
-        .get(id, agentId)
-        .invariants.find((row) => row.id === invariantId);
-      if (!current) {
-        return reply.status(404).send({ error: "Invariant not found" });
-      }
-      const nextEnforcement = parsed.data.enforcement ?? current.enforcement;
-      const nextPattern =
-        parsed.data.pattern === undefined ? current.pattern : parsed.data.pattern;
-      if (parsed.data.pattern !== undefined && parsed.data.pattern !== null) {
-        const guard = compilePatternGuard(parsed.data.pattern);
-        if (guard) {
-          return reply.status(400).send({ error: guard });
-        }
-      }
-      if (nextEnforcement === "soft" && nextPattern) {
-        return reply.status(400).send({
-          error: "Invariant would become soft with a pattern",
-          message: "Сначала уберите pattern — он допустим только у hard-инвариантов",
-        });
-      }
-      const updated = deps.invariantStore.update(
-        id,
-        agentId,
-        invariantId,
-        parsed.data,
-      );
-      if (!updated) {
-        return reply.status(404).send({ error: "Invariant not found" });
-      }
-      return { invariant: updated };
-    },
-  );
-
-  app.delete(
-    "/api/instances/:id/agents/:agentId/invariants/:invariantId",
-    async (request, reply) => {
-      const { id, agentId, invariantId } = request.params as {
-        id: string;
-        agentId: string;
-        invariantId: string;
-      };
-      const instance = deps.registry.get(id);
-      if (!instance) {
-        return reply.status(404).send({ error: "Instance not found" });
-      }
-      if (!instance.agents.some((a) => a.id === agentId)) {
-        return reply.status(404).send({ error: "Agent not found" });
-      }
-      const removed = deps.invariantStore.remove(id, agentId, invariantId);
-      if (!removed) {
-        return reply.status(404).send({ error: "Invariant not found" });
-      }
-      return { removed: true };
-    },
-  );
-
-  // --- Day10 branching endpoints ---
-
-  app.get(
-    "/api/instances/:id/agents/:agentId/branch",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const found = deps.registry.getAgent(id, agentId);
-      if (!found) {
-        return reply.status(404).send({ error: "Instance or agent not found" });
-      }
-      const meta = deps.day10State.getBranching(id, agentId);
-      const forked = meta?.forked ?? false;
-      return {
-        forked,
-        activeBranchId: meta?.activeBranchId ?? null,
-        branches: forked ? (["a", "b"] as const) : [],
-        checkpointCount: meta?.checkpointCount ?? 0,
-      };
-    },
-  );
-
-  app.post(
-    "/api/instances/:id/agents/:agentId/branch/checkpoint",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const parsed = BranchCheckpointRequestSchema.safeParse(
-        request.body ?? {},
-      );
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const found = deps.registry.getAgent(id, agentId);
-      if (!found) {
-        return reply.status(404).send({ error: "Instance or agent not found" });
-      }
-
-      const prev = deps.day10State.getBranching(id, agentId);
-      const strategy: AgentContextStrategy =
-        deps.day10State.getStrategy(id, agentId) ?? "branching";
-      const threadAgentId = deps.day10State.resolveThreadAgentId(
-        id,
-        agentId,
-        strategy,
-      );
-      const list = deps.threads.list(id, threadAgentId);
-      let checkpointCount = list.length;
-      if (parsed.data.messageId) {
-        const idx = list.findIndex((m) => m.id === parsed.data.messageId);
-        if (idx < 0) {
-          return reply.status(400).send({
-            error: "messageId not in thread",
-            message: "Указанное сообщение не найдено в активном треде",
-          });
-        }
-        checkpointCount = idx + 1;
-      }
-
-      deps.day10State.setStrategy(id, agentId, "branching");
-      deps.day10State.setBranching(id, agentId, {
-        forked: prev?.forked ?? false,
-        activeBranchId: prev?.activeBranchId ?? null,
-        checkpointCount,
-      });
-
-      return { agentId, checkpointCount };
-    },
-  );
-
-  app.post(
-    "/api/instances/:id/agents/:agentId/branch/fork",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const found = deps.registry.getAgent(id, agentId);
-      if (!found) {
-        return reply.status(404).send({ error: "Instance or agent not found" });
-      }
-
-      const meta = deps.day10State.getBranching(id, agentId);
-      const checkpointCount = meta?.checkpointCount ?? 0;
-      if (!(checkpointCount > 0)) {
-        return reply.status(400).send({
-          error: "Checkpoint required",
-          message: "Сначала сделайте checkpoint перед fork",
-        });
-      }
-
-      // Prefix from base agent thread (archive) unless already forked — then active.
-      const sourceId =
-        meta?.forked && meta.activeBranchId
-          ? `${agentId}#${meta.activeBranchId}`
-          : agentId;
-      const list = deps.threads.list(id, sourceId);
-      const n = Math.min(checkpointCount, list.length);
-      if (n <= 0) {
-        return reply.status(400).send({
-          error: "Empty prefix",
-          message: "Нет сообщений для ветвления",
-        });
-      }
-      const prefix = list.slice(0, n);
-      deps.threads.replace(id, `${agentId}#a`, prefix);
-      deps.threads.replace(id, `${agentId}#b`, prefix);
-      deps.day10State.setStrategy(id, agentId, "branching");
-      deps.day10State.setBranching(id, agentId, {
-        forked: true,
-        activeBranchId: "a",
-        checkpointCount,
-      });
-
-      return {
-        branches: ["a", "b"],
-        activeBranchId: "a",
-        prefixCount: n,
-      };
-    },
-  );
-
-  app.post(
-    "/api/instances/:id/agents/:agentId/branch/switch",
-    async (request, reply) => {
-      const { id, agentId } = request.params as {
-        id: string;
-        agentId: string;
-      };
-      const parsed = BranchSwitchRequestSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Invalid request body",
-          details: parsed.error.flatten(),
-        });
-      }
-      const found = deps.registry.getAgent(id, agentId);
-      if (!found) {
-        return reply.status(404).send({ error: "Instance or agent not found" });
-      }
-
-      const meta = deps.day10State.getBranching(id, agentId);
-      if (!meta?.forked) {
-        return reply.status(400).send({
-          error: "Not forked",
-          message: "Сначала выполните fork",
-        });
-      }
-
-      deps.day10State.setStrategy(id, agentId, "branching");
-      deps.day10State.setBranching(id, agentId, {
-        ...meta,
-        activeBranchId: parsed.data.branchId,
-      });
-
-      return { activeBranchId: parsed.data.branchId };
     },
   );
 }
 
 /**
- * Day09: compress the thread and persist + bill it — the shared path for the
- * manual compress handler and the auto-compress step of run (D-3). Error
- * mapping stays with the callers.
+ * Day09: compress the thread and persist + bill it — авто-сжатие хода
+ * (run) единственный потребитель с 04.10 (ручной роут удалён — чистка
+ * старого UI, гейт 261004 §7). Error mapping — на вызывающем.
  */
 async function compressAndPersist(
   deps: AgentRouteDeps,

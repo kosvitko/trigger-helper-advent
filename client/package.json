@@ -1,0 +1,27 @@
+{
+  "name": "@trigger-helper/client",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-check",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@trigger-helper/shared": "*",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "happy-dom": "^20.14.5",
+    "svelte": "^5.28.2",
+    "svelte-check": "^4.2.2",
+    "typescript": "^5.8.2",
+    "vite": "^6.3.5",
+    "vitest": "^5.0.3"
+  }
+}

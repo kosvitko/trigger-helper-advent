@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { LlmUsageSchema } from "./ask.js";
 
-export const AgentPresetIdSchema = z.enum(["care", "strict", "open"]);
+/** Day25: + «rag_chat» — чат базы знаний с локальной тулзой rag_ask. */
+export const AgentPresetIdSchema = z.enum(["care", "strict", "open", "rag_chat"]);
 export type AgentPresetId = z.infer<typeof AgentPresetIdSchema>;
 
 export const AgentContextLayersSchema = z.object({
@@ -316,6 +317,24 @@ export const InvariantStateSchema = z.object({
 });
 export type InvariantState = z.infer<typeof InvariantStateSchema>;
 
+/** Day25: лёгкая память задачи мини-чата (Q-c) — ключ threadAgentId.
+ *  goal — одна строка-цель диалога; clarified — короткие уточнения;
+ *  constraints_terms — ограничения и термины, зафиксированные пользователем. */
+export const ChatTaskStateSchema = z.object({
+  goal: z.string().max(300).default(""),
+  clarified: z.array(z.string().min(1).max(160)).max(8).default([]),
+  constraints_terms: z.array(z.string().min(1).max(160)).max(8).default([]),
+});
+export type ChatTaskState = z.infer<typeof ChatTaskStateSchema>;
+
+/** PATCH панели «Память задачи»: absent = keep (02b-F-1, ручное редактирование). */
+export const ChatTaskStatePatchSchema = z.object({
+  goal: z.string().max(300).optional(),
+  clarified: z.array(z.string().min(1).max(160)).max(8).optional(),
+  constraints_terms: z.array(z.string().min(1).max(160)).max(8).optional(),
+});
+export type ChatTaskStatePatch = z.infer<typeof ChatTaskStatePatchSchema>;
+
 /** Request-size estimate split (heuristic; API usage stays the fact). */
 export const TokenBreakdownSchema = z.object({
   system: z.number().int().nonnegative(),
@@ -365,6 +384,9 @@ export const AgentRunRequestSchema = z.object({
       contextStrategy: AgentContextStrategySchema.optional(),
       /** Day17: enable MCP tool use for this run (default false — explicit opt-in). */
       tools: z.boolean().optional(),
+      /** Day25: локальная тулза rag_ask (точечный override; дефолт — из пресета,
+       *  effective-флаг считает сервер в runOverrides, 02b-F-3/04-F-9). */
+      ragTool: z.boolean().optional(),
     })
     .optional(),
 });
@@ -479,10 +501,16 @@ export const AgentRunContextSchema = z.object({
           ok: z.boolean(),
           latencyMs: z.number().int().nonnegative(),
           resultClip: z.string(),
+          /** Day25 (02b-F-3): аддитивный структурный payload тулзы
+           *  (rag_ask: answer/quotes/sources/dontKnow/topCosine/usage) —
+           *  UI-карточка рендерится из него, resultClip остаётся обязательным. */
+          payload: z.unknown().optional(),
         }),
       ),
     })
     .optional(),
+  /** Day25: эхо памяти задачи после экстракта хода (только rag-ходы). */
+  chatTaskState: ChatTaskStateSchema.optional(),
 });
 export type AgentRunContext = z.infer<typeof AgentRunContextSchema>;
 
@@ -571,6 +599,9 @@ export const AgentRunResponseSchema = z.object({
     .optional(),
   /** Day10: strategy frame — history sent + optional facts/extract. */
   context: AgentRunContextSchema.optional(),
+  /** Day25 (05-M-2): рельса «RAG каждый ход + источники» — только это поле;
+   *  ₽/токены UI берёт из usage и tool.calls[].payload.usage. */
+  meta: z.object({ railViolated: z.boolean() }).optional(),
   totals: z.unknown().optional(),
 });
 export type AgentRunResponse = z.infer<typeof AgentRunResponseSchema>;

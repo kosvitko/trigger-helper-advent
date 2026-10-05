@@ -1,7 +1,0 @@
-{
-  "zones": [
-    { "id": "head", "label": "Голова" },
-    { "id": "arm", "label": "Рука" },
-    { "id": "shoulder", "label": "Плечо (верх, у шеи)" }
-  ]
-}

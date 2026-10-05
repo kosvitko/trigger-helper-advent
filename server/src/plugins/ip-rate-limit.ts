@@ -6,16 +6,10 @@ import type { Env } from "../config/env.js";
 function isRateLimitedPath(method: string, url: string): boolean {
   if (method !== "POST") return false;
   const path = url.split("?")[0] ?? "";
-  if (path === "/api/ask") return true;
-  if (path === "/api/compare") return true;
-  if (path === "/api/rag/ask") return true; // Day22: costly LLM ask (design D-5)
   if (path === "/api/agent/run") return true;
-  if (path === "/api/spawn/instances") return true;
   if (path === "/api/instances") return true;
-  if (path === "/api/mcp/call") return true;
   if (path === "/mcp") return true;
   if (/^\/api\/instances\/[^/]+\/agents$/.test(path)) return true;
-  if (/^\/api\/instances\/[^/]+\/spawn$/.test(path)) return true;
   return false;
 }
 
@@ -63,7 +57,7 @@ export async function registerIpRateLimit(
       // shared per-IP bucket would 429 the demo path mid-screencast.
       // Scoped to the MCP paths only; safe behind trustProxy: external
       // clients keep their real IPs.
-      const isOwnMcpPath = path === "/mcp" || path === "/api/mcp/call";
+      const isOwnMcpPath = path === "/mcp";
       const ip = normalizeIp(request.ip);
       if (isOwnMcpPath && (ip === "127.0.0.1" || ip === "::1")) return true;
       return allowlist.has(ip);

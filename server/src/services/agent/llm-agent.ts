@@ -2,6 +2,7 @@ import type {
   AgentInstance,
   AgentMessage,
   AgentContextStrategy,
+  ChatTaskState,
   FactRow,
   FactsMap,
   LlmUsage,
@@ -23,8 +24,52 @@ import { contextLimitForModel } from "../model-cost-tier.js";
 import { callMcpTool } from "../mcp-client.js";
 import { toWireToolSpecs, type McpRegistry } from "../mcp-registry.js";
 import { costRubFromUsage } from "../pricing.js";
+import type { RagAnswerService } from "../rag/answer.js";
+import { normalizeRu } from "../rag/text.js";
 import { heuristicSuggestedLayer } from "./memory-state.js";
 import { buildSystemPrompt } from "./presets.js";
+// Day25 (D-2): локальная тулза rag_ask — KISS-модуль без реестра; и память
+// задачи мини-чата (D-4) — экстракт + инжект-блок.
+import {
+  RAG_TOOL_NAME,
+  buildRagToolSpec,
+  dispatchRagAsk,
+} from "./rag-tool.js";
+import {
+  buildChatTaskStateMessage,
+  extractChatTaskState,
+  type ChatTaskExtractResult,
+} from "./chat-task-state.js";
+
+/** Day25 UX (Костя): прогресс рана — сервер пишет текущие шаги в Map,
+ *  клиент получает их по SSE-событиям POST run (старый поллинг-роут снят 04.10). */
+export interface TraceProgressStep {
+  step: string;
+  text: string;
+}
+const traceProgress = new Map<string, TraceProgressStep[]>();
+
+function progressKey(instanceId: string, agentId: string): string {
+  return `${instanceId}:${agentId}`;
+}
+
+function pushProgress(key: string, step: string, text: string): void {
+  const arr = traceProgress.get(key);
+  if (arr) arr.push({ step, text });
+}
+
+function updateProgress(key: string, step: string, text: string): void {
+  const arr = traceProgress.get(key);
+  if (!arr) return;
+  const existing = arr.find((s) => s.step === step);
+  if (existing) existing.text = text;
+  else arr.push({ step, text });
+}
+
+/** Day25 UX: чтение прогресса для polling-клиента (agents.ts GET endpoint). */
+export function getTraceProgress(agentId: string): TraceProgressStep[] {
+  return traceProgress.get(agentId) ?? [];
+}
 // Day15 D-1: карта переходов генерируется из канона task-state (источник
 // истины один), в промпт не дублируется руками. Day15′ (260919): с русскими
 // именами кнопок — фраза ассистента совпадает с кнопкой в UI.
@@ -116,6 +161,11 @@ export type AgentRunOverrides = {
   stageRetry?: boolean;
   /** Day17: MCP tool use for this run (default false — explicit opt-in). */
   tools?: boolean;
+  /** Day25 (04-F-9): effective-флаг локальной тулзы rag_ask — считает routes
+   *  (пресет-дефолт + точечный override), llm-agent пресет-агностичен. */
+  ragTool?: boolean;
+  /** Day25 (D-4): память задачи мини-чата — инжект-блок после task-блока. */
+  chatTaskState?: ChatTaskState | null;
 };
 
 /** Request-size facts for the day08 UI (estimate; API usage is the fact). */
@@ -163,6 +213,9 @@ export type ToolCallTrace = {
   ok: boolean;
   latencyMs: number;
   resultClip: string;
+  /** Day25 (02b-F-3): структурный payload локальной rag_ask — answer/quotes/
+   *  sources/dontKnow/topCosine/usage; resultClip остаётся (клип для UI). */
+  payload?: unknown;
 };
 
 /** Day17: tool-call frame — present only in tools-runs; calls always an array. */
@@ -191,6 +244,9 @@ export type AgentRunOk = {
   invariantsInject?: InvariantsInject;
   /** Day17: MCP tool calls of this run (absent when tools not enabled). */
   toolInject?: ToolInject;
+  /** Day25 (D-3): рельса нарушена и после одного re-prompt — честный флаг
+   *  в meta.railViolated (присутствует только в rag-ходах). */
+  railViolated?: boolean;
 };
 
 export type ClassifyMemoryOk = {
@@ -619,6 +675,8 @@ const TOOL_STAGE_TEXT: Record<
   pubmed_find_related: () => "🔗 Ищу связанные публикации PubMed…",
   pubmed_lookup_mesh: () => "📖 Сверяю MeSH-тезаурус…",
   pubmed_format_citations: () => "📎 Оформляю ссылки…",
+  // Day25: локальная тулза — поиск по базе знаний продукта.
+  rag_ask: (a) => `📚 Ищу в базе знаний: «${String(a.question ?? "").slice(0, 60)}»…`,
 };
 
 function stageTextFor(
@@ -693,6 +751,9 @@ export class LlmAgent {
     private readonly contextLimitOverride = 0,
     /** Day20: MCP registry (own + external servers); absent = tools disabled. */
     private readonly mcpRegistry?: McpRegistry,
+    /** Day25: RAG-answer service for the local rag_ask tool (D-2, Q-a —
+     *  конвейер дня 24 как библиотека в том же процессе). */
+    private readonly ragAnswer?: RagAnswerService,
   ) {}
 
   /** Effective context window for a model (DEMO_CONTEXT_LIMIT wins). */
@@ -707,12 +768,23 @@ export class LlmAgent {
     rawInput: string,
     history: AgentMessage[],
     overrides: AgentRunOverrides = {},
-    /** Day19 (фидбек Кости): stage lines per executed tool call — routes
-     *  замыкают на тред этого рана (latestThread здесь врёт: вопрос ещё
-     *  не записан в момент первой стадии). */
+    /** Day19: stage lines per executed tool call. */
     onStage?: (text: string) => void,
+    /** Day25 UX SSE: событие шага в реальном времени (не polling). */
+    onProgress?: (step: string, text: string) => void,
   ): Promise<AgentRunOk> {
     const input = applyInputPolicy(agent, rawInput);
+    // Day25 UX: progressive trace — Map для polling + callback для SSE
+    traceProgress.set(agent.id, []);
+    const emit = (step: string, text: string): void => {
+      pushProgress(agent.id, step, text);
+      onProgress?.(step, text);
+    };
+    const emitUpdate = (step: string, text: string): void => {
+      updateProgress(agent.id, step, text);
+      onProgress?.(step, text);
+    };
+    emit("start", `Вопрос: ${input.slice(0, 80)}`);
     const model = overrides.model ?? agent.defaultModel ?? this.defaultModel;
     const temperature =
       overrides.temperature ?? agent.defaultTemperature ?? 0.7;
@@ -732,6 +804,11 @@ export class LlmAgent {
     const taskMessage = overrides.taskState
       ? buildTaskStateMessage(overrides.taskState)
       : null;
+    // Day25 (D-4): память задачи мини-чата — один system-блок после task-блока;
+    // без содержимого не эмитит (дни 06–24 байт-в-байт).
+    const chatTaskMessage = overrides.chatTaskState
+      ? buildChatTaskStateMessage(overrides.chatTaskState)
+      : null;
     // Day14 D-4: invariants — position 2, right after the preset prompt.
     const invariantsMessage = overrides.invariants?.length
       ? buildInvariantsMessage(overrides.invariants)
@@ -750,8 +827,14 @@ export class LlmAgent {
         : null;
     // Day20: tool specs come from the registry (own first, injected externals
     // after — wire names `<server>_<native>`); empty unless overrides.tools.
-    const toolSpecs: ToolSpec[] =
-      overrides.tools && this.mcpRegistry
+    // Day25 (04-F-1): серверный приоритет — rag-ход ⇒ toolSpecs = ТОЛЬКО спека
+    // rag_ask (MCP подавлен до явного флага комбинирования); rag выключен ⇒
+    // байт-в-байт сегодняшний путь (дни 17–20 не меняются).
+    const localRagEnabled =
+      overrides.ragTool === true && this.ragAnswer !== undefined;
+    const toolSpecs: ToolSpec[] = localRagEnabled
+      ? [buildRagToolSpec()]
+      : overrides.tools && this.mcpRegistry
         ? toWireToolSpecs(this.mcpRegistry.getToolSpecs())
         : [];
     // Day20 D-7 (security L4): untrusted tool results are data, not
@@ -766,6 +849,7 @@ export class LlmAgent {
       ...memoryBuilt.messages,
       ...(sticky ? [sticky] : []),
       ...(taskMessage ? [taskMessage] : []),
+      ...(chatTaskMessage ? [chatTaskMessage] : []),
       ...historyChat,
       ...(stageRetryMessage ? [stageRetryMessage] : []),
       ...(toolPolicyMessage ? [toolPolicyMessage] : []),
@@ -778,6 +862,7 @@ export class LlmAgent {
       ...memoryBuilt.messages.map((m) => m.content),
       ...(sticky ? [sticky.content] : []),
       ...(taskMessage ? [taskMessage.content] : []),
+      ...(chatTaskMessage ? [chatTaskMessage.content] : []),
       ...(stageRetryMessage ? [stageRetryMessage.content] : []),
       ...(toolPolicyMessage ? [toolPolicyMessage.content] : []),
     ].join("\n\n");
@@ -870,6 +955,7 @@ export class LlmAgent {
       // must not stall the HTTP request.
       timeoutMs: 60_000,
     };
+    emit("thinking", "Модель анализирует вопрос…");
     let result = await chatGuard(messages, {
       ...baseChatOptions,
       ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
@@ -896,13 +982,24 @@ export class LlmAgent {
     const TOOL_CALL_TIMEOUT_MS = 90_000;
     let toolInject: ToolInject | undefined;
     const registry = this.mcpRegistry;
-    if (result.toolCalls?.length && registry) {
-      const followup: ChatMessage[] = [...messages];
-      const trace: ToolCallTrace[] = [];
-      const usages = [result.usage];
-      let latencySum = result.latency_ms;
-      const executed = new Set<string>();
-      let current = result;
+    // Day25 (04-F-8): вход цикла — registry ИЛИ включённая локальная тулза;
+    // rag-ход без реестра всё равно получает tool-loop.
+    const toolsActive = registry !== undefined || localRagEnabled;
+    // Day25 (05-M-4): состояние цикла общее и живёт снаружи — ветка (б) рельсы
+    // ре-ентерит ТОТ ЖЕ tool-loop (общие dispatch/trace/ragCalledThisTurn),
+    // не ad-hoc второй путь.
+    const followup: ChatMessage[] = [...messages];
+    const trace: ToolCallTrace[] = [];
+    const usages: LlmUsage[] = [];
+    let latencySum = 0;
+    const executed = new Set<string>();
+    // Day25 (D-3): трекинг рельсы «RAG каждый ход + источники всегда».
+    let ragCalledThisTurn = false;
+    let ragLastLabels: string[] = [];
+    let ragSourcesExempt = false; // dontKnow | ok:false ⇒ источники exempt
+
+    const processToolChain = async (entry: ChatResult): Promise<ChatResult> => {
+      let current = entry;
       let rounds = 0;
       let callsDone = 0;
       while (
@@ -933,7 +1030,7 @@ export class LlmAgent {
             });
             trace.push({
               name: call.function.name,
-              server: registry.resolve(call.function.name)?.serverName,
+              server: registry?.resolve(call.function.name)?.serverName,
               ok: false,
               latencyMs: 0,
               resultClip: "invalid_tool_arguments_json",
@@ -959,16 +1056,63 @@ export class LlmAgent {
           executed.add(key);
           callsDone += 1;
           executedThisRound += 1;
-          // Day20: resolve the wire name → target server first; an unresolved
-          // name is a model hallucination — synthetic answer, no call, run
-          // continues (pass 04 MAJOR-1).
-          const resolved = registry.resolve(call.function.name);
+          // Day25 (D-2/04-F-8): dispatch — локальное имя ПЕРВЫМ, затем
+          // registry.resolve (коллизий нет: MCP-имена `<server>_<native>`).
+          const isLocalRag =
+            localRagEnabled && call.function.name === RAG_TOOL_NAME;
+          const resolved = isLocalRag
+            ? undefined
+            : registry?.resolve(call.function.name);
           // Day19: visible stage in the chat feed of THIS thread (UI-only;
           // excluded from the LLM context via historyToChat label filter).
-          if (resolved) {
+          if (isLocalRag) {
+            onStage?.(stageTextFor("rag", call.function.name, args));
+          } else if (resolved) {
             onStage?.(stageTextFor(resolved.serverName, resolved.nativeName, args));
           }
           const started = Date.now();
+          if (isLocalRag && this.ragAnswer) {
+            // Day25 UX: progressive trace — шаг rag_ask с запросом
+            emit("rag_ask", `Ищу в базе: ${(args as { question?: string }).question ?? "…"}`);
+            // Day25: локальный dispatch — внутренний 60 с (не 90-с callMcpTool);
+            // onStage: средние стадии пайплайна в живой трейс (Костя 041004)
+            const outcome = await dispatchRagAsk(
+              args,
+              this.ragAnswer,
+              (stage, text) => emit(stage, text),
+            );
+            // Day25 UX: обновляем текст rag_ask результатом
+            if (outcome.ok) {
+              emitUpdate("rag_ask", `Найдено ${outcome.payload.sources.length} источников · косинус ${outcome.payload.topCosine?.toFixed(3) ?? "—"}`);
+            } else {
+              emitUpdate("rag_ask", "Ошибка поиска");
+            }
+            // D-3: трекинг ragCalledThisTurn в точке локального dispatch
+            // (рядом с trace.push); dontKnow ⇒ источники exempt (Q3).
+            ragCalledThisTurn = true;
+            if (outcome.ok) {
+              ragLastLabels = outcome.payload.labels;
+              ragSourcesExempt = outcome.payload.dontKnow;
+            } else {
+              // rag ok:false ⇒ требование вызова остаётся, источники exempt.
+              ragSourcesExempt = true;
+            }
+            trace.push({
+              name: call.function.name,
+              server: "rag",
+              arguments: args,
+              ok: outcome.ok,
+              latencyMs: Date.now() - started,
+              resultClip: clipToolResult(outcome.content),
+              payload: outcome.payload,
+            });
+            followup.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: clipToolThread(outcome.content),
+            });
+            continue;
+          }
           let content: string;
           let ok = true;
           try {
@@ -1034,6 +1178,160 @@ export class LlmAgent {
         latencySum += last.latency_ms;
         current = last;
       }
+      return current;
+    };
+
+    const enteredLoop = Boolean(result.toolCalls?.length) && toolsActive;
+    let current = result;
+    if (enteredLoop) {
+      usages.push(result.usage);
+      latencySum += result.latency_ms;
+      current = await processToolChain(result);
+    }
+
+    // Day25 UX: progressive trace — наррация готова
+    emit("narrative", "Ответ готов");
+
+    // Day25 (D-3, 04-F-2/05-M-3): рельса «RAG каждый ход + источники всегда» —
+    // in-run проверка ПОСЛЕ закрытия цикла, по возвращённой строке
+    // (post-applyOutputPolicy, иначе клип расходит сервер/eval). Один
+    // re-prompt; повторное нарушение → честный meta.railViolated.
+    // Day25: deepseek-chat иногда «вызывает» тулзу шаблонным синтаксисом текстом
+    // (｜｜DSML｜｜ …) вместо штатного function-calling — такой «ответ» есть мусор
+    // в ленте UI: вычищаем строки-шаблоны, пустота после чистки ⇒ честный fallback.
+    const stripDsmlLines = (text: string): string =>
+      text
+        .split("\n")
+        .filter((line) => !line.includes("｜｜DSML｜｜"))
+        .join("\n")
+        .trim();
+    // Day25: утёкший DSML-invoke rag_ask — ДОБРЫЙ случай: модель сказала, что
+    // хочет искать (готовый вопрос лежит в parameter) — исполняем его серверно
+    // как настоящий вызов и просим наррацию по результату, а не штрафуем рельсу.
+    const extractDsmlRagQuestion = (text: string): string | null => {
+      if (!text.includes("｜｜DSML｜｜")) return null;
+      const m = text.match(
+        /<｜｜DSML｜｜\s*invoke name="rag_ask">[\s\S]*?<｜｜DSML｜｜\s*parameter name="question"[^>]*>([\s\S]*?)<\/?｜｜DSML｜｜\s*parameter>/,
+      );
+      const q = m?.[1]?.trim() ?? "";
+      return q.length > 0 ? q.slice(0, 2000) : null;
+    };
+    const stripDsmlReply = (text: string): string => {
+      if (!text.includes("｜｜DSML｜｜")) return text;
+      const cleaned = stripDsmlLines(text);
+      return cleaned.length > 0
+        ? cleaned
+        : "Не смог корректно оформить ответ — повторите вопрос, пожалуйста.";
+    };
+    let railViolated: boolean | undefined;
+    let railRetried = false;
+    if (localRagEnabled) {
+      const railCheck = (replyText: string): boolean => {
+        if (!ragCalledThisTurn) return true; // тулза не звалась вообще
+        if (ragSourcesExempt) return false; // dontKnow | ok:false (04-F-3)
+        if (ragLastLabels.length === 0) return false;
+        const norm = normalizeRu(replyText);
+        return !ragLastLabels.some((label) => norm.includes(normalizeRu(label)));
+      };
+      const dsmlQuestion = extractDsmlRagQuestion(current.reply);
+      if (dsmlQuestion !== null && this.ragAnswer) {
+        // Day25: DSML-утечка с готовым invoke ⇒ исполняем вызов серверно.
+        if (!enteredLoop) {
+          usages.push(current.usage);
+          latencySum += current.latency_ms;
+        }
+        const started = Date.now();
+        const outcome = await dispatchRagAsk(
+          { question: dsmlQuestion },
+          this.ragAnswer,
+        );
+        ragCalledThisTurn = true;
+        if (outcome.ok) {
+          ragLastLabels = outcome.payload.labels;
+          ragSourcesExempt = outcome.payload.dontKnow;
+        } else {
+          ragSourcesExempt = true;
+        }
+        trace.push({
+          name: RAG_TOOL_NAME,
+          server: "rag",
+          arguments: { question: dsmlQuestion },
+          ok: outcome.ok,
+          latencyMs: Date.now() - started,
+          resultClip: clipToolResult(outcome.content),
+          payload: outcome.payload,
+        });
+        followup.push({
+          role: "system",
+          content:
+            "Вызов rag_ask уже исполнен сервером (вопрос: «" +
+            dsmlQuestion +
+            "»). Результат тулзы:\n" +
+            clipToolThread(outcome.content) +
+            "\nТеперь ответь пользователю по этому результату, перечислив источники [source › section] из него; " +
+            "dontKnow=true — честно скажи, что релевантного в базе нет, без выдумывания источников. " +
+            "Синтаксис вызова текстом в ответе запрещён.",
+        });
+        const second = await chatGuard(followup, baseChatOptions);
+        usages.push(second.usage);
+        latencySum += second.latency_ms;
+        current = second;
+        railRetried = true;
+        if (railCheck(applyOutputPolicy(agent, current.reply))) {
+          railViolated = true;
+        }
+      } else if (railCheck(applyOutputPolicy(agent, current.reply))) {
+        railRetried = true;
+        // Day25: в followup уходит только очищенный от DSML текст; пусто — не кладём
+        // вовсе: сырой DSML-ответ как assistant-пример учит модель повторять формат.
+        const cleanedForRetry = stripDsmlLines(current.reply);
+        if (cleanedForRetry.length > 0) {
+          followup.push({ role: "assistant", content: cleanedForRetry });
+        }
+        followup.push({
+          role: "system",
+          content: ragCalledThisTurn
+            ? "В прошлом ответе нет меток источников [source › section] из результата rag_ask. " +
+              "Ответь снова, перечислив источники в формате [source › section] из результата тулзы; " +
+              "dontKnow=true — так и скажи, источники не перечисляй и не выдумывай. " +
+              "Вызов инструмента делай только штатным механизмом function-calling, не вставляй синтаксис вызова текстом."
+            : "Отвечать без вызова rag_ask в текущем ходе запрещено. Сейчас вызови rag_ask с самодостаточным " +
+              "вопросом, затем ответь по результату тулзы, перечислив источники [source › section]; " +
+              "dontKnow=true — скажи, что в базе нет релевантного, без выдумывания источников. " +
+              "Вызов инструмента делай только штатным механизмом function-calling, не вставляй синтаксис вызова текстом.",
+        });
+        if (ragCalledThisTurn) {
+          // Ветка (а): тулз-история жива ⇒ system-напоминание в followup +
+          // ОДИН no-tools вызов (паттерн caps-exhaust). current.usage уже в
+          // usages (замкнут в processToolChain) — не дублируем.
+          const second = await chatGuard(followup, baseChatOptions);
+          usages.push(second.usage);
+          latencySum += second.latency_ms;
+          current = second;
+        } else {
+          // Ветка (б): тулза не звалась вообще ⇒ повторный вызов С тулзами,
+          // ре-ентер того же tool-loop (05-M-4).
+          if (!enteredLoop) {
+            usages.push(current.usage);
+            latencySum += current.latency_ms;
+          }
+          const retry = await chatGuard(followup, {
+            ...baseChatOptions,
+            ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
+          });
+          usages.push(retry.usage);
+          latencySum += retry.latency_ms;
+          current = await processToolChain(retry);
+        }
+        if (railCheck(applyOutputPolicy(agent, current.reply))) {
+          railViolated = true;
+        }
+      }
+      // Day25: утечка DSML не должна показываться пользователю (мусор в ленте).
+      current = { ...current, reply: stripDsmlReply(current.reply) };
+    }
+
+    if (enteredLoop || railRetried) {
       toolInject = { calls: trace };
       result = {
         ...current,
@@ -1043,6 +1341,9 @@ export class LlmAgent {
     }
 
     const reply = applyOutputPolicy(agent, result.reply);
+    // Day25 UX: ход завершён — чистим progressive trace (polling-клиент
+    // увидит 404/пустой массив и перестанет обновлять pending-ход)
+    traceProgress.delete(agent.id);
     return {
       reply,
       usage: result.usage,
@@ -1085,6 +1386,7 @@ export class LlmAgent {
           }
         : {}),
       ...(toolInject ? { toolInject } : {}),
+      ...(railViolated !== undefined ? { railViolated } : {}),
     };
   }
 
@@ -1165,6 +1467,27 @@ export class LlmAgent {
     patch: unknown,
   ): FactsMap {
     return mergeFactsAllowlist(existing, patch);
+  }
+
+  /**
+   * Day25 (D-4, 02-F-6): экстракт памяти задачи мини-чата — classify-паттерн
+   * (temp 0.1, ≤400 out), fail-open; один маленький вызов in-request сразу
+   * после run(). Не кидает — ошибка ⇒ пустой экстракт, состояние не меняется.
+   */
+  async classifyChatTaskState(params: {
+    userText: string;
+    assistantReply: string;
+    historyTail: AgentMessage[];
+    model?: string;
+    current?: ChatTaskState;
+  }): Promise<ChatTaskExtractResult> {
+    return extractChatTaskState(this.deepSeek, {
+      userText: params.userText,
+      assistantReply: params.assistantReply,
+      historyTail: params.historyTail,
+      model: params.model ?? this.defaultModel,
+      current: params.current,
+    });
   }
 
   /**
@@ -1387,6 +1710,13 @@ export function createLlmAgent(
   defaultModel: string,
   contextLimitOverride = 0,
   mcpRegistry?: McpRegistry,
+  ragAnswer?: RagAnswerService,
 ): LlmAgent {
-  return new LlmAgent(deepSeek, defaultModel, contextLimitOverride, mcpRegistry);
+  return new LlmAgent(
+    deepSeek,
+    defaultModel,
+    contextLimitOverride,
+    mcpRegistry,
+    ragAnswer,
+  );
 }

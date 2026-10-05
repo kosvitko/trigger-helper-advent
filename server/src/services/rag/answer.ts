@@ -73,6 +73,9 @@ export interface RagAskInput {
   /** Day23 rag-stage flags (design D-5); base = false/false = day-22 canon. */
   rerank?: boolean;
   rewrite?: boolean;
+  /** Прогресс средних стадий в живой трейс (Костя 041004: без «пачки» в конце):
+   *  rag_rewrite / rag_search / rag_answer / rag_verify — только факты, не инструкции. */
+  onStage?: (stage: string, text: string) => void;
 }
 
 export interface RagAskSource {
@@ -178,6 +181,12 @@ export class RagAnswerService {
       if (useRerank) await this.reranker.ensureReady();
       let rewrite: RewriteResult | null = null;
       if (useRewrite) rewrite = await this.rewriter.rewriteQueries(q);
+      if (rewrite) {
+        input.onStage?.(
+          "rag_rewrite",
+          `вариантов ${rewrite.queries.length}${rewrite.fallback ? " (фолбэк: исходный запрос)" : ""}`,
+        );
+      }
 
       // Rewrite guard (a): union by per-chunk max — the original question is
       // always in the pool (store.rankByQueries); fallback → plain rankAll.
@@ -196,6 +205,10 @@ export class RagAnswerService {
       const threshold = await loadDontKnowThreshold();
       const cosineTop1 = hits[0]?.score ?? 0;
       if (threshold !== null && cosineTop1 < threshold) {
+        input.onStage?.(
+          "rag_search",
+          `пул ${hits.length} · косинус top-1 ${round4(cosineTop1)} < порога ${threshold} → dontKnow`,
+        );
         // Canned reply — the answer call is skipped (₽0). The rewrite spend
         // (if any) still lands in the ledger; the payload carries the zero
         // usage literal (design D-4).
@@ -204,7 +217,7 @@ export class RagAnswerService {
           ok: true,
           mode,
           question: q,
-          answer: DONT_KNOW_ANSWER,
+          answer: dontKnowAnswer(q),
           strategy: input.strategy,
           k: input.k,
           sources: [],
@@ -241,6 +254,10 @@ export class RagAnswerService {
         hits = hits.slice(0, input.k);
         keptAfterFilter = hits.length;
       }
+      input.onStage?.(
+        "rag_search",
+        `пул ${poolRanked} → в контексте ${keptAfterFilter} · косинус top-1 ${round4(cosineTop1)}`,
+      );
 
       const assembled = assembleContext(hits);
       contextTokens = assembled.tokens;
@@ -280,9 +297,15 @@ export class RagAnswerService {
 
       // D-3: verify quotes against the actually injected chunks; 0 valid →
       // server_fallback top-fragments (quotes ≥ 1 on every answer path).
+      // Порядок стадий живого трейса: черновик → верификация (Костя 041004)
+      input.onStage?.("rag_answer", "ответ + цитаты (jsonMode) по чанкам контекста");
       const checked = validateQuotes(parsed?.quotes ?? [], assembled.chunks);
       quotes = checked.valid.length > 0 ? checked.valid : serverFallbackQuotes(assembled.chunks);
       const weakGrounding = isWeakGrounding(answer, assembled.chunks);
+      input.onStage?.(
+        "rag_verify",
+        `цитат дословно ${checked.valid.length}/${(parsed?.quotes ?? []).length} · ${checked.valid.length > 0 ? "модель" : "фолбэк-фрагменты"}`,
+      );
 
       // F-04-5: ledger + result.usage see the FULL price (answer + degradation
       // + rewrite summed); the split stays visible in meta below.
@@ -294,6 +317,10 @@ export class RagAnswerService {
         poolRanked,
         keptAfterFilter,
         injectedCount: sources.length,
+        // QA 041003: косинус top-1 и порог — и на «богатом» ходе, не только
+        // в dontKnow-гейте: отсечения по критерию читаются в трейсе всегда.
+        topCosine: round4(cosineTop1),
+        ...(threshold !== null ? { threshold } : {}),
         ...(rerankLatencyMs !== undefined ? { rerankLatencyMs } : {}),
         ...rewriteExtras(rewrite),
         quotes_source: checked.valid.length > 0 ? "model" : "server_fallback",
@@ -534,9 +561,12 @@ const BASELINE_TOOLS: ToolSpec[] = [
   },
 ];
 
-/** Day24 (design D-4): canonical canned reply — the answer call is skipped. */
-const DONT_KNOW_ANSWER =
-  "Не знаю — в базе знаний нет ничего релевантного. Уточните вопрос (мышца, симптом, техника)?";
+/** Day24 (design D-4): canonical canned reply — the answer call is skipped.
+ *  041004 (фидбек Кости по видео): вопрос вшит в отказ — иначе нарратив-модель
+ *  приписывала «в базе нет» соседнему вопросу из истории. */
+function dontKnowAnswer(q: string): string {
+  return `Не знаю — по запросу «${q.slice(0, 120)}» в базе знаний нет ничего релевантного. Уточните вопрос (мышца, симптом, техника)?`;
+}
 
 /** Zero-usage literal (design D-4): the canned dontKnow path spends nothing
  *  on the answer call — same field set as sumUsages' zero seed. */

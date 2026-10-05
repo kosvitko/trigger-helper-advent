@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "rag:index": "tsx src/scripts/build-rag-index.ts",
     "rag:eval": "tsx src/scripts/eval-rag-answer.ts",
+    "rag:eval-chat": "tsx src/scripts/eval-rag-chat.ts",
     "rag:tune": "tsx src/scripts/tune-dontknow.ts && tsx src/scripts/tune-rerank.ts"
   },
   "dependencies": {

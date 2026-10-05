@@ -6,8 +6,8 @@ import { repoRoot } from "./paths.js";
  * Day22 (design addendum §7.4, решение Кости): «обычный» доступ к базе точек —
  * без эмбеддингов, через обзор и чтение карточек. Один источник правды для
  * (a) апгрейда старых тулов list_points/get_point (mcp-server, day17) и
- * (b) tool-loop baseline-режима POST /api/rag/ask. Карточки — data/points/*.md
- * (renderer: tools/content-pipeline/render_cards.py, D-12).
+ * (b) tool-loop baseline-режима day22 (ask-роут снят 04.10, гейт 261004 §7).
+ * Карточки — data/points/*.md (renderer: tools/content-pipeline/render_cards.py, D-12).
  */
 
 const POINTS_DIR = path.join(repoRoot, "data", "points");

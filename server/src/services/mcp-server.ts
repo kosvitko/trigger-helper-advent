@@ -15,7 +15,8 @@ import { listPointCards, readPointCard } from "./rag/point-cards.js";
  * name, caps, atomic write). All other tools remain read-only, no secrets.
  * Day22 (design addendum §7.4, решение Кости): atlas tools upgraded to the
  * point-cards format (data/points/*.md) — list_points = overview, get_point =
- * full card; the same helpers feed the /api/rag/ask baseline tool-loop.
+ * full card; the same helpers fed the day22 baseline tool-loop (its ask
+ * route was removed 04.10, gate 261004 §7).
  */
 
 const ZONE_VALUES = ["head", "arm", "shoulder", "other"] as const;

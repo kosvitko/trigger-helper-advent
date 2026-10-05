@@ -8,6 +8,7 @@ import {
   ProfileStateSchema,
   TaskStateSchema,
   InvariantStateSchema,
+  ChatTaskStateSchema,
   type AgentContextStrategy,
   type AgentMessage,
   type FactsMap,
@@ -16,6 +17,7 @@ import {
   type ProfileState,
   type TaskState,
   type InvariantState,
+  type ChatTaskState,
 } from "@trigger-helper/shared";
 import { z } from "zod";
 
@@ -55,6 +57,9 @@ export type AgentStateSnapshot = {
   taskStates?: Record<string, TaskState>;
   /** Day14 invariant lists — key `${instanceId}|${agentId}`. */
   invariantStates?: Record<string, InvariantState>;
+  /** Day25 chat task state — key `${instanceId}|${threadAgentId}` (диалог).
+   *  Zod-пин 04-F-12: SnapshotSchema ниже обязан иметь поле явно. */
+  chatTaskStates?: Record<string, ChatTaskState>;
 };
 
 const BranchMetaSchema = z.object({
@@ -89,6 +94,9 @@ const SnapshotSchema = z.object({
   taskStates: z.record(z.string(), z.unknown()).catch({}),
   /** Day14: same per-key pattern — corrupt invariant record drops alone. */
   invariantStates: z.record(z.string(), z.unknown()).catch({}),
+  /** Day25 (04-F-12): zod выкидывает неизвестные ключи — поле обязано быть
+   *  здесь явно, иначе chatTaskStates молча исчезнет при загрузке. */
+  chatTaskStates: z.record(z.string(), z.unknown()).catch({}),
 });
 
 const SAVE_DEBOUNCE_MS = 150;
@@ -108,6 +116,7 @@ function emptySnapshot(): AgentStateSnapshot {
     profiles: {},
     taskStates: {},
     invariantStates: {},
+    chatTaskStates: {},
   };
 }
 
@@ -198,6 +207,18 @@ export class AgentStateStore {
           );
         }
       }
+      // Day25: same per-key pattern for chat task states (ключ threadAgentId).
+      const chatTaskStates: Record<string, ChatTaskState> = {};
+      for (const [key, raw] of Object.entries(parsed.chatTaskStates)) {
+        const checked = ChatTaskStateSchema.safeParse(raw);
+        if (checked.success) {
+          chatTaskStates[key] = checked.data;
+        } else {
+          console.warn(
+            `agent-state: chatTaskStates[${key}] повреждена — запись пропущена`,
+          );
+        }
+      }
       return {
         version: AGENT_STATE_VERSION,
         saved_at: parsed.saved_at ?? new Date(0).toISOString(),
@@ -212,6 +233,7 @@ export class AgentStateStore {
         profiles,
         taskStates,
         invariantStates,
+        chatTaskStates,
       };
     } catch (error) {
       console.error(

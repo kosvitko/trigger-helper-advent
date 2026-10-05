@@ -1,16 +1,13 @@
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv } from "./config/env.js";
 import { registerAgentRoutes } from "./routes/agents.js";
-import { registerAskRoutes } from "./routes/ask.js";
-import { registerCompareRoutes } from "./routes/compare.js";
 import { registerHealthRoutes } from "./routes/health.js";
-import { registerMcpRoutes } from "./routes/mcp.js";
-import { registerPipelinesRoutes } from "./routes/pipelines.js";
+import { registerModelsRoutes } from "./routes/models.js";
 import { registerRagRoutes } from "./routes/rag.js";
-import { registerSchedulerRoutes } from "./routes/scheduler.js";
 import { registerUsageRoutes } from "./routes/usage.js";
 import { registerIpRateLimit } from "./plugins/ip-rate-limit.js";import { createInstanceRegistry } from "./services/agent/instance-registry.js";
 import { createDay10StateStore } from "./services/agent/day10-state.js";
@@ -18,6 +15,7 @@ import { createMemoryStateStore } from "./services/agent/memory-state.js";
 import { createProfileStateStore } from "./services/agent/profile-state.js";
 import { createTaskStateStore } from "./services/agent/task-state.js";
 import { createInvariantStateStore } from "./services/agent/invariant-state.js";
+import { createChatTaskStateStore } from "./services/agent/chat-task-state.js";
 import { createLlmAgent } from "./services/agent/llm-agent.js";
 import {
   AGENT_STATE_VERSION,
@@ -26,7 +24,6 @@ import {
 } from "./services/agent/persistence.js";
 import { createThreadStore } from "./services/agent/threads.js";
 import { createDeepSeekService } from "./services/deepseek.js";
-import { createPointsService } from "./services/points.js";
 import { createUsageLedgerService } from "./services/usage-ledger.js";
 import { registerOwnMcpRoute } from "./services/mcp-server.js";
 import { createMcpRegistry } from "./services/mcp-registry.js";
@@ -47,7 +44,6 @@ async function main(): Promise<void> {
   // trustProxy: nginx X-Forwarded-For → real client IP for rate limit
   const app = Fastify({ logger: true, trustProxy: true });
 
-  const pointsService = createPointsService(env.DATA_DIR);
   const deepSeekService = createDeepSeekService(env);
   const usageLedger = createUsageLedgerService(env.USAGE_FILE);
   // Day07: persist agent context across Node restarts (var/agent-state.json)
@@ -127,6 +123,11 @@ async function main(): Promise<void> {
     onChange: () => agentState.scheduleSave(),
   });
   invariantStore.load(savedState.invariantStates);
+  // Day25: лёгкая память задачи мини-чата (ключ threadAgentId, D-4).
+  const chatTaskStateStore = createChatTaskStateStore({
+    onChange: () => agentState.scheduleSave(),
+  });
+  chatTaskStateStore.load(savedState.chatTaskStates ?? {});
   // Day20: MCP registry — own server (in-process specs) + optional externals
   // (MCP_SERVERS). Async boot (tools/list, ≤10 s/server) is awaited before
   // listen; external failures degrade instead of crashing (design §3.1/§3.3).
@@ -137,6 +138,8 @@ async function main(): Promise<void> {
     env.DEMO_CONTEXT_LIMIT,
     // Day20: registry (own + injected externals) — enables overrides.tools.
     mcpRegistry,
+    // Day25: конвейер дня 24 как библиотека для локальной тулзы rag_ask (D-2).
+    ragAnswer,
   );
   agentState.setSnapshotProvider((): AgentStateSnapshot => {
     const state = registry.snapshotState();
@@ -155,19 +158,16 @@ async function main(): Promise<void> {
       profiles: profileState.snapshot(),
       taskStates: taskStateStore.snapshot(),
       invariantStates: invariantStore.snapshot(),
+      chatTaskStates: chatTaskStateStore.snapshot(),
     };
   });
 
   await registerIpRateLimit(app, env);
   await registerHealthRoutes(app);
   await registerUsageRoutes(app, usageLedger, env);
-  await registerAskRoutes(app, {
-    pointsService,
-    deepSeekService,
-    usageLedger,
-    env,
-  });
-  await registerCompareRoutes(app, { deepSeekService, usageLedger, env });
+  // Day05: /api/models (список тиров для SPA) — ask-роут снят 04.10
+  // (гейт 261004 §7), остались только справочники.
+  await registerModelsRoutes(app, { deepSeekService });
   await registerAgentRoutes(app, {
     registry,
     threads,
@@ -179,24 +179,37 @@ async function main(): Promise<void> {
     profileState,
     taskStateStore,
     invariantStore,
+    chatTaskStateStore,
   });
-  // Day16→20: MCP tools listing — own (live) + external servers (snapshot).
-  await registerMcpRoutes(app, { env, registry: mcpRegistry });
   // Day17: own MCP server (product atlas) on POST /mcp — tools/call target.
   // Day22: atlas tools read the point-cards corpus (data/points/*.md, D-12).
   await registerOwnMcpRoute(app, { scheduler, pipelines });
-  // Day18: read-only scheduler state (jobs/counters/last summary).
-  await registerSchedulerRoutes(app, { scheduler });
-  // Day19: saved pipeline files (list + ?name= content).
-  await registerPipelinesRoutes(app, { pipelines });
-  // Day21: read-only RAG stats/search (GET — вне IP rate limit по дизайну).
-  // Day22: + POST /api/rag/ask (в вайтлисте ip-rate-limit, D-5; F-05-1).
-  await registerRagRoutes(app, { rag, ragAnswer, env, ledger: usageLedger });
+  // Day21: read-only RAG stats (GET — вне IP rate limit по дизайну).
+  // 04.10 (гейт 261004 §7): search/ask/eval-роуты сняты со старым UI;
+  // сервисы RAG живут — rag-tool агента (день 25) ходит напрямую.
+  await registerRagRoutes(app, { rag });
 
-  await app.register(fastifyStatic, {
-    root: path.join(serverRoot, "public"),
-    prefix: "/",
-  });
+  // Static 04.10 (старый UI снят — гейт 261004 §7, откат = revert деплоя):
+  // SPA — на «/» и «/app» (записи, закладки): та же dist-сборка, ассеты —
+  // с «/» (base "/"), обе точки входа работают одним билдом. Гард existsSync:
+  // без client-сборки сервер грузится как API-only, статики нет вовсе.
+  // Первая регистрация добавляет sendFile/download-декораторы, вторая —
+  // decorateReply:false (в 8.3.0 нет decoratorName из design; реальный
+  // механизм анти-краша — README плагина).
+  const spaRoot = path.join(serverRoot, "..", "client", "dist");
+  if (fs.existsSync(spaRoot)) {
+    await app.register(fastifyStatic, {
+      root: spaRoot,
+      prefix: "/",
+      wildcard: true,
+    });
+    await app.register(fastifyStatic, {
+      root: spaRoot,
+      prefix: "/app",
+      wildcard: true,
+      decorateReply: false,
+    });
+  }
 
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
 

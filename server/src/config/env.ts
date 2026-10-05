@@ -73,7 +73,7 @@ const envSchema = z.object({
    */
   AGENT_COMPRESS_EVERY: z.coerce.number().int().nonnegative().default(10),
   /**
-   * Per-IP rate limit for costly POSTs (ask / compare / agent / spawn / create).
+   * Per-IP rate limit for costly POSTs (agent run / instance & agent create).
    * 0 = off. Needs trustProxy behind nginx so req.ip = client, not 127.0.0.1.
    */
   RATE_LIMIT_MAX: z.coerce.number().int().nonnegative().default(30),
