@@ -11,21 +11,30 @@
 <script lang="ts">
   // Продуктовая колонка (D-3): лента баблов + «Память задачи» + композер.
   // Телеметрии на лице нет — счётчики/₽ уходят в трейс и настройки.
+  import { getChatPreset } from "@trigger-helper/shared";
   import MessageBubble from "./MessageBubble.svelte";
   import SourcesChip from "./SourcesChip.svelte";
   import Composer from "./Composer.svelte";
   import { dialog } from "../stores/dialog.svelte";
   import { session } from "../stores/session.svelte";
   import { settings } from "../stores/settings.svelte";
+  // trace уже в скоупе из module-script (turnOf) — без повторного импорта.
 
   /** Кликовая синхронизация (Костя 04.10): клик по ассистент-баблу хода —
-   *  обе колонки ставят ход на линию фокуса. */
+  *  обе колонки ставят ход на линию фокуса. */
   let { onalign }: { onalign?: (turnId: string) => void } = $props();
 
   let messages = $derived(dialog.ordered);
+  // C+ CH-5b: дефолт-модель агента умерла вместе с серверными агентами;
+  // правда для чипа — последний живой ход (QA 041003 F3).
   let currentModel = $derived(
-    settings.overrides.model ?? session.activeAgent?.defaultModel ?? "deepseek-chat",
+    settings.overrides.model ?? trace.lastLiveModel() ?? "deepseek-chat",
   );
+  let threadLabel = $derived.by(() => {
+    const t = session.activeThread;
+    if (!t) return "RAG-чат";
+    return t.title || getChatPreset(t.preset)?.label || t.preset;
+  });
 
   // Автоскролл ленты вниз (новое сообщение/typing — единственные триггеры).
   let feedEl = $state<HTMLDivElement | null>(null);
@@ -38,7 +47,7 @@
 
 <div class="col-h">
   Диалог
-  <span class="meta">{session.activeAgent?.label ?? "RAG-чат"} · {currentModel}</span>
+  <span class="meta">{threadLabel} · {currentModel}</span>
 </div>
 
 <div class="feed" bind:this={feedEl} data-feed>

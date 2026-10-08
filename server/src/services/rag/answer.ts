@@ -88,12 +88,18 @@ export interface RagAskSource {
 }
 
 /** Day24 (design D-3/Δ-6): a verified verbatim quote — source/section are
- *  filled server-side from the injected-chunk map by chunk_id. */
+ * filled server-side from the injected-chunk map by chunk_id. Corpus v2
+ * (261005 D-5): quotes matching a marked block carry author+book (ст. 1274:
+ * имя автора + источник доезжает до пользователя); verbatim fragments of our
+ * own fact-prose are marked paraphrase — «по:», не дословная цитата книги. */
 export interface RagAskQuote {
   quote: string;
   chunk_id: string;
   source: string;
   section: string;
+  author?: string;
+  book?: string;
+  paraphrase?: boolean;
 }
 
 export interface RagAskResult {
@@ -659,6 +665,33 @@ function parseStructuredReply(
   }
 }
 
+/** Корпус v2 (261005 D-2/D-5): парс блоков «> цитата» + «> — Автор, «Книга»»
+ * из тела чанка — дословные цитаты с атрибуцией. */
+function parseMarkedQuotes(body: string): { text: string; author: string; book: string }[] {
+  const out: { text: string; author: string; book: string }[] = [];
+  let text: string[] = [];
+  let attribution: string | null = null;
+  const flush = (): void => {
+    if (text.length > 0 && attribution) {
+      const m = attribution.match(/^—\s*(.+?),\s*«(.+?)»/);
+      if (m) out.push({ text: text.join(" ").trim(), author: m[1], book: m[2] });
+    }
+    text = [];
+    attribution = null;
+  };
+  for (const raw of body.split("\n")) {
+    if (!raw.startsWith(">")) {
+      flush();
+      continue;
+    }
+    const ln = raw.slice(1).trim();
+    if (ln.startsWith("—")) attribution = ln;
+    else if (ln) text.push(ln);
+  }
+  flush();
+  return out;
+}
+
 /** Day24 (design D-3): verify model quotes against the actually injected
  *  chunks (post token-trim — not the k-sliced hits). A quote is valid when
  *  its normalized text is a CONTINUOUS substring of the normalized body of
@@ -698,31 +731,57 @@ function validateQuotes(
       continue;
     }
     seen.add(key);
-    valid.push({ quote: quote.trim(), chunk_id: id, source: chunk.source, section: chunk.section });
+    // Корпус v2 (D-5): совпадение с маркированным блоком → автор+книга;
+    // верифицированный фрагмент факт-прозы → paraphrase («по:»).
+    const normMarked = parseMarkedQuotes(chunk.text).map((mq) => ({
+      ...mq,
+      norm: normalizeRu(mq.text),
+    }));
+    const marked = normMarked.find(
+      (mq) => mq.norm.includes(norm) || (norm.includes(mq.norm) && mq.norm.length >= 20),
+    );
+    valid.push({
+      quote: quote.trim(),
+      chunk_id: id,
+      source: chunk.source,
+      section: chunk.section,
+      ...(marked ? { author: marked.author, book: marked.book } : { paraphrase: true }),
+    });
   }
   return { valid, dropped };
 }
 
-/** D-3 server_fallback: the first clean prose paragraph (up to ~240 chars)
- * of the leading injected chunks — markdown headings (#/##…) and bracket
- * title lines are skipped (smoke 03: raw "[title › section]" / "## …"
- * fragments are not readable quotes) — cut from the chunk body, verbatim by
- * construction. */
+/** D-3 server_fallback (корпус v2, 05-MAJOR-3): сперва маркированные цитаты
+ * с атрибуцией; если в чанке их нет — первый чистый абзац факт-прозы с
+ * пометкой paraphrase («по:», не дословная цитата книги). Заголовки (#/##…),
+ * строки-скобки и строки блоков цитат (>) в прозаический кандидат не идут. */
 function serverFallbackQuotes(injected: Map<string, InjectedChunk>, limit = 2): RagAskQuote[] {
   const out: RagAskQuote[] = [];
   for (const [chunk_id, c] of injected) {
+    for (const mq of parseMarkedQuotes(c.text)) {
+      if (out.length >= limit) break;
+      const quote = mq.text.length > 240 ? `${mq.text.slice(0, 240).trimEnd()}…` : mq.text;
+      out.push({
+        quote,
+        chunk_id,
+        source: c.source,
+        section: c.section,
+        author: mq.author,
+        book: mq.book,
+      });
+    }
     if (out.length >= limit) break;
     const clean = c.text
       .split("\n")
       .filter((ln) => {
         const t = ln.trim();
-        return t && !/^#{1,6}\s/.test(t) && !/^\[.*\]$/.test(t);
+        return t && !/^#{1,6}\s/.test(t) && !/^\[.*\]$/.test(t) && !t.startsWith(">");
       })
       .join("\n");
     const paragraph = (clean.split(/\n\s*\n/)[0] ?? clean).trim();
     if (!paragraph) continue;
-    const quote = paragraph.length > 240 ? paragraph.slice(0, 240).trimEnd() : paragraph;
-    out.push({ quote, chunk_id, source: c.source, section: c.section });
+    const quote = paragraph.length > 240 ? `${paragraph.slice(0, 240).trimEnd()}…` : paragraph;
+    out.push({ quote, chunk_id, source: c.source, section: c.section, paraphrase: true });
   }
   return out;
 }

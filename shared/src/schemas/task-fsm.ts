@@ -1,15 +1,15 @@
-import type {
-  InvariantRow,
-  TaskCreate,
-  TaskPatch,
-  TaskStage,
-  TaskState,
-  TaskTransition,
-} from "@trigger-helper/shared";
-
-export type TaskStateOptions = {
-  onChange?: () => void;
-};
+import type { InvariantRow, TaskStage, TaskState } from "./agent.js";
+/**
+ * C+ (CH-5a, D-4): чистая логика FSM задачи и проверок — в shared.
+ * День13: хранение состояния — клиент (contextTail.task), гварды
+ * переходов — один источник здесь (переходы задаёт код, не промпт).
+ * День14: инварианты — строки-клиент, но проверки-сервер per-request
+ * (защита владельца + гейт платного ретрая не могут жить на клиенте) —
+ * чистые функции здесь, сервер зовёт их в /api/chat.
+ * Перенесено дословно из server/services/agent/task-state.ts (05.10);
+ * с cutover CH-6 серверного хранилища нет — операции FSM (ниже) тоже
+ * живут здесь, клиент применяет их к локальной задаче.
+ */
 
 /**
  * Day13 D-2: canonical transitions (лекция недели 3 — 4 этапа не уменьшать;
@@ -60,193 +60,6 @@ const SKIP_DEMAND_RE =
 
 export function isStageSkipDemand(input: string): boolean {
   return SKIP_DEMAND_RE.test(input);
-}
-
-function keyOf(instanceId: string, agentId: string): string {
-  return `${instanceId}|${agentId}`;
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-export type TaskTransitionResult =
-  | { kind: "ok"; state: TaskState }
-  | { kind: "not_found" }
-  | {
-      kind: "invalid";
-      from: TaskStage;
-      to?: TaskStage;
-      allowed?: TaskStage[];
-      message: string;
-      /** Day14 D-6: goto→done без подтверждения пользователя. */
-      consentRequired?: boolean;
-    };
-
-/**
- * Day13: per-agent task FSM — key `${instanceId}|${agentId}`, одна активная
- * задача на агента (ветки #a/#b не дублируют задачу). get() чистый;
- * onChange — только при успешной мутации (409-спам не пишет на диск).
- */
-export class TaskStateStore {
-  private readonly byKey = new Map<string, TaskState>();
-  private readonly onChange: (() => void) | undefined;
-
-  constructor(opts: TaskStateOptions = {}) {
-    this.onChange = opts.onChange;
-  }
-
-  get(instanceId: string, agentId: string): TaskState | null {
-    const found = this.byKey.get(keyOf(instanceId, agentId));
-    return found ? this.copy(found) : null;
-  }
-
-  create(instanceId: string, agentId: string, data: TaskCreate): TaskState | "exists" {
-    const key = keyOf(instanceId, agentId);
-    if (this.byKey.has(key)) return "exists";
-    const task: TaskState = {
-      id: crypto.randomUUID(),
-      title: data.title,
-      stage: "planning",
-      step: 1,
-      plan: [...data.plan],
-      expectedAction: data.expectedAction?.trim() || data.plan[0]!,
-      paused: false,
-      pausedFrom: null,
-      lastStageNote: "",
-      updatedAt: nowIso(),
-    };
-    this.byKey.set(key, task);
-    this.onChange?.();
-    return this.copy(task);
-  }
-
-  transition(
-    instanceId: string,
-    agentId: string,
-    command: TaskTransition,
-  ): TaskTransitionResult {
-    const key = keyOf(instanceId, agentId);
-    const task = this.byKey.get(key);
-    if (!task) return { kind: "not_found" };
-    const from = task.stage;
-    const fail = (
-      message: string,
-      extra?: { to?: TaskStage; allowed?: TaskStage[] },
-    ) => ({
-      kind: "invalid" as const,
-      from,
-      to: extra?.to,
-      allowed: extra?.allowed,
-      message,
-    });
-
-    if (command.action === "goto") {
-      const to = command.to;
-      if (!to) return fail("Для goto обязателен to");
-      if (from === "done") return fail("Задача завершена — начните новую", { to });
-      if (task.paused) return fail("Пауза замораживает машину — сначала resume", { to });
-      if (!canTransition(from, to)) {
-        return fail(`Переход ${from} → ${to} запрещён`, {
-          to,
-          allowed: [...ALLOWED_TRANSITIONS[from]],
-        });
-      }
-      // Day14 D-6: инвариант согласия — последний гвард goto-ветки (после
-      // карты): без consent на запрещённом переходе клиент получает
-      // каноничный 409 с allowed[], а не consentRequired.
-      if (to === "done" && command.consent !== true) {
-        return {
-          kind: "invalid",
-          from,
-          to,
-          message: "Переход в done требует подтверждения пользователя",
-          consentRequired: true,
-        };
-      }
-      task.stage = to;
-      task.updatedAt = nowIso();
-      this.byKey.set(key, task);
-      this.onChange?.();
-      return { kind: "ok", state: this.copy(task) };
-    }
-
-    if (command.action === "pause") {
-      if (from === "done") return fail("Завершённую задачу нельзя поставить на паузу");
-      if (task.paused) return fail("Задача уже на паузе");
-      task.paused = true;
-      task.pausedFrom = from;
-      task.updatedAt = nowIso();
-      this.byKey.set(key, task);
-      this.onChange?.();
-      return { kind: "ok", state: this.copy(task) };
-    }
-
-    if (command.action === "resume") {
-      if (!task.paused) return fail("Задача не на паузе");
-      task.paused = false;
-      task.pausedFrom = null;
-      task.updatedAt = nowIso();
-      this.byKey.set(key, task);
-      this.onChange?.();
-      return { kind: "ok", state: this.copy(task) };
-    }
-
-    // next_step: только в execution (шаг — execution-термин), не на последнем шаге.
-    if (from !== "execution") return fail("Шаг меняется только в execution");
-    if (task.step >= task.plan.length) return fail("Это последний шаг плана");
-    task.step += 1;
-    task.expectedAction = task.plan[task.step - 1]!;
-    task.updatedAt = nowIso();
-    this.byKey.set(key, task);
-    this.onChange?.();
-    return { kind: "ok", state: this.copy(task) };
-  }
-
-  /** PATCH при paused разрешён (заморожены только stage/step/переходы). */
-  patch(instanceId: string, agentId: string, patch: TaskPatch): TaskState | null {
-    const key = keyOf(instanceId, agentId);
-    const task = this.byKey.get(key);
-    if (!task) return null;
-    if (patch.title !== undefined) task.title = patch.title;
-    if (patch.expectedAction !== undefined) task.expectedAction = patch.expectedAction;
-    if (patch.lastStageNote !== undefined) task.lastStageNote = patch.lastStageNote;
-    if (patch.plan !== undefined) {
-      task.plan = [...patch.plan];
-      // Clamp: после укорачивания плана шаг не может указывать за пределы.
-      task.step = Math.min(task.step, task.plan.length);
-    }
-    task.updatedAt = nowIso();
-    this.byKey.set(key, task);
-    this.onChange?.();
-    return this.copy(task);
-  }
-
-  remove(instanceId: string, agentId: string): boolean {
-    const removed = this.byKey.delete(keyOf(instanceId, agentId));
-    if (removed) this.onChange?.();
-    return removed;
-  }
-
-  clearAgent(instanceId: string, agentId: string): void {
-    this.byKey.delete(keyOf(instanceId, agentId));
-    this.onChange?.();
-  }
-
-  snapshot(): Record<string, TaskState> {
-    return Object.fromEntries([...this.byKey.entries()].map(([k, v]) => [k, this.copy(v)]));
-  }
-
-  load(map: Record<string, TaskState> | undefined): void {
-    this.byKey.clear();
-    for (const [k, v] of Object.entries(map ?? {})) {
-      this.byKey.set(k, this.copy(v));
-    }
-  }
-
-  private copy(task: TaskState): TaskState {
-    return { ...task, plan: [...task.plan] };
-  }
 }
 
 const PLANNING_HINTS = ["план", "предлагаю", "уточн", "давайте определим"];
@@ -396,6 +209,110 @@ export function validateTaskReply(
   return { ok: true, level: "ok", note: "Задача завершена" };
 }
 
-export function createTaskStateStore(opts?: TaskStateOptions): TaskStateStore {
-  return new TaskStateStore(opts);
+// --- C+ хвосты (UI-долг волны): операции FSM — на клиенте -------------------
+// День 13/14/15: мутации задачи жили в серверном TaskStateStore (снят CH-6,
+// D-10); хранение — клиент (contextTail.task). Правила перенесены дословно
+// из снятого стора: карта переходов + согласие на done, пауза морозит FSM,
+// next_step — только execution и не последний шаг, PATCH клампит шаг.
+
+export type TaskCommand =
+  | { action: "goto"; to: TaskStage; consent?: boolean }
+  | { action: "pause" }
+  | { action: "resume" }
+  | { action: "next_step" };
+
+export type TaskCommandResult =
+  | { kind: "ok"; task: TaskState }
+  | {
+      kind: "invalid";
+      message: string;
+      allowed?: TaskStage[];
+      /** goto→done без согласия — UI показывает подтверждение и повторяет. */
+      consentRequired?: boolean;
+    };
+
+/** Создание задачи (id — за вызывающим: клиент генерит uid). */
+export function createTaskState(
+  input: { id: string; title: string; plan: string[]; expectedAction?: string },
+  now: () => string = () => new Date().toISOString(),
+): TaskState {
+  const plan = [...input.plan];
+  return {
+    id: input.id,
+    title: input.title,
+    stage: "planning",
+    step: 1,
+    plan,
+    expectedAction: input.expectedAction?.trim() || plan[0] || "",
+    paused: false,
+    pausedFrom: null,
+    lastStageNote: "",
+    updatedAt: now(),
+  };
+}
+
+/** Команда FSM → новое состояние (иммутабельно) или каноничная ошибка. */
+export function applyTaskCommand(
+  task: TaskState,
+  command: TaskCommand,
+  now: () => string = () => new Date().toISOString(),
+): TaskCommandResult {
+  const updated = (patch: Partial<TaskState>): TaskCommandResult => ({
+    kind: "ok",
+    task: { ...task, ...patch, updatedAt: now() },
+  });
+
+  if (command.action === "goto") {
+    const to = command.to;
+    if (task.stage === "done") {
+      return { kind: "invalid", message: "Задача завершена — начните новую" };
+    }
+    if (task.paused) {
+      return { kind: "invalid", message: "Пауза замораживает машину — сначала resume" };
+    }
+    if (!canTransition(task.stage, to)) {
+      return {
+        kind: "invalid",
+        message: `Переход ${task.stage} → ${to} запрещён`,
+        allowed: [...ALLOWED_TRANSITIONS[task.stage]],
+      };
+    }
+    // День 14 D-6: goto→done без согласия — каноничный consentRequired,
+    // а не «запрещено» (после карты переходов).
+    if (to === "done" && command.consent !== true) {
+      return {
+        kind: "invalid",
+        message: "Переход в done требует подтверждения пользователя",
+        consentRequired: true,
+      };
+    }
+    return updated({ stage: to });
+  }
+
+  if (command.action === "pause") {
+    if (task.stage === "done") {
+      return { kind: "invalid", message: "Завершённую задачу нельзя поставить на паузу" };
+    }
+    if (task.paused) {
+      return { kind: "invalid", message: "Задача уже на паузе" };
+    }
+    return updated({ paused: true, pausedFrom: task.stage });
+  }
+
+  if (command.action === "resume") {
+    if (!task.paused) {
+      return { kind: "invalid", message: "Задача не на паузе" };
+    }
+    return updated({ paused: false, pausedFrom: null });
+  }
+
+  // next_step: только в execution (шаг — execution-термин), не последний.
+  if (task.stage !== "execution") {
+    return { kind: "invalid", message: "Шаг меняется только в execution" };
+  }
+  if (task.step >= task.plan.length) {
+    return { kind: "invalid", message: "Это последний шаг плана" };
+  }
+  const step = task.step + 1;
+  return updated({ step, expectedAction: task.plan[step - 1] ?? task.expectedAction });
 }

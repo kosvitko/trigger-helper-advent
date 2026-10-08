@@ -39,6 +39,30 @@ export const PROBES: Probe[] = [
   { q: "головокружение и шаткость при повороте головы", expectSources: ["data/points/masseter.md", "data/points/sternocleidomastoideus.md"] },
   { q: "«синусит», который не поддаётся лечению", expectSources: ["data/points/masseter.md", "data/points/pterygoideus-lateralis.md"] },
   { q: "боль в височно-нижнечелюстном суставе при жевании", expectSources: ["data/points/masseter.md", "data/points/pterygoideus-lateralis.md", "data/points/pterygoideus-medialis.md", "data/points/sternocleidomastoideus.md"] },
+  // CH-3 (корпус v2, дизайн D-7, 05.10): расширение 12 → 32 on-corpus для честного
+  // бейзлайна hit@1 (шаг 0.083 на пробу был слишком груб для гейта «до/после»);
+  // ожидания проверены grep-покрытием по data/points (правило day-21: шумные
+  // пробы губят метрику). Бытовые формулировки помечены «(бытовая)».
+  { q: "отёк и мурашки в кисти без травмы — какая мышца", expectSources: ["data/points/pectoralis-minor.md"] },
+  { q: "звон в ухе с одной стороны — может ли это быть мышца", expectSources: ["data/points/pterygoideus-lateralis.md", "data/points/sternocleidomastoideus.md"] },
+  { q: "щёлкает в челюсти при открывании рта (бытовая)", expectSources: ["data/points/pterygoideus-lateralis.md", "data/points/sternocleidomastoideus.md"] },
+  { q: "обмороки при повороте головы — о чём это", expectSources: ["data/points/sternocleidomastoideus.md"] },
+  { q: "болит нёбо, как при простуде, но простуды нет", expectSources: ["data/points/pterygoideus-medialis.md"] },
+  { q: "картинка иногда расплывается — при чём тут мышцы", expectSources: ["data/points/pterygoideus-medialis.md"] },
+  { q: "ком в горле, трудно глотать (бытовая)", expectSources: ["data/points/digastricus-mm-mylohyoideus-stylohyoideus-mm-longus-capitis-et-longus-colli.md"] },
+  { q: "осиплость голоса к вечеру — какая мышца", expectSources: ["data/points/digastricus-mm-mylohyoideus-stylohyoideus-mm-longus-capitis-et-longus-colli.md"] },
+  { q: "ноют верхние зубы, стоматолог не находит причин", expectSources: ["data/points/temporalis.md"] },
+  { q: "болят дёсны, хотя с зубами всё в порядке", expectSources: ["data/points/buccinator.md", "data/points/masseter.md"] },
+  { q: "жжение между лопатками — какая мышца", expectSources: ["data/points/infraspinatus.md", "data/points/mm-scaleni-anterior-medius-posterior-minimus.md"] },
+  { q: "скованность в шее, голова тяжёлая (бытовая)", expectSources: ["data/points/mm-suboccipitales.md"] },
+  { q: "не хватает сил застегнуть молнию куртки — ноет запястье (бытовая)", expectSources: ["data/points/flexor-carpi-radialis-m-flexor-carpi-ulnaris-m-flexor-digitorum-superficialis-m-flexor-digitorum-profundus-m-flexor-pollicis-longus.md"] },
+  { q: "тяжело нести сумку, ноет плечо (бытовая)", expectSources: ["data/points/deltoideus.md", "data/points/supraspinatus.md", "data/points/teres-minor.md", "data/points/musculus-brachialis.md"] },
+  { q: "болит висок с одной стороны, думал, зуб (бытовая)", expectSources: ["data/points/masseter.md", "data/points/temporalis.md"] },
+  { q: "не завести руку за спину — тянет в плече (бытовая)", expectSources: ["data/points/musculus-coracobrachialis.md", "data/points/pectoralis-minor.md"] },
+  { q: "жжёт ладонь и запястье изнутри — какая мышца", expectSources: ["data/points/flexor-carpi-radialis-m-flexor-carpi-ulnaris-m-flexor-digitorum-superficialis-m-flexor-digitorum-profundus-m-flexor-pollicis-longus.md", "data/points/musculus-palmaris-longus.md"] },
+  { q: "трудно писать карандашом и щипать — болит большой палец (бытовая)", expectSources: ["data/points/adductor-pollicis-m-opponens-pollicis.md"] },
+  { q: "ноет лоб, когда морщусь и хмурюсь (бытовая)", expectSources: ["data/points/occipitofrontalis.md"] },
+  { q: "лицо болит при гримасах и широкой улыбке (бытовая)", expectSources: ["data/points/mm-cutanei-m-orbicularis-oculi-m-zygomaticus-major-m-platysma.md", "data/points/platysma.md"] },
   // Day24 (design D-4, Δ-3): off-corpus — порог «не знаю» обязан пройти
   // через near-miss дистракторы (массаж/растяжка спины — про тело, но не
   // триггерные точки) + дальний домен; expectSources пуст по определению.

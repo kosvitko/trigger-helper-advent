@@ -1,9 +1,16 @@
-import type { AgentPreset } from "@trigger-helper/shared";
+import type { AgentPreset } from "./agent.js";
+
+/**
+ * C+ (CH-1, 05-MINOR-3): таблица пресетов живёт в shared — `GET /api/agents`
+ * отдаёт её дословно; сервер и клиент видят один конфиг (политики ввода,
+ * дефолтные модель/температура). Сервер строит system-prompt только из
+ * неё (SEC-F3 — монополия ролей).
+ */
 
 const DISCLAIMER =
   "Образовательный self-care, не меддиагностика. Не замена врача или массажиста.";
 
-export const AGENT_PRESETS: AgentPreset[] = [
+export const CHAT_PRESETS: AgentPreset[] = [
   {
     id: "care",
     label: "Care",
@@ -57,11 +64,11 @@ export const AGENT_PRESETS: AgentPreset[] = [
   },
 ];
 
-export function getPreset(id: string): AgentPreset | undefined {
-  return AGENT_PRESETS.find((p) => p.id === id);
+export function getChatPreset(id: string): AgentPreset | undefined {
+  return CHAT_PRESETS.find((p) => p.id === id);
 }
 
-export function buildSystemPrompt(presetLike: {
+export function buildPresetSystemPrompt(presetLike: {
   role: string;
   instructions: string;
   layers: AgentPreset["layers"];

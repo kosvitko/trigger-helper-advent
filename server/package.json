@@ -10,7 +10,8 @@
     "rag:index": "tsx src/scripts/build-rag-index.ts",
     "rag:eval": "tsx src/scripts/eval-rag-answer.ts",
     "rag:eval-chat": "tsx src/scripts/eval-rag-chat.ts",
-    "rag:tune": "tsx src/scripts/tune-dontknow.ts && tsx src/scripts/tune-rerank.ts"
+    "rag:tune": "tsx src/scripts/tune-dontknow.ts && tsx src/scripts/tune-rerank.ts",
+    "local-llm:check": "tsx src/scripts/local-llm-check.ts"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",

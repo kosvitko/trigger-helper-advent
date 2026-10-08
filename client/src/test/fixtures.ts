@@ -1,16 +1,17 @@
 /**
- * Юнит-фикстуры: валидные образцы контрактов @trigger-helper/shared.
- * Формы выведены из zod-схем (AgentRunResponseSchema и соседи) и формы
+ * UNIT-фикстуры: валидные образцы живых контрактов @trigger-helper/shared
+ * (C+ «только новое»: stateless-ход + локальные сущности) и форма
  * rag_ask-payload сервера (server/src/services/agent/rag-tool.ts,
- * RagToolPayload) — реалистичность проверяется тестом fixtures.test.ts
- * через safeParse самих схем.
+ * RagToolPayload) — реалистичность проверяется fixtures.test.ts через
+ * safeParse схем.
  */
 import type {
   AgentInstance,
   AgentMessage,
-  AgentRunResponse,
+  ChatMemoryDelta,
+  ChatResponse,
   ChatTaskState,
-  Instance,
+  ContextTrimInfo,
   LlmUsage,
 } from "@trigger-helper/shared";
 
@@ -47,16 +48,6 @@ export function makeAgent(p: Partial<AgentInstance> = {}): AgentInstance {
     outputPolicy: { trim: true, maxChars: 4000, formatHint: "soft" },
     defaultModel: "deepseek-chat",
     defaultTemperature: 0.3,
-    ...p,
-  };
-}
-
-export function makeInstance(p: Partial<Instance> = {}): Instance {
-  return {
-    id: uid("inst"),
-    label: "Демо · сессия",
-    agents: [],
-    createdAt: "2026-10-02T09:00:00.000Z",
     ...p,
   };
 }
@@ -216,61 +207,28 @@ export function ragDontKnowPayload(question: string): RagPayloadFixture {
   };
 }
 
-/** Ответ run-хода. rag=null — ход без тузы (простой агент/диалог-тесты). */
-export function makeRunResponse(
+/** Ответ stateless-хода POST /api/chat (C+ CH-5b). rag=null — ход без тузы. */
+export function makeChatResponse(
   p: {
-    input?: string;
-    messageId?: string;
+    reply?: string;
     rag?: RagPayloadFixture | null;
     railViolated?: boolean;
-    chatTask?: ChatTaskState | null;
-    assistantText?: string;
+    compress?: { summary: string; keptTail: { role: "user" | "assistant"; content: string }[] } | null;
+    contextTrimmed?: ContextTrimInfo | null;
+    memoryDelta?: ChatMemoryDelta | null;
   } = {},
-): AgentRunResponse {
-  const input = p.input ?? "Болит шея справа, что делать?";
-  const rag = p.rag === undefined ? ragOkPayload(input) : p.rag;
+): ChatResponse {
+  const rag = p.rag === undefined ? ragOkPayload("как помочь при боли в шее?") : p.rag;
   const reply =
-    p.assistantText ??
+    p.reply ??
     (rag && !rag.dontKnow
-      ? "Чтобы снять боль в шее справа, работайте с верхней порцией трапеции [travell-guide › Шея] и проверьте верх грудного отдела [travell-guide › Верх спины]."
+      ? "Чтобы снять боль в шее, работайте с верхней порцией трапеции [travell-guide › Шея]."
       : "В базе нет релевантного материала по этому вопросу — не буду выдумывать.");
   const usage = makeUsage();
-  const agentId = "agent-run";
   return {
     reply,
-    message: {
-      id: p.messageId ?? uid("msg"),
-      role: "assistant",
-      content: reply,
-      agentId,
-      model: "deepseek-chat",
-      latency_ms: 2100,
-      usage,
-      cost_rub: 0.0154,
-      createdAt: "2026-10-03T09:30:00.000Z",
-    },
-    agent: {
-      id: agentId,
-      label: "RAG-чат",
-      presetId: "rag_chat",
-      role: "Помощник по самопомощи",
-      policies: {
-        input: { trim: true, maxChars: 4000, requireNonEmpty: true },
-        output: { trim: true, maxChars: 4000, formatHint: "soft" },
-      },
-      layers: {
-        strategic: "Помогай найти триггерные точки и подобрать самопомощь.",
-        operational: "Опирайся только на базу знаний; нет данных — скажи прямо.",
-        task: "Текущая задача: разбор боли пользователя.",
-      },
-      model: "deepseek-chat",
-      temperature: 0.3,
-      overridesApplied: { model: false, temperature: false },
-    },
-    usage,
-    latency_ms: 2100,
-    context: {
-      historyMessages: [{ role: "user", content: input }],
+    trace: {
+      historyMessages: [{ role: "user", content: "вопрос" }],
       ...(rag
         ? {
             tool: {
@@ -287,8 +245,13 @@ export function makeRunResponse(
             },
           }
         : {}),
-      ...(p.chatTask ? { chatTaskState: p.chatTask } : {}),
+      ...(p.contextTrimmed ? { contextTrimmed: p.contextTrimmed } : {}),
     },
+    usage,
+    ...(p.memoryDelta === null
+      ? {}
+      : { memoryDelta: p.memoryDelta ?? { facts: [], chatTask: {} } }),
+    ...(p.compress ? { compress: p.compress } : {}),
     ...(p.railViolated !== undefined ? { meta: { railViolated: p.railViolated } } : {}),
   };
 }

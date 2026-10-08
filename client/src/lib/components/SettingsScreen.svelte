@@ -1,10 +1,23 @@
 <script lang="ts">
-  // Экран настроек (D-5): 4 секции — только консолидация существующих ручек.
-  // Модель / Контекст и память / Поиск по базе / Агенты и сессии.
+  // Экран настроек (D-5): секции — только консолидация существующих ручек.
+  // Модель / Контекст и память / Поиск по базе / Интерфейс /
+  // Данные на устройстве (C+ CH-5b: экспорт/импорт локальных тредов, 02-F9).
   import { settings } from "../stores/settings.svelte";
+  import { session } from "../stores/session.svelte";
+  import { dialog } from "../stores/dialog.svelte";
   import { api } from "../api";
+  import type { LocalModelEntry } from "@trigger-helper/shared";
+  import { applyImportFile, buildExportFile } from "../storage/th-local";
+  import {
+    PROFILES_MAX,
+    getProfileState,
+    removeProfile,
+    setActiveProfile,
+    upsertProfile,
+    type ProfileStateRecord,
+  } from "../profile-state";
+  import { uid } from "../uid";
 
-  let models = $state<{ model: string; label: string; via: string }[]>([]);
   let ragStats = $state<Awaited<ReturnType<typeof api.ragStats>> | null>(null);
   /** Серверный дефолт автосжатия (AGENT_COMPRESS_EVERY) — фолбэк для поля. */
   let compressDefault = $state<number | null>(null);
@@ -29,13 +42,11 @@
     }
   }
 
-  // Загрузка списка моделей и RAG-статистики
+  // Загрузка RAG-статистики и серверного дефолта автосжатия. Модели здесь
+  // больше НЕ дублируются (день 26): settings.loadModels() тянет /api/models
+  // один раз на буте (Shell.svelte) — единый источник для экрана и чипа.
   $effect(() => {
     void (async () => {
-      try {
-        const res = await api.getModels();
-        models = res.models.map((m) => ({ model: m.model, label: m.label, via: m.via }));
-      } catch { /* fail-open: пустой список — дефолт agenta */ }
       try {
         ragStats = await api.ragStats();
       } catch { /* read-only, сбой не критичен */ }
@@ -45,12 +56,151 @@
     })();
   });
 
+  /* — Локальная модель (день 26, D-26-4): статус рантайма + каталог.
+     Поля runtimeOk в контракте нет — клиентская эвристика: рантайм поднят,
+     если секция включена и хотя бы одна модель установлена (при лежащем
+     рантайме или kill-switch сервер отдаёт installed=false у всех записей).
+     Бейджи — из D-26-4: «доступна / мало RAM / не установлена /
+     рантайм недоступен»; недоступная запись видна, но не выбирается. — */
+  const localRuntimeOk = $derived(
+    settings.localModels !== null &&
+      settings.localModels.enabled &&
+      settings.localModels.entries.some((e) => e.installed),
+  );
+  const localStatus = $derived(
+    settings.localModels === null
+      ? "недоступен" // каталог ещё не загружен / сервер не ответил
+      : !settings.localModels.enabled
+        ? "отключён" // kill-switch LOCAL_LLM_ENABLED
+        : localRuntimeOk
+          ? "доступен"
+          : "недоступен",
+  );
+
+  function localBadge(e: LocalModelEntry): string {
+    if (!localRuntimeOk) return "рантайм недоступен";
+    if (e.available) return "доступна";
+    if (!e.fitsRam) return "мало RAM";
+    if (!e.installed) return "не установлена";
+    return "рантайм недоступен";
+  }
+
   const sections = [
     { id: "model", label: "Модель", icon: "🧠" },
+    { id: "local", label: "Локальная модель", icon: "🖥️" },
     { id: "context", label: "Контекст и память", icon: "📚" },
     { id: "search", label: "Поиск по базе", icon: "🔎" },
     { id: "interface", label: "Интерфейс", icon: "🎨" },
+    { id: "profile", label: "Профиль", icon: "🧑" },
+    { id: "data", label: "Данные (на устройстве)", icon: "💾" },
   ];
+
+  /* — Профиль (день 12, C+ хвосты): глобальная персонализация — один
+     активный профиль на пользователя (семантика instance-level router),
+     едет в contextTail.profile каждого хода. — */
+  let profileState = $state<ProfileStateRecord>(getProfileState());
+  let editingProfile = $state<string | null>(null); // id | "new" | null
+  let pLabel = $state("");
+  let pStyle = $state("");
+  let pFormat = $state("");
+  let pConstraints = $state("");
+
+  function refreshProfiles(): void {
+    profileState = getProfileState();
+  }
+
+  function constraintLines(s: string): string[] {
+    return s
+      .split(/\n+/)
+      .map((x) => x.trim().slice(0, 80))
+      .filter(Boolean)
+      .slice(0, 5);
+  }
+
+  function startNewProfile(): void {
+    editingProfile = "new";
+    pLabel = "";
+    pStyle = "";
+    pFormat = "";
+    pConstraints = "";
+  }
+
+  function startEditProfile(id: string): void {
+    const p = profileState.profiles.find((x) => x.id === id);
+    if (!p) return;
+    editingProfile = id;
+    pLabel = p.label;
+    pStyle = p.style ?? "";
+    pFormat = p.format ?? "";
+    pConstraints = (p.constraints ?? []).join("\n");
+  }
+
+  function saveProfile(): void {
+    if (!pLabel.trim()) return;
+    const id = editingProfile === "new" || editingProfile === null ? uid() : editingProfile;
+    upsertProfile({
+      id,
+      label: pLabel.trim().slice(0, 120),
+      ...(pStyle.trim() ? { style: pStyle.trim().slice(0, 200) } : {}),
+      ...(pFormat.trim() ? { format: pFormat.trim().slice(0, 200) } : {}),
+      constraints: constraintLines(pConstraints),
+      updatedAt: new Date().toISOString(),
+    });
+    editingProfile = null;
+    refreshProfiles();
+  }
+
+  /* — Данные на устройстве (C+ CH-5b, D-7): облака нет — только localStorage;
+     «последний импорт выигрывает» (02-F9), экспорт — регулярная привычка. — */
+  let dataMessage = $state("");
+  let dataError = $state(false);
+
+  function exportData(): void {
+    const file = buildExportFile();
+    const blob = new Blob([JSON.stringify(file, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `trigger-helper-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    const counts = Object.entries(file.collections)
+      .map(([name, rows]) => `${name}: ${rows.length}`)
+      .join(" · ");
+    dataMessage = `Экспортировано — ${counts || "пусто"}`;
+    dataError = false;
+  }
+
+  async function onImportFile(e: Event): Promise<void> {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const raw: unknown = JSON.parse(await file.text());
+      const result = applyImportFile(raw);
+      if (!result.ok) {
+        dataMessage = "файл не распознан";
+        dataError = true;
+        return;
+      }
+      const imported = Object.entries(result.imported)
+        .map(([name, n]) => `${name}: ${n}`)
+        .join(" · ");
+      const dropped = Object.entries(result.dropped)
+        .map(([name, n]) => `${name}: отброшено ${n}`)
+        .join(" · ");
+      dataMessage =
+        `Импортировано — ${imported || "ничего"}` + (dropped ? ` (${dropped})` : "");
+      dataError = false;
+      session.reloadThreads();
+      void dialog.loadThread().catch(() => undefined);
+    } catch {
+      dataMessage = "файл не распознан";
+      dataError = true;
+    } finally {
+      input.value = ""; // повторный выбор того же файла снова зовёт onchange
+    }
+  }
 </script>
 
 <div class="settings">
@@ -78,7 +228,7 @@
           <div class="lbl"><b>Модель ответов</b><span>Генерирует нарратив поверх найденного</span></div>
           <select bind:value={settings.overrides.model} onchange={() => settings.persist()}>
             <option value="">по умолчанию агента</option>
-            {#each models as m (m.model)}
+            {#each settings.models as m (m.model)}
               <option value={m.model}>{m.label} · {m.model}</option>
             {/each}
           </select>
@@ -99,20 +249,42 @@
           ></button>
         </div>
       </div>
-    {:else if openSection === "context"}
-      <h2>Контекст и память</h2>
-      <p class="sub">Стратегии работы с историей диалога (день 10) и автосжатие (день 09).</p>
+    {:else if openSection === "local"}
+      <h2>Локальная модель</h2>
+      <p class="sub">Ollama на этом устройстве: ответы без сети и без списания бюджета. В RAG-чате локальная модель отвечает одной ходкой без поиска по базе — в чипе модели есть пометка «без RAG».</p>
 
       <div class="card">
         <div class="row">
-          <div class="lbl"><b>Стратегия истории</b><span>Как хранится контекст между ходами</span></div>
-          <select bind:value={settings.overrides.contextStrategy} onchange={() => settings.persist()}>
-            <option value="">по умолчанию агента</option>
-            <option value="sliding">Скользящее окно</option>
-            <option value="facts">Факты</option>
-            <option value="branching">Ветвление</option>
+          <div class="lbl"><b>Рантайм Ollama</b><span>Локальный рантайм (127.0.0.1:11434): включён и отвечает</span></div>
+          <span class="value">{localStatus}</span>
+        </div>
+        <div class="row">
+          <div class="lbl"><b>Локальная модель ответов</b><span>Та же ручка, что «Модель ответов»; действует на новые ходы</span></div>
+          <select bind:value={settings.overrides.model} onchange={() => settings.persist()} aria-label="Локальная модель">
+            <option value="">не использовать</option>
+            {#each settings.localModels?.entries ?? [] as e (e.id)}
+              <option value={e.id} disabled={!e.available}>{e.label} · {localBadge(e)}</option>
+            {/each}
           </select>
         </div>
+        {#each settings.localModels?.entries ?? [] as e (e.id)}
+          <div class="row">
+            <div class="lbl">
+              <b>{e.label}</b>
+              <span>{e.id} · ≈{e.sizeMb} МБ на диске</span>
+            </div>
+            <span class="value">{localBadge(e)}</span>
+          </div>
+        {/each}
+        {#if settings.localModels === null}
+          <div class="row"><div class="lbl"><b>Каталог недоступен</b><span>Сервер не ответил или формат изменился</span></div></div>
+        {/if}
+      </div>
+    {:else if openSection === "context"}
+      <h2>Контекст и память</h2>
+      <p class="sub">Автосжатие истории (день 09) — триггер на клиенте; стратегии историй умерли вместе с серверными тредами.</p>
+
+      <div class="card">
         <div class="row">
           <div class="lbl"><b>Автосжатие каждые N сообщений</b><span>0 = выключено; экономия токенов на длинных диалогах{compressDefault !== null ? ` · по умолчанию сервера: ${compressDefault}` : ""}</span></div>
           <input
@@ -175,6 +347,89 @@
             <option value="dark">Тёмная</option>
           </select>
         </div>
+      </div>
+    {:else if openSection === "profile"}
+      <h2>Профиль</h2>
+      <p class="sub">Персонализация ответов (день 12): активный профиль едет в каждый ход (contextTail.profile) — стиль, формат, ограничения. Без профиля — нейтрально.</p>
+
+      <div class="card">
+        <div class="row">
+          <div class="lbl"><b>Активный профиль</b><span>Один на пользователя; «без профиля» — нейтральные ответы</span></div>
+          <select
+            value={profileState.activeProfileId ?? ""}
+            onchange={(e) => {
+              setActiveProfile((e.currentTarget as HTMLSelectElement).value || null);
+              refreshProfiles();
+            }}
+          >
+            <option value="">без профиля</option>
+            {#each profileState.profiles as p (p.id)}
+              <option value={p.id}>{p.label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+
+      {#each profileState.profiles as p (p.id)}
+        <div class="card">
+          {#if editingProfile === p.id}
+            <div class="prof-edit">
+              <label>Название<input type="text" bind:value={pLabel} maxlength="120" /></label>
+              <label>Стиль<input type="text" bind:value={pStyle} maxlength="200" placeholder="кратко, по делу" /></label>
+              <label>Формат<input type="text" bind:value={pFormat} maxlength="200" placeholder="списками по шагам" /></label>
+              <label>Ограничения (по строке, до 5)<textarea bind:value={pConstraints} rows="2"></textarea></label>
+              <div class="row">
+                <button type="button" class="act" onclick={saveProfile}>готово</button>
+                <button type="button" class="link" onclick={() => (editingProfile = null)}>отмена</button>
+              </div>
+            </div>
+          {:else}
+            <div class="row">
+              <div class="lbl">
+                <b>{p.label}{profileState.activeProfileId === p.id ? " · активен" : ""}</b>
+                <span>{[p.style, p.format].filter(Boolean).join(" · ") || "без стиля/формата"}{p.constraints.length ? ` · ограничений: ${p.constraints.length}` : ""}</span>
+              </div>
+              <button type="button" class="act" onclick={() => startEditProfile(p.id)}>изменить</button>
+              <button type="button" class="link" onclick={() => { removeProfile(p.id); refreshProfiles(); }}>удалить</button>
+            </div>
+          {/if}
+        </div>
+      {/each}
+
+      {#if editingProfile === "new"}
+        <div class="card">
+          <div class="prof-edit">
+            <label>Название<input type="text" bind:value={pLabel} maxlength="120" placeholder="Например: кратко и по шагам" /></label>
+            <label>Стиль<input type="text" bind:value={pStyle} maxlength="200" placeholder="кратко, по делу" /></label>
+            <label>Формат<input type="text" bind:value={pFormat} maxlength="200" placeholder="списками по шагам" /></label>
+            <label>Ограничения (по строке, до 5)<textarea bind:value={pConstraints} rows="2" placeholder="без латиницы"></textarea></label>
+            <div class="row">
+              <button type="button" class="act" onclick={saveProfile}>создать</button>
+              <button type="button" class="link" onclick={() => (editingProfile = null)}>отмена</button>
+            </div>
+          </div>
+        </div>
+      {:else if profileState.profiles.length < PROFILES_MAX}
+        <button type="button" class="act" onclick={startNewProfile}>+ профиль</button>
+      {/if}
+    {:else if openSection === "data"}
+      <h2>Данные (на устройстве)</h2>
+      <p class="sub">Треды и память хранятся только в этом браузере — облака нет. Последний импорт выигрывает; экспортируй регулярно.</p>
+
+      <div class="card">
+        <div class="row">
+          <div class="lbl"><b>Экспорт</b><span>Скачать все локальные данные одним JSON-файлом</span></div>
+          <button type="button" class="act" onclick={exportData}>Скачать JSON</button>
+        </div>
+        <div class="row">
+          <div class="lbl"><b>Импорт</b><span>Заменить локальные данные из файла экспорта (последний импорт выигрывает)</span></div>
+          <input type="file" accept="application/json,.json" onchange={(e) => void onImportFile(e)} />
+        </div>
+        {#if dataMessage}
+          <div class="row">
+            <span class="data-msg" class:err={dataError}>{dataMessage}</span>
+          </div>
+        {/if}
       </div>
   {/if}
 </div>
@@ -239,7 +494,7 @@
   .lbl b { display: block; font-size: 14px; }
   .lbl span { color: var(--muted); font-size: 12.5px; }
   .value { color: var(--muted); font-weight: 600; font-size: 13px; }
-  select, input[type="number"] {
+  select, input[type="number"], input[type="text"] {
     border: 1px solid var(--line);
     border-radius: 10px;
     padding: 8px 12px;
@@ -265,4 +520,52 @@
   }
   .toggle.on { background: var(--accent); }
   .toggle.on::after { left: 21px; }
+  .act {
+    border: 1px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-radius: 10px;
+    padding: 8px 14px;
+    font: 600 13px/1 system-ui, sans-serif;
+    cursor: pointer;
+  }
+  .data-msg {
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+  .data-msg.err {
+    color: var(--warm);
+    font-weight: 600;
+  }
+  .prof-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .prof-edit label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .prof-edit input[type="text"],
+  .prof-edit textarea {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font: 13px system-ui, sans-serif;
+    background: var(--surface);
+    color: var(--ink);
+    min-width: 0;
+    resize: vertical;
+  }
+  .link {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--accent);
+    cursor: pointer;
+    font: 600 13px/1 system-ui, sans-serif;
+  }
 </style>

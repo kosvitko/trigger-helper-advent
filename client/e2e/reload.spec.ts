@@ -1,31 +1,35 @@
 /**
- * E2E 11 — reload: перезагрузка страницы восстанавливает тред активной
- * сессии из mocked messages; per-agent кэш трейса восстанавливается из
- * sessionStorage (ход после reload виден в трейсе без нового run).
+ * E2E 11 — reload (C+ CH-5b): ход идёт по SSE (мок-поток step+done);
+ * перезагрузка страницы восстанавливает тред из localStorage (реальный
+ * локальный персист, без мока messages), per-thread кэш трейса — из
+ * sessionStorage (ход виден в трейсе без нового POST /api/chat).
  */
 import { test, expect } from "@playwright/test";
-import { RUN_ANS_ID } from "./fixtures";
-import { mockApi } from "./helpers";
+import { activeThreadId, mockChat } from "./helpers";
 
-test("reload: тред восстановлен, per-agent кэш трейса жив", async ({ page, context }) => {
-  const api = await mockApi(context, { emptyThreads: true });
+test("reload: тред восстановлен из localStorage, SSE-ход, кэш трейса жив", async ({ page, context }) => {
+  const api = await mockChat(context, { sse: true });
   await page.goto("/");
+  const tid = await activeThreadId(page);
 
-  // ход → run-ответ пишется в stateful-мок треда
+  // ход → SSE-мок: шаги + done; ход пишется в локальный тред
   await page.locator("#composer-input").fill("Болит шея справа, что делать?");
   await page.locator("#composer-send").click();
-  await expect(page.locator(`.msg.bot[data-turn-id="${RUN_ANS_ID}"]`)).toBeVisible({ timeout: 10_000 });
-  // кэш write-behind: ждём debounce 500 мс
-  await page.waitForTimeout(800);
+  await expect(page.locator(`.msg.bot[data-turn-id="${tid}:1"]`)).toBeVisible({ timeout: 10_000 });
+  expect(api.chatCalls).toHaveLength(1);
+
+  // write-behind: ждём debounce 500 мс (треды + кэш трейса)
+  await page.waitForTimeout(900);
 
   // reload
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
 
-  // тред восстановлен из GET messages (stateful-мок дописал ход)
-  await expect(page.locator(`.msg.bot[data-turn-id="${RUN_ANS_ID}"]`)).toBeVisible({ timeout: 10_000 });
+  // тред восстановлен из localStorage (лента из записи th.threads.v1)
+  await expect(page.locator(".msg.user", { hasText: "Болит шея справа" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(`.msg.bot[data-turn-id="${tid}:1"]`)).toBeVisible({ timeout: 10_000 });
 
-  // кэш трейса per-agent: ход в трейсе без нового run
-  const turn = page.locator(`.trace .turn[data-turn-id="${RUN_ANS_ID}"]`);
+  // кэш трейса per-thread: ход в трейсе без нового хода
+  const turn = page.locator(`.trace .turn[data-turn-id="${tid}:1"]`);
   await expect(turn).toBeVisible({ timeout: 5_000 });
-  expect(api.calls.filter((c) => c.path === "/api/agent/run")).toHaveLength(1); // reload не дублирует
+  expect(api.chatCalls).toHaveLength(1); // reload не дублирует
 });

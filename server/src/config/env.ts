@@ -15,11 +15,12 @@ const envSchema = z.object({
    */
   DEMO_MODELS: z.string().optional(),
   PORT: z.coerce.number().int().positive().default(3000),
+  /** Bind host (default 0.0.0.0). h3llo: HOST=127.0.0.1 in .env — Caddy is the only
+   * public entry (host-ops M2 06.10: «наружу только proxy», reverse_proxy 127.0.0.1:3000). */
+  HOST: z.string().optional(),
   DATA_DIR: z.string().optional(),
   /** Persistent usage totals JSON on VPS (default: <repo>/var/usage-totals.json). */
   USAGE_FILE: z.string().optional(),
-  /** Day07: agent context file (default: <repo>/var/agent-state.json). */
-  AGENT_STATE_FILE: z.string().optional(),
   /** Day18: scheduler store (default: <repo>/var/scheduler.json). */
   SCHEDULER_FILE: z.string().optional(),
    /** Day18: min seconds between proactive LLM summaries. Default 900 → 86400
@@ -47,6 +48,21 @@ const envSchema = z.object({
    */
   RAG_RERANK_ENABLED: z.string().optional(),
   /**
+   * Day26: local LLM runtime — Ollama base URL (default:
+   * http://127.0.0.1:11434; local dev and VPS systemd both bind 127.0.0.1).
+   */
+  OLLAMA_URL: z.string().optional(),
+  /** Day26: whole-turn ceiling for a local generation, ms (default 120000 —
+   *  below undici defaults, no extra transport config needed). */
+  OLLAMA_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  /**
+   * Day26: host kill-switch for the local LLM branch (day-23 pattern,
+   * RAG_RERANK_ENABLED). "0"/"false" → /api/models reports the local section
+   * as disabled and local model ids fail 503 BEFORE any runtime call.
+   * Default: enabled (absent/any other value).
+   */
+  LOCAL_LLM_ENABLED: z.string().optional(),
+  /**
    * Day20: external MCP servers, comma-separated `name=url` (name: [a-z0-9]+).
    * Own server is always registered from PORT; absent value = own-only (day19).
    * Per-server LLM injection filter: MCP_INJECT_<NAME> (comma-list of native
@@ -73,8 +89,8 @@ const envSchema = z.object({
    */
   AGENT_COMPRESS_EVERY: z.coerce.number().int().nonnegative().default(10),
   /**
-   * Per-IP rate limit for costly POSTs (agent run / instance & agent create).
-   * 0 = off. Needs trustProxy behind nginx so req.ip = client, not 127.0.0.1.
+   * Per-IP rate limit for costly POSTs (/api/chat, /mcp — stateless после
+   * cutover CH-6). 0 = off. Needs trustProxy behind proxy so req.ip = client.
    */
   RATE_LIMIT_MAX: z.coerce.number().int().nonnegative().default(30),
   /** Window ms for RATE_LIMIT_MAX (default 60s). */

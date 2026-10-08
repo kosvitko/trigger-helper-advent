@@ -1,14 +1,14 @@
 /**
- * E2E 6 — boot: шелл рендерится (бренд, сегмент «Диалог | Оба | Трейс»),
- * пустое состояние диалога, комбобокс из мок-инстантов, активен последний
- * rag_chat новейшего инстанта.
+ * E2E 6 — boot (C+ CH-5b): чистый браузер → шелл рендерится (бренд, сегмент
+ * «Диалог | Оба | Трейс»), пустое состояние диалога; локальный пустой rag_chat-
+ * тред создаётся на устройстве без сети (единственный запрос — справочник
+ * моделей), селектор показывает его, th.active.v1 зафиксирован.
  */
 import { test, expect } from "@playwright/test";
-import { AGENT_A2, INST_A_ID } from "./fixtures";
-import { mockApi } from "./helpers";
+import { mockChat } from "./helpers";
 
-test("boot: бренд, сегмент, empty-state, комбобокс, активная сессия", async ({ page, context }) => {
-  await mockApi(context, { emptyThreads: true });
+test("boot: бренд, сегмент, empty-state, первый локальный RAG-чат без сети", async ({ page, context }) => {
+  const api = await mockChat(context);
   await page.goto("/");
 
   // бренд в шапке
@@ -20,11 +20,26 @@ test("boot: бренд, сегмент, empty-state, комбобокс, акт�
   // пустое состояние продуктовым голосом (D-3)
   await expect(page.locator(".feed .empty")).toContainText("Опишите, что болит");
 
-  // селектор чатов: сессия → чаты (optgroup); 2 сессии = 3 чата (A1+A2+B)
+  // селектор чатов: один локальный тред (создан ensureActive), активен
   const sel = page.locator("select.session");
-  await expect(sel.locator("option")).toHaveCount(3);
-  await expect(sel).toHaveValue(`${INST_A_ID}:${AGENT_A2}`); // активен чат A2 новейшего инстанта
+  await expect(sel.locator("option")).toHaveCount(1);
+  await expect(sel.locator("option")).toContainText("RAG-чат");
+  const tid = await sel.inputValue();
+  expect(tid).not.toBe("");
+  await expect(page.locator(".dialog-col .col-h .meta")).toContainText("RAG-чат");
 
-  // активный агент — последний rag_chat (A2, не A1): видно в шапке колонки
-  await expect(page.locator(".dialog-col .col-h .meta")).toContainText("RAG-чат A2");
+  // тред персистится на устройстве: запись rag_chat с пустым диалогом + актив
+  await page.waitForTimeout(800); // write-behind debounce 500 мс
+  const stored = await page.evaluate(() => localStorage.getItem("th.threads.v1"));
+  const parsed = JSON.parse(stored ?? "{}") as {
+    records?: { preset: string; dialogue: unknown[] }[];
+  };
+  expect(parsed.records).toHaveLength(1);
+  expect(parsed.records![0].preset).toBe("rag_chat");
+  expect(parsed.records![0].dialogue).toEqual([]);
+  expect(await page.evaluate(() => localStorage.getItem("th.active.v1"))).toBe(tid);
+
+  // сети для boot не нужно: единственный /api-запрос — справочник моделей
+  await expect.poll(() => api.calls.length, { timeout: 5_000 }).toBe(1);
+  expect(api.calls[0].path).toBe("/api/models");
 });

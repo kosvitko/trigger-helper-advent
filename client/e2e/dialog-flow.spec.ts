@@ -1,30 +1,35 @@
 /**
- * E2E 8 — dialog flow (мок run-ответа): ввод → один клик → ровно один
- * user-бабл; typing-индикатор; ассистент-бабл .msg.bot[data-turn-id];
- * SourcesChip «Источники N · цитаты M/M ✓» свёрнут → раскрытие карточек
- * цитат с [source › section]; TurnBlock в трейсе с заголовком хода
- * (модель/латентность/токены/₽).
+ * E2E 8 — dialog flow (C+ CH-5b, мок POST /api/chat): ввод → один клик →
+ * ровно один user-бабл; typing-индикатор; ассистент-бабл .msg.bot[data-turn-id]
+ * с клиентским turnId `<threadId>:<index>`; SourcesChip «Источники N ·
+ * цитаты M/M ✓» свёрнут → раскрытие карточек с [source › section]; TurnBlock
+ * в трейсе; второй ход несёт contextTail.dialogue с первым ходом и уникальный
+ * clientTurnId.
  */
 import { test, expect } from "@playwright/test";
-import { e2eRunRag, RUN_ANS_ID } from "./fixtures";
-import { mockApi } from "./helpers";
+import { RAG_REPLY } from "./fixtures";
+import { activeThreadId, type ChatRequestBody, mockChat } from "./helpers";
 
-test("диалог: send → бабл + SourcesChip + трейс-ход", async ({ page, context }) => {
-  const api = await mockApi(context, { emptyThreads: true, runDelayMs: 400 });
+const Q1 = "Болит шея справа, что делать?";
+const Q2 = "А если боль отдаёт в голову?";
+
+test("диалог: send → бабл + SourcesChip + трейс-ход + contextTail второго хода", async ({ page, context }) => {
+  const api = await mockChat(context, { chatDelayMs: 400 });
   await page.goto("/");
+  const tid = await activeThreadId(page);
 
-  // typing-индикатор появляется во время run (runDelayMs=400 — окно)
-  await page.locator("#composer-input").fill("Болит шея справа, что делать?");
+  // typing-индикатор появляется во время хода (chatDelayMs=400 — окно)
+  await page.locator("#composer-input").fill(Q1);
   await page.locator("#composer-send").click();
   await expect(page.locator(".feed .typing")).toBeVisible();
 
-  // ровно один POST /api/agent/run (двойной клик не дублирует)
-  await page.locator("#composer-send").click().catch(() => {}); // занят — игнор
-  const assistant = page.locator(`.msg.bot[data-turn-id="${RUN_ANS_ID}"]`);
+  // ровно один POST /api/chat (двойной клик не дублирует — busy-guard)
+  await page.locator("#composer-send").click({ timeout: 1_000 }).catch(() => {});
+  const assistant = page.locator(`.msg.bot[data-turn-id="${tid}:1"]`);
   await expect(assistant).toBeVisible({ timeout: 10_000 });
-  expect(api.calls.filter((c) => c.path === "/api/agent/run")).toHaveLength(1);
+  expect(api.chatCalls).toHaveLength(1);
 
-  // ровно один user-бабл (свой, local-*)
+  // ровно один user-бабл (optimistic, local-*)
   await expect(page.locator(".msg.user")).toHaveCount(1);
   // typing исчез
   await expect(page.locator(".feed .typing")).toHaveCount(0);
@@ -43,7 +48,7 @@ test("диалог: send → бабл + SourcesChip + трейс-ход", async 
   await expect(cards.first().locator(".qlabel.ok")).toBeVisible(); // верифицирована
 
   // трейс: TurnBlock с тем же data-turn-id и заголовком хода
-  const turn = page.locator(`.trace .turn[data-turn-id="${RUN_ANS_ID}"]`);
+  const turn = page.locator(`.trace .turn[data-turn-id="${tid}:1"]`);
   await expect(turn).toBeVisible();
   await expect(turn.locator(".tno")).toContainText("Ход 1");
   await expect(turn.locator(".tm")).toContainText("deepseek-chat");
@@ -55,4 +60,29 @@ test("диалог: send → бабл + SourcesChip + трейс-ход", async 
     await turn.locator(".tsummary").click(); // фолбэк: ручное раскрытие
   }
   await expect(stepSel).toBeVisible();
+
+  // — второй ход: хвост контекста собирается из локального треда —
+  await page.locator("#composer-input").fill(Q2);
+  await page.locator("#composer-send").click();
+  await expect(page.locator(`.msg.bot[data-turn-id="${tid}:3"]`)).toBeVisible({ timeout: 10_000 });
+  expect(api.chatCalls).toHaveLength(2);
+
+  const first = api.chatCalls[0].body as ChatRequestBody;
+  expect(first.input).toBe(Q1);
+  expect(first.preset).toBe("rag_chat");
+  expect(first.contextTail?.dialogue).toEqual([]); // первый ход — пустой хвост
+
+  const second = api.chatCalls[1].body as ChatRequestBody;
+  // хвост несёт диалог первого хода (D-3: контекст поставляет клиент)
+  expect(second.contextTail?.dialogue).toEqual([
+    { role: "user", content: Q1 },
+    { role: "assistant", content: RAG_REPLY },
+  ]);
+  expect(second.input).toBe(Q2);
+  // clientTurnId: безконтентная корреляция логов (D-6) — присутствует и уникальна
+  expect(typeof second.clientTurnId).toBe("string");
+  expect((second.clientTurnId ?? "").length).toBeGreaterThanOrEqual(8);
+  expect(second.clientTurnId).not.toBe(first.clientTurnId);
+  // триггер сжатия (Q-2): хвост из 2 сообщений не дотягивает до every=10
+  expect(second.compress).toBeFalsy();
 });

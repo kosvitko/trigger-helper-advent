@@ -1,167 +1,128 @@
 /**
- * E2E-фикстуры: payload-ответы для route-перехвата всех /api/* (ноль реальной
- * сети и LLM). Формы — те же контракты @trigger-helper/shared, что клиент
- * парсит в api.ts; реалистичность проверяется юнит-тестом
- * src/test/fixtures.test.ts (прогон через api-клиент = safeParse схем).
- * Модуль без зависимостей от playwright — только данные.
+ * E2E-фикстуры (C+ CH-5b): локальные треды (ChatThreadRecord из
+ * @trigger-helper/shared) для посева localStorage и payload-ответы
+ * stateless-хода POST /api/chat (ChatResponse). Формы chat-ответов —
+ * те же, что в src/test/fixtures.ts makeChatResponse (юнит-прогон через
+ * safeParse контрактов). Модуль без зависимостей от playwright — только данные.
  */
-import type { AgentMessage } from "@trigger-helper/shared";
+import type { ChatDialogueMessage, ChatThreadRecord } from "@trigger-helper/shared";
 
-export const INST_A_ID = "inst-a";
-export const INST_B_ID = "inst-b";
-/** Первый rag_chat-агент инстанса A (НЕ активный — активен последний). */
-export const AGENT_A1 = "agent-a1";
-/** Последний rag_chat-агент новейшего инстанса → демо-дефолт boot. */
-export const AGENT_A2 = "agent-a2";
-export const AGENT_B = "agent-b-rag";
-/** care-агент сессии настроек (неактивный сосед RAG-чата, кнопка «открыть»). */
-export const AGENT_CARE = "agent-care";
-export const RUN_ANS_ID = "msg-run-ans1";
-export const RUN_DONTKNOW_ID = "msg-run-dontknow";
+/* — Локальные треды (состояние приложения теперь на устройстве) — */
 
-function agent(id: string, label: string, defaultModel = "deepseek-chat") {
+export const THREAD_NECK = "th-neck";
+export const THREAD_BACK = "th-back";
+export const THREAD_CARE = "th-care";
+
+export function turn(q: string, a: string): ChatDialogueMessage[] {
+  return [
+    { role: "user", content: q },
+    { role: "assistant", content: a },
+  ];
+}
+
+export interface ThreadSeed {
+  id: string;
+  title: string;
+  preset?: "rag_chat" | "care";
+  createdAt?: string;
+  updatedAt?: string;
+  summaries?: string[];
+  dialogue?: ChatDialogueMessage[];
+}
+
+export function e2eThreadRecord(s: ThreadSeed): ChatThreadRecord {
   return {
-    id,
-    presetId: "rag_chat",
-    label,
-    role: "Помощник по самопомощи",
-    instructions: "Отвечай по базе знаний, приводи источники [source › section].",
-    layers: {
-      strategic: "Помогай найти триггерные точки и подобрать самопомощь.",
-      operational: "Опирайся только на базу знаний; нет данных — скажи прямо.",
-      task: "Текущая задача: разбор боли пользователя.",
-    },
-    inputPolicy: { trim: true, maxChars: 4000, requireNonEmpty: true },
-    outputPolicy: { trim: true, maxChars: 4000, formatHint: "soft" },
-    defaultModel,
-    defaultTemperature: 0.3,
+    id: s.id,
+    preset: s.preset ?? "rag_chat",
+    title: s.title,
+    createdAt: s.createdAt ?? "2026-10-01T09:00:00.000Z",
+    updatedAt: s.updatedAt ?? s.createdAt ?? "2026-10-01T09:00:00.000Z",
+    summaries: s.summaries ?? [],
+    dialogue: s.dialogue ?? [],
   };
 }
 
-function msg(id: string, role: "user" | "assistant", content: string): AgentMessage {
-  return { id, role, content, createdAt: "2026-10-02T12:00:00.000Z" };
-}
-
-/** Два инстанса: B старше в массиве первым, A новее вторым — активен A/AGENT_A2. */
-export function e2eInstances() {
-  return {
-    instances: [
-      {
-        id: INST_B_ID,
-        label: "Демо · поясница",
-        createdAt: "2026-10-01T10:00:00.000Z",
-        agents: [agent(AGENT_B, "RAG-чат B")],
-      },
-      {
-        id: INST_A_ID,
-        label: "Демо · шея",
-        createdAt: "2026-10-02T09:00:00.000Z",
-        agents: [agent(AGENT_A1, "RAG-чат A1"), agent(AGENT_A2, "RAG-чат A2")],
-      },
-    ],
-    caps: { maxInstances: 5, maxAgentsPerInstance: 6, usedInstances: 2 },
-  };
-}
-
-export function e2eThread(
-  instanceId: string,
-  agentId: string,
-  messages: AgentMessage[],
-): Record<string, unknown> {
-  return {
-    instanceId,
-    agentId,
-    threadAgentId: agentId,
-    messages,
-    facts: {},
-    branch: { forked: false, activeBranchId: null, checkpointCount: 0 },
-    contextStrategy: "sliding",
-  };
-}
-
-export function e2eThreadA(): Record<string, unknown> {
-  return e2eThread(INST_A_ID, AGENT_A2, [
-    msg("msg-a-q1", "user", "a-q1: Болит шея справа после работы, что делать?"),
-    msg(
-      "msg-a-ans1",
-      "assistant",
+/** Тред «шея» — новее всех → активен по умолчанию на boot. */
+export function e2eNeckThread(): ChatThreadRecord {
+  return e2eThreadRecord({
+    id: THREAD_NECK,
+    title: "Демо · шея",
+    createdAt: "2026-10-02T09:00:00.000Z",
+    updatedAt: "2026-10-02T09:30:00.000Z",
+    dialogue: turn(
+      "a-q1: Болит шея справа после работы, что делать?",
       "a-ans1: Начните с верхней порции трапеции [travell-guide › Шея] и мягкого растяжения.",
     ),
-  ]);
+  });
 }
 
-export function e2eThreadB(): Record<string, unknown> {
-  return e2eThread(INST_B_ID, AGENT_B, [
-    msg("msg-b-q1", "user", "b-q1: Болит поясница после приседов, как помочь?"),
-    msg(
-      "msg-b-ans1",
-      "assistant",
+/** Тред «поясница» — старше: сосед в селекторе. */
+export function e2eBackThread(): ChatThreadRecord {
+  return e2eThreadRecord({
+    id: THREAD_BACK,
+    title: "Демо · поясница",
+    createdAt: "2026-10-01T10:00:00.000Z",
+    updatedAt: "2026-10-01T11:00:00.000Z",
+    dialogue: turn(
+      "b-q1: Болит поясница после приседов, как помочь?",
       "b-ans1: Проверьте квадратную мышцу поясницы [travell-guide › Поясница] и подвздошно-рёберное сочленение.",
     ),
-  ]);
+  });
 }
 
-export function e2eEmptyThread(instanceId: string, agentId: string): Record<string, unknown> {
-  return e2eThread(instanceId, agentId, []);
+/** Care-тред (пресет care) — переключение между пресетами. */
+export function e2eCareThread(): ChatThreadRecord {
+  return e2eThreadRecord({
+    id: THREAD_CARE,
+    preset: "care",
+    title: "Демо · забота",
+    createdAt: "2026-09-30T08:00:00.000Z",
+    updatedAt: "2026-09-30T09:00:00.000Z",
+    dialogue: turn(
+      "c-q1: Не могу расслабиться вечером, что делать?",
+      "c-ans1: Дыхание 4-7-8 и разбор триггерных точек.",
+    ),
+  });
 }
 
-/* — Обзор настроек: 1 сессия, rag_chat + care, треды с usage/cost на ответах — */
+/* — Справочники (GET /api/models, /api/rag/stats, /api/agents) — */
 
-function assistantMsg(id: string, content: string, totalTokens: number, costRub: number): AgentMessage {
+/** День 26 (D-26-4): варианты local-секции /api/models. */
+export type E2eLocalVariant = "available" | "down" | "disabled";
+
+/** День 26: ответ валидируется СОВМЕСТНОЙ схемой (shared schemas/models.ts),
+ * tier — значения из ASK_DEMO_MODEL_TIERS (enum weak/mid/strong): прежние
+ * свободные строки «base»/«reasoner» парс бы не прошёл. Метки не тронуты —
+ * существующие assert'ы настроек смотрят на них. */
+export function e2eModels(local: E2eLocalVariant = "available") {
+  const cloud = [
+    { tier: "weak", label: "Chat", model: "deepseek-chat", via: "deepseek" },
+    { tier: "strong", label: "Reasoner", model: "deepseek-reasoner", via: "deepseek" },
+  ];
+  // Прод-каталог D-26-4: 0.5b установлена и влезает в RAM; 1.5b влезает,
+  // не установлена; 3b не влезает в RAM тестовой машины (7 ГБ порог).
+  const entries = [
+    { id: "qwen2.5:0.5b", label: "Qwen2.5 0.5B", sizeMb: 400, installed: true, fitsRam: true, available: true },
+    { id: "qwen2.5:1.5b", label: "Qwen2.5 1.5B", sizeMb: 1000, installed: false, fitsRam: true, available: false },
+    { id: "qwen2.5:3b", label: "Qwen2.5 3B", sizeMb: 1900, installed: false, fitsRam: false, available: false },
+  ];
+  // Рантайм лежит или kill-switch: сервер отдаёт каталог с installed=false
+  // у всех записей (см. probeLocalLlm) — клиентская эвристика «рантайм ок».
+  const down = entries.map((e) => ({ ...e, installed: false, available: false }));
   return {
-    id,
-    role: "assistant",
-    content,
-    createdAt: "2026-10-02T12:01:00.000Z",
-    model: "deepseek-chat",
-    usage: {
-      model: "deepseek-chat",
-      prompt_tokens: 1100,
-      completion_tokens: 360,
-      total_tokens: totalTokens,
-      prompt_cache_hit_tokens: 0,
-      prompt_cache_miss_tokens: 1100,
-      estimated_cost_usd: 0.0021,
-      estimated_cost_rub: 0.2135,
-    },
-    cost_rub: costRub,
+    models: cloud,
+    local:
+      local === "available"
+        ? { runtime: "ollama", enabled: true, entries }
+        : local === "down"
+          ? { runtime: "ollama", enabled: true, entries: down }
+          : { runtime: "ollama", enabled: false, entries: down }, // kill-switch
   };
 }
 
-/** Одна сессия, два агента: care (неактивный) + rag_chat (активный, последний). */
-export function e2eSettingsInstances() {
-  return {
-    instances: [
-      {
-        id: INST_A_ID,
-        label: "Демо · шея",
-        createdAt: "2026-10-02T09:00:00.000Z",
-        agents: [
-          { ...agent(AGENT_CARE, "Care-чат"), presetId: "care", defaultModel: "deepseek-reasoner" },
-          agent(AGENT_A2, "RAG-чат A2"),
-        ],
-      },
-    ],
-    caps: { maxInstances: 5, maxAgentsPerInstance: 6, usedInstances: 1 },
-  };
-}
-
-/** Тред RAG-агента: 1 ход — 2 сообщ., 1460 ток («1.5k»), ₽0.02. */
-export function e2eSettingsThreadRag(): Record<string, unknown> {
-  return e2eThread(INST_A_ID, AGENT_A2, [
-    msg("msg-s-q1", "user", "s-q1: Болит шея после сна, как размять?"),
-    assistantMsg("msg-s-ans1", "s-ans1: Мягкое растяжение верхней порции трапеции.", 1460, 0.0154),
-  ]);
-}
-
-/** Тред care-агента: 2 хода — 4 сообщ., 1940 ток («1.9k»), ₽0.04. */
-export function e2eSettingsThreadCare(): Record<string, unknown> {
-  return e2eThread(INST_A_ID, AGENT_CARE, [
-    msg("msg-c-q1", "user", "c-q1: Не могу расслабиться вечером, что делать?"),
-    assistantMsg("msg-c-ans1", "c-ans1: Дыхание 4-7-8 и разбор триггерных точек.", 970, 0.02),
-    msg("msg-c-q2", "user", "c-q2: А если не помогает?"),
-    assistantMsg("msg-c-ans2", "c-ans2: Тогда пересоберём стратегию самопомощи.", 970, 0.02),
-  ]);
+/** Мета-справочник пресетов: настройкам нужен дефолт автосжатия. */
+export function e2eAgentsMeta() {
+  return { autoCompress: { defaultEvery: 10 } };
 }
 
 /** РЕАЛЬНЫЙ прод-ответ GET /api/rag/stats (30.09.2026, h3llo) — дословно;
@@ -198,30 +159,35 @@ export function e2eRagStats() {
   };
 }
 
-export function e2eModels() {
+/* — Память задачи (threadState-записи для посева) — */
+
+export const TASK_GOAL = "Подобрать самопомощь при боли в шее";
+export const TASK_GOAL_EDITED = "Новая цель: разминка шеи каждый час";
+
+export function e2eThreadState(
+  threadId: string,
+  chatTask: { goal: string; clarified: string[]; constraints_terms: string[] },
+) {
   return {
-    models: [
-      { tier: "base", label: "Chat", model: "deepseek-chat", via: "deepseek" },
-      { tier: "reasoner", label: "Reasoner", model: "deepseek-reasoner", via: "deepseek" },
-    ],
+    id: threadId,
+    memory: { facts: [], deleted: [] },
+    chatTask,
+    // C+ хвосты: полный формат записи (старые записи не поддерживаем —
+    // поля обязательны, безопасный drop на safeParse).
+    task: null,
+    invariants: [],
   };
 }
 
-export function e2eChatTask() {
-  return {
-    chatTaskState: {
-      goal: "Подобрать самопомощь при боли в шее",
-      clarified: ["боль отдаёт в голову к вечеру"],
-      constraints_terms: ["без задержки дыхания"],
-    },
-  };
+export function e2eNeckThreadState() {
+  return e2eThreadState(THREAD_NECK, {
+    goal: TASK_GOAL,
+    clarified: ["боль отдаёт в голову к вечеру"],
+    constraints_terms: ["без задержки дыхания"],
+  });
 }
 
-export function emptyChatTask() {
-  return { chatTaskState: { goal: "", clarified: [], constraints_terms: [] } };
-}
-
-/* — run-ответы: числа подобраны детерминированно для assert'ов трейса — */
+/* — Ответы POST /api/chat: числа детерминированы для assert'ов трейса — */
 
 const LLM_USAGE = {
   model: "deepseek-chat",
@@ -237,8 +203,12 @@ const LLM_USAGE = {
 export const RAG_REPLY =
   "Чтобы снять боль в шее справа, работайте с верхней порцией трапеции [travell-guide › Шея] и проверьте верх грудного отдела [travell-guide › Верх спины].";
 
-const DONTKNOW_REPLY =
+export const DONTKNOW_REPLY =
   "По этому вопросу в базе нет релевантного материала — не буду выдумывать. Переформулируйте или опишите симптомы подробнее.";
+
+export const MEMORY_DELTA_GOAL = "Разобрать боль в шее и закрепить разминку";
+export const COMPRESS_SUMMARY =
+  "Сводка: пользователь разбирает боль в шее справа; дана схема работы с трапецией и мягким растяжением.";
 
 function ragOkPayload(question: string) {
   return {
@@ -288,6 +258,21 @@ function ragOkPayload(question: string) {
     labels: ["[travell-guide › Шея]", "[travell-guide › Верх спины]", "[travell-guide › Плечи]"],
     dontKnow: false,
     topCosine: 0.713,
+    threshold: 0.8375,
+    rewrite: {
+      variants: [
+        "как помочь при боли в шее самомассажем",
+        "триггерные точки мышц шеи техника давления",
+      ],
+      tokens: 120,
+      latencyMs: 900,
+      fallback: false,
+    },
+    poolRanked: 40,
+    keptAfterFilter: 12,
+    injectedCount: 12,
+    quotesValid: 2,
+    quotesSource: "model",
     usage: {
       model: "deepseek-chat",
       prompt_tokens: 980,
@@ -311,6 +296,18 @@ function ragDontKnowPayload(question: string) {
     labels: [],
     dontKnow: true,
     topCosine: 0.18,
+    threshold: 0.8375,
+    rewrite: {
+      variants: ["пересказ оффтопного вопроса"],
+      tokens: 60,
+      latencyMs: 500,
+      fallback: true,
+    },
+    poolRanked: 40,
+    keptAfterFilter: 0,
+    injectedCount: 0,
+    quotesValid: null,
+    quotesSource: null,
     usage: {
       model: "deepseek-chat",
       prompt_tokens: 900,
@@ -325,101 +322,128 @@ function ragDontKnowPayload(question: string) {
   };
 }
 
-function runAgentFrame() {
+function ragToolCall(question: string, dontKnow: boolean) {
+  const payload = dontKnow ? ragDontKnowPayload(question) : ragOkPayload(question);
   return {
-    id: AGENT_A2,
-    label: "RAG-чат A2",
-    presetId: "rag_chat",
-    role: "Помощник по самопомощи",
-    policies: {
-      input: { trim: true, maxChars: 4000, requireNonEmpty: true },
-      output: { trim: true, maxChars: 4000, formatHint: "soft" },
-    },
-    layers: {
-      strategic: "Помогай найти триггерные точки и подобрать самопомощь.",
-      operational: "Опирайся только на базу знаний; нет данных — скажи прямо.",
-      task: "Текущая задача: разбор боли пользователя.",
-    },
-    model: "deepseek-chat",
-    temperature: 0.3,
-    overridesApplied: { model: false, temperature: false },
+    name: "rag_ask",
+    arguments: { question },
+    ok: !dontKnow,
+    latencyMs: dontKnow ? 610 : 840,
+    resultClip: `rag_ask · dontKnow=${dontKnow} · topCosine=${dontKnow ? "0.18" : "0.713"}`,
+    payload,
   };
 }
 
-/** Успешный rag-ход: 3 источника, 2/2 верифицированных цитат, заголовок хода «deepseek-chat · 2.1 s · 2.1k ток · ₽0.04». */
-export function e2eRunRag(input: string) {
+/** Варианты хода: сжатие префикса (Q-2), факт трима (SEC-F4), дельта памяти (Q-3),
+ * кадры задачи/инвариантов в trace (C+ хвосты: fsm-шаги в трейсе). */
+export interface ChatVariant {
+  compress?: boolean;
+  contextTrimmed?: boolean;
+  memoryDelta?: boolean;
+  fsmFrames?: boolean;
+}
+
+/**
+ * Успешный rag-ход: 3 источника, 2/2 верифицированных цитат; заголовок хода
+ * «deepseek-chat · 1460+640 = 2.1k ток · ₽0.23».
+ */
+export function e2eChatRag(input: string, o: ChatVariant = {}) {
   return {
     reply: RAG_REPLY,
-    message: {
-      id: RUN_ANS_ID,
-      role: "assistant",
-      content: RAG_REPLY,
-      agentId: AGENT_A2,
-      model: "deepseek-chat",
-      latency_ms: 2100,
-      usage: LLM_USAGE,
-      cost_rub: 0.0154,
-      createdAt: "2026-10-03T09:30:00.000Z",
-    },
-    agent: runAgentFrame(),
-    usage: LLM_USAGE,
-    latency_ms: 2100,
-    context: {
+    trace: {
       historyMessages: [{ role: "user", content: input }],
-      tool: {
-        calls: [
-          {
-            name: "rag_ask",
-            arguments: { question: input },
-            ok: true,
-            latencyMs: 840,
-            resultClip: "rag_ask · dontKnow=false · topCosine=0.713",
-            payload: ragOkPayload(input),
-          },
-        ],
-      },
-      chatTaskState: {
-        goal: "Подобрать самопомощь при боли в шее",
-        clarified: ["боль отдаёт в голову к вечеру"],
-        constraints_terms: ["без задержки дыхания"],
-      },
+      tool: { calls: [ragToolCall(input, false)] },
+      ...(o.fsmFrames
+        ? {
+            task: {
+              id: "task-e2e",
+              title: "убрать боль в шее",
+              stage: "execution",
+              step: 1,
+              total: 3,
+              paused: false,
+              inject: "Стадия: Практика. Шаг: найти мышцу.",
+              check: { ok: true, level: "ok", note: "Выполняется шаг 1/3" },
+            },
+            invariants: {
+              checked: [
+                {
+                  n: 1,
+                  id: "inv-e2e",
+                  scope: "agent",
+                  enforcement: "hard",
+                  text: "не рекомендуй задержку дыхания",
+                },
+              ],
+              inject: "Правила владельца: [INV-1] не рекомендуй задержку дыхания",
+              check: { ok: true, level: "ok", note: "Инварианты учтены" },
+            },
+          }
+        : {}),
+      ...(o.contextTrimmed
+        ? {
+            contextTrimmed: {
+              droppedDialogue: 2,
+              droppedSummaries: 0,
+              charsBefore: 70_000,
+              charsAfter: 61_000,
+            },
+          }
+        : {}),
     },
+    usage: LLM_USAGE,
+    ...(o.memoryDelta
+      ? {
+          memoryDelta: {
+            facts: [
+              {
+                text: "боль в шее справа после работы",
+                suggestedLayer: "working" as const,
+              },
+            ],
+            chatTask: {
+              goal: MEMORY_DELTA_GOAL,
+              clarified: ["боль отдаёт в голову к вечеру"],
+            },
+          },
+        }
+      : {}),
+    ...(o.compress ? { compress: { summary: COMPRESS_SUMMARY, keptTail: [] } } : {}),
     meta: { railViolated: false },
   };
 }
 
 /** dontKnow-ход: гейт «не знаю», без источников. */
-export function e2eRunDontKnow(input: string) {
+export function e2eChatDontKnow(input: string) {
   return {
     reply: DONTKNOW_REPLY,
-    message: {
-      id: RUN_DONTKNOW_ID,
-      role: "assistant",
-      content: DONTKNOW_REPLY,
-      agentId: AGENT_A2,
-      model: "deepseek-chat",
-      latency_ms: 1500,
-      usage: LLM_USAGE,
-      cost_rub: 0.0112,
-      createdAt: "2026-10-03T09:35:00.000Z",
-    },
-    agent: runAgentFrame(),
-    usage: LLM_USAGE,
-    latency_ms: 1500,
-    context: {
+    trace: {
       historyMessages: [{ role: "user", content: input }],
-      tool: {
-        calls: [
-          {
-            name: "rag_ask",
-            arguments: { question: input },
-            ok: true,
-            latencyMs: 610,
-            resultClip: "rag_ask · dontKnow=true · topCosine=0.18",
-            payload: ragDontKnowPayload(input),
-          },
-        ],
-      },
+      tool: { calls: [ragToolCall(input, true)] },
+    },
+    usage: LLM_USAGE,
+    meta: { railViolated: false },
+  };
+}
+
+/** День 26: локальный ход — одна ходка без RAG (D-26-2), usage с нулевой
+ * стоимостью (D-26-5); минимальный trace — как в серверной локальной ветке. */
+export const LOCAL_REPLY =
+  "Сожмите плечи к ушам, удержите 5 секунд и медленно отпустите. Повторите 5 раз, дыша ровно.";
+
+export function e2eChatLocal(input: string) {
+  return {
+    reply: LOCAL_REPLY,
+    trace: { historyMessages: [{ role: "user", content: input }] },
+    usage: {
+      model: "qwen2.5:0.5b",
+      prompt_tokens: 42,
+      completion_tokens: 18,
+      total_tokens: 60,
+      prompt_cache_hit_tokens: 0,
+      prompt_cache_miss_tokens: 42,
+      estimated_cost_usd: 0,
+      estimated_cost_rub: 0,
     },
     meta: { railViolated: false },
   };

@@ -26,8 +26,7 @@ import { toWireToolSpecs, type McpRegistry } from "../mcp-registry.js";
 import { costRubFromUsage } from "../pricing.js";
 import type { RagAnswerService } from "../rag/answer.js";
 import { normalizeRu } from "../rag/text.js";
-import { heuristicSuggestedLayer } from "./memory-state.js";
-import { buildSystemPrompt } from "./presets.js";
+import { buildPresetSystemPrompt as buildSystemPrompt } from "@trigger-helper/shared";
 // Day25 (D-2): локальная тулза rag_ask — KISS-модуль без реестра; и память
 // задачи мини-чата (D-4) — экстракт + инжект-блок.
 import {
@@ -41,17 +40,13 @@ import {
   type ChatTaskExtractResult,
 } from "./chat-task-state.js";
 
-/** Day25 UX (Костя): прогресс рана — сервер пишет текущие шаги в Map,
- *  клиент получает их по SSE-событиям POST run (старый поллинг-роут снят 04.10). */
+/** Day25 UX (Костя): прогресс рана — сервер пишет текущие шаги в Map и
+ * эмитит их в SSE-ход (/api/chat onProgress); клиент читает из потока. */
 export interface TraceProgressStep {
   step: string;
   text: string;
 }
 const traceProgress = new Map<string, TraceProgressStep[]>();
-
-function progressKey(instanceId: string, agentId: string): string {
-  return `${instanceId}:${agentId}`;
-}
 
 function pushProgress(key: string, step: string, text: string): void {
   const arr = traceProgress.get(key);
@@ -65,15 +60,11 @@ function updateProgress(key: string, step: string, text: string): void {
   if (existing) existing.text = text;
   else arr.push({ step, text });
 }
-
-/** Day25 UX: чтение прогресса для polling-клиента (agents.ts GET endpoint). */
-export function getTraceProgress(agentId: string): TraceProgressStep[] {
-  return traceProgress.get(agentId) ?? [];
-}
-// Day15 D-1: карта переходов генерируется из канона task-state (источник
-// истины один), в промпт не дублируется руками. Day15′ (260919): с русскими
-// именами кнопок — фраза ассистента совпадает с кнопкой в UI.
-import { ALLOWED_TRANSITIONS, STAGE_GOTO_LABELS } from "./task-state.js";
+// Day15 D-1: карта переходов генерируется из канона FSM (источник истины
+// один — shared/schemas/task-fsm.ts с CH-5a), в промпт не дублируется
+// руками. Day15′ (260919): с русскими именами кнопок — фраза ассистента
+// совпадает с кнопкой в UI.
+import { ALLOWED_TRANSITIONS, STAGE_GOTO_LABELS } from "@trigger-helper/shared";
 import { mergeUsage } from "../usage.js";
 import {
   estimateMessagesBreakdown,
@@ -107,6 +98,19 @@ const MEMORY_CAP: Record<MemoryLayer, number> = {
   short: 6,
 };
 const MEMORY_CHAR_BUDGET = 2_500;
+
+/** Fail-open layer guess when LLM classify fails (C+ CH-6: дословно из
+ * снятого memory-state.ts — стор умер, эвристика нужна классификатору). */
+function heuristicSuggestedLayer(text: string, key?: string): MemoryLayer {
+  const t = `${key ?? ""} ${text}`.toLowerCase();
+  if (/огранич|нельзя|запрет|всегда|стиль|предпочит|профиль/.test(t)) {
+    return "long";
+  }
+  if (/сейчас|точка|зона|техник|шаг|рабоч/.test(t)) {
+    return "working";
+  }
+  return "short";
+}
 
 const COMPRESS_SYSTEM_PROMPT = [
   "Ты — сервис сжатия истории диалога ассистента самопомощи (зона боли, триггерные точки, упражнения).",
@@ -1076,11 +1080,7 @@ export class LlmAgent {
             emit("rag_ask", `Ищу в базе: ${(args as { question?: string }).question ?? "…"}`);
             // Day25: локальный dispatch — внутренний 60 с (не 90-с callMcpTool);
             // onStage: средние стадии пайплайна в живой трейс (Костя 041004)
-            const outcome = await dispatchRagAsk(
-              args,
-              this.ragAnswer,
-              (stage, text) => emit(stage, text),
-            );
+            const outcome = await dispatchRagAsk(args, this.ragAnswer, emit);
             // Day25 UX: обновляем текст rag_ask результатом
             if (outcome.ok) {
               emitUpdate("rag_ask", `Найдено ${outcome.payload.sources.length} источников · косинус ${outcome.payload.topCosine?.toFixed(3) ?? "—"}`);

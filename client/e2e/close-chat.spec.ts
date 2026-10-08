@@ -1,71 +1,58 @@
 /**
- * E2E 13 — close chat + undo: «✕ чат» закрывает активного агента сессии
- * (DELETE + снапшот), активен предыдущий сосед, лента перегружается его
- * тредом, тост «Чат «…» закрыт.»; «Вернуть» возвращает агента и его ленту;
- * единственный агент не закрывается — кнопка disabled.
+ * E2E 13 — close thread + undo (C+ CH-5b, поглотил close-session: сессий
+ * больше нет — один уровень тредов): «✕ чат» закрывает ЛОКАЛЬНЫЙ тред
+ * (без сети), активен сосед, тост «Чат «…» закрыт.»; «Вернуть»
+ * восстанавливает запись и выбирает её; последний тред не закрывается —
+ * кнопка disabled с подсказкой.
  */
 import { test, expect } from "@playwright/test";
-import { INST_A_ID, e2eInstances } from "./fixtures";
-import { mockApiWithClose } from "./close-mock";
+import { THREAD_BACK, THREAD_NECK, e2eBackThread, e2eNeckThread } from "./fixtures";
+import { mockChat, seedLocalData } from "./helpers";
 
-test("✕ чат: активен предыдущий сосед с его тредом, «Вернуть» возвращает агента", async ({ page, context }) => {
-  const api = await mockApiWithClose(context, {
-    // тред соседнего агента A1 (в базовом моке его нет — был бы пустой тред)
-    extraThreads: {
-      "inst-a/agent-a1": [
-        { id: "msg-a1-q", role: "user", content: "a1-q1: вопрос первого чата", createdAt: "2026-10-02T12:00:00.000Z" },
-        { id: "msg-a1-ans", role: "assistant", content: "a1-ans1: ответ первого чата", createdAt: "2026-10-02T12:01:00.000Z" },
-      ],
-    },
-  });
+test("✕ чат: локальное закрытие, активен сосед, «Вернуть» восстанавливает запись", async ({ page, context }) => {
+  const api = await mockChat(context);
+  await seedLocalData(context, { threads: [e2eBackThread(), e2eNeckThread()] }); // новейший — шея
   await page.goto("/");
 
-  const meta = page.locator(".dialog-col .col-h .meta");
-  await expect(meta).toContainText("RAG-чат A2"); // активен последний rag_chat
-  await expect(page.locator(".msg.user").first()).toContainText("a-q1"); // тред A2
+  const sel = page.locator("select.session");
+  await expect(sel).toHaveValue(THREAD_NECK);
+  await expect(page.locator(".msg.user").first()).toContainText("a-q1"); // лента треда «шея»
 
   await page.locator("#close-chat").click();
 
-  // DELETE активного агента; активен предыдущий сосед A1, лента — его тред
-  expect(
-    api.closeCalls.filter(
-      (c) => c.method === "DELETE" && c.path === "/api/instances/inst-a/agents/agent-a2",
-    ),
-  ).toHaveLength(1);
-  await expect(meta).toContainText("RAG-чат A1");
-  await expect(meta).not.toContainText("A2");
-  await expect(page.locator(".msg.user").first()).toContainText("a1-q1");
+  // закрытие чисто локальное: ноль DELETE/POST — сеть не трогаем
+  expect(api.calls.filter((c) => c.method !== "GET")).toHaveLength(0);
 
-  // тост undo с меткой закрытого чата
+  // сосед стал активным: селектор без закрытого, лента — его диалог
+  await expect(sel.locator("option")).toHaveCount(1);
+  await expect(sel).toHaveValue(THREAD_BACK);
+  await expect(page.locator(".msg.user").first()).toContainText("b-q1");
+
+  // тост undo с меткой закрытого треда
   const toast = page.locator(".undo");
   await expect(toast).toBeVisible();
-  await expect(toast).toContainText("Чат «RAG-чат A2» закрыт.");
+  await expect(toast).toContainText("Чат «Демо · шея» закрыт.");
 
   await toast.locator("button", { hasText: "Вернуть" }).click();
 
-  // агент вернулся активным, лента — снова его тред
-  await expect(meta).toContainText("RAG-чат A2");
+  // запись вернулась в коллекцию и снова активна, лента — его диалог
+  await expect(sel.locator("option")).toHaveCount(2);
+  await expect(sel).toHaveValue(THREAD_NECK);
   await expect(page.locator(".msg.user").first()).toContainText("a-q1");
-  expect(
-    api.closeCalls.filter(
-      (c) => c.method === "POST" && c.path === "/api/instances/inst-a/agents/restore",
-    ),
-  ).toHaveLength(1);
+  await expect(page.locator(".undo")).toHaveCount(0);
 });
 
-test("✕ чат disabled, когда в сессии один агент", async ({ page, context }) => {
-  const a2 = e2eInstances().instances.find((i) => i.id === INST_A_ID)!.agents[1];
-  await mockApiWithClose(context, {
-    instances: {
-      instances: [
-        { id: INST_A_ID, label: "Демо · один чат", createdAt: "2026-10-02T09:00:00.000Z", agents: [a2] },
-      ],
-      caps: { maxInstances: 5, maxAgentsPerInstance: 6, usedInstances: 1 },
-    },
-  });
+test("✕ чат disabled на последнем треде (замена close-session-гварда)", async ({ page, context }) => {
+  await mockChat(context);
+  await seedLocalData(context, { threads: [e2eNeckThread()] });
   await page.goto("/");
 
-  const meta = page.locator(".dialog-col .col-h .meta");
-  await expect(meta).toContainText("RAG-чат A2");
-  await expect(page.locator("#close-chat")).toBeDisabled();
+  const sel = page.locator("select.session");
+  await expect(sel).toHaveValue(THREAD_NECK);
+  const close = page.locator("#close-chat");
+  await expect(close).toBeDisabled();
+  await expect(close).toHaveAttribute(
+    "title",
+    "Нельзя закрыть последний чат — создайте новый",
+  );
 });

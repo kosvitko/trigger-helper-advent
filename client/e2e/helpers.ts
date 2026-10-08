@@ -1,23 +1,20 @@
 /**
- * E2E-хелпер: перехват ВСЕХ /api/* на уровне browser-context — ноль реальной
- * сети, LLM не вызывается. Неперехваченный /api-путь получает 404-JSON
- * (в сеть не уходит в принципе, прокси vite на :3000 не задействуется).
+ * E2E-хелпер (C+ CH-5b): перехват ВСЕХ /api/* на уровне browser-context —
+ * ноль реальной сети, LLM не вызывается. Приложение stateless: справочники
+ * (models / rag-stats / agents-meta) + единственный ход POST /api/chat —
+ * плоский JSON ChatResponse (клиент парсит не-SSE-ответ как JSON) или
+ * SSE-поток (opts.sse: step-события + done + [DONE]). Неперехваченный
+ * /api-путь получает 404-JSON (в сеть не уходит в принципе).
+ *
+ * Локальные треды (th.threads.v1 / th.threadState.v1) сеются в localStorage
+ * ДО загрузки страницы — seedLocalData (context.addInitScript, guarded-write:
+ * пишет только при отсутствии ключа, reload не затирает персист приложения).
  */
 import type { BrowserContext, Route } from "@playwright/test";
-import {
-  AGENT_A2,
-  AGENT_B,
-  INST_A_ID,
-  INST_B_ID,
-  e2eChatTask,
-  e2eEmptyThread,
-  e2eInstances,
-  e2eModels,
-  e2eRagStats,
-  e2eRunRag,
-  e2eThreadA,
-  e2eThreadB,
-} from "./fixtures";
+import type { AddressInfo } from "node:net";
+import http from "node:http";
+import type { ChatThreadRecord } from "@trigger-helper/shared";
+import { e2eAgentsMeta, e2eChatLocal, e2eChatRag, e2eModels, e2eRagStats } from "./fixtures";
 
 export interface ApiCall {
   method: string;
@@ -25,39 +22,96 @@ export interface ApiCall {
   body: unknown;
 }
 
-export interface MockApi {
-  /** Журнал всех /api-запросов (для assert'ов «ровно один POST» и PATCH-тела). */
-  calls: ApiCall[];
-  /** Подменить реализацию run (по умолчанию — успешный rag-ответ). */
-  setRun(impl: (body: { input?: string; instanceId?: string; agentId?: string }) => unknown): void;
+/** Тело POST /api/chat (поля, которые specs'ам нужны для assert'ов). */
+export interface ChatRequestBody {
+  input?: string;
+  preset?: string;
+  contextTail?: {
+    summaries?: string[];
+    dialogue?: { role: string; content: string }[];
+    [k: string]: unknown;
+  };
+  overrides?: Record<string, unknown>;
+  compress?: boolean;
+  clientTurnId?: string;
+  [k: string]: unknown;
 }
 
-export interface MockApiOptions {
-  /** Задержка ответа /api/agent/run (мс) — окно для typing-индикатора. */
-  runDelayMs?: number;
-  /** Подменить GET /api/instances (например, пустой список). */
-  instances?: unknown;
-  /** Подменить POST /api/instances (например, кап-лимит 429). */
-  createInstance?: { status: number; body: unknown };
-  /** Пустые треды у обоих инстансов (чистая лента для подсчёта баблов). */
-  emptyThreads?: boolean;
+export interface MockChat {
+  /** Журнал всех /api-запросов (unexpected-404 тоже виден здесь). */
+  calls: ApiCall[];
+  /** Только POST /api/chat (тела — для assert'ов contextTail/compress/clientTurnId). */
+  get chatCalls(): ApiCall[];
+  /** Подменить ответ хода (по умолчанию — успешный rag-ответ на input). */
+  setChat(impl: (body: ChatRequestBody) => unknown): void;
+}
+
+export interface MockChatOptions {
+  /** Задержка ответа POST /api/chat (мс) — окно для typing-индикатора. */
+  chatDelayMs?: number;
+  /** POST /api/chat → SSE-поток (step-события + done) вместо плоского JSON. */
+  sse?: boolean;
+  /** День 26: вместе с sse — ЖИВОЙ стрим local-gen-кадров «● N ток» с
+   *  паузами между кадрами. route.fulfill отдал бы тело одним куском —
+   *  шаги обработались бы синхронно с done и не отрисовались бы; поэтому
+   *  поток отдаёт локальный node-SSE-сервер через route.continue. */
+  localProgress?: boolean;
+  /** Подменить GET /api/models. */
+  models?: unknown;
   /** Подменить GET /api/rag/stats (по умолчанию — реальная прод-форма). */
   ragStats?: unknown;
+  /** Подменить GET /api/agents (мета-справочник пресетов). */
+  agentsMeta?: unknown;
 }
 
-export async function mockApi(context: BrowserContext, opts: MockApiOptions = {}): Promise<MockApi> {
-  const calls: ApiCall[] = [];
-  let runImpl: (body: { input?: string }) => unknown = (body) =>
-    e2eRunRag(String(body?.input ?? ""));
-  const runDelayMs = opts.runDelayMs ?? 0;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  // Stateful-мок: run дописывает ход в тред агента — после reload лента
-  // восстанавливается реалистично (как это делал бы настоящий сервер).
-  const threads = new Map<string, Record<string, unknown>>([
-    [`t/${INST_A_ID}/${AGENT_A2}`, opts.emptyThreads ? e2eEmptyThread(INST_A_ID, AGENT_A2) : e2eThreadA()],
-    [`t/${INST_B_ID}/${AGENT_B}`, opts.emptyThreads ? e2eEmptyThread(INST_B_ID, AGENT_B) : e2eThreadB()],
-  ]);
-  const chatTasks = new Map<string, Record<string, unknown>>();
+/* — День 26: ленивый локальный SSE-сервер (один на процесс воркера).
+   Кадры local-gen приходят с паузами — окно для assert'ов прогресса
+   «● N ток»; финал — done с e2eChatLocal. — */
+let localSsePort: Promise<number> | null = null;
+
+function localProgressServer(): Promise<number> {
+  localSsePort ??= new Promise<number>((resolve) => {
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk: Buffer) => {
+        raw += chunk.toString("utf8");
+      });
+      req.on("end", () => {
+        let input = "";
+        try {
+          input = String((JSON.parse(raw) as ChatRequestBody)?.input ?? "");
+        } catch {
+          /* тело не распарсилось — финал с пустым input */
+        }
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        const frame = (event: unknown): void => {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        };
+        frame({ type: "step", step: "local-gen", text: "● 4 ток · 0,4 с" });
+        setTimeout(() => frame({ type: "step", step: "local-gen", text: "● 18 ток · 2,1 с" }), 900);
+        setTimeout(() => {
+          frame({ type: "done", result: e2eChatLocal(input) });
+          res.write("data: [DONE]\n\n");
+          res.end();
+        }, 1800);
+      });
+    });
+    server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
+  });
+  return localSsePort;
+}
+
+export async function mockChat(context: BrowserContext, opts: MockChatOptions = {}): Promise<MockChat> {
+  const calls: ApiCall[] = [];
+  let chatImpl: (body: ChatRequestBody) => unknown = (body) =>
+    e2eChatRag(String(body?.input ?? ""));
+  const chatDelayMs = opts.chatDelayMs ?? 0;
 
   const json = (route: Route, v: unknown, status = 200) =>
     route.fulfill({ status, contentType: "application/json", body: JSON.stringify(v) });
@@ -77,72 +131,32 @@ export async function mockApi(context: BrowserContext, opts: MockApiOptions = {}
     }
     calls.push({ method, path, body });
 
-    if (path === "/api/models") return json(route, e2eModels());
-    if (path === "/api/rag/stats") return json(route, opts.ragStats ?? e2eRagStats());
-    if (path === "/api/instances" && method === "GET")
-      return json(route, opts.instances ?? e2eInstances());
-    if (path === "/api/instances" && method === "POST") {
-      if (opts.createInstance) return json(route, opts.createInstance.body, opts.createInstance.status);
-      const b = (body ?? {}) as { label?: string };
-      return json(route, {
-        instance: {
-          id: "inst-new",
-          label: b.label ?? "Демо · новая",
-          createdAt: "2026-10-03T10:00:00.000Z",
-          agents: [
-            {
-              id: "agent-new-rag",
-              presetId: "rag_chat",
-              label: "RAG-чат",
-              role: "Помощник по самопомощи",
-              instructions: "Отвечай по базе знаний.",
-              layers: { strategic: "s", operational: "o", task: "t" },
-              inputPolicy: { trim: true, maxChars: 4000, requireNonEmpty: true },
-              outputPolicy: { trim: true, maxChars: 4000, formatHint: "soft" },
-              defaultModel: "deepseek-chat",
-              defaultTemperature: 0.3,
-            },
-          ],
-        },
-      });
-    }
+    if (path === "/api/models" && method === "GET") return json(route, opts.models ?? e2eModels());
+    if (path === "/api/rag/stats" && method === "GET")
+      return json(route, opts.ragStats ?? e2eRagStats());
+    if (path === "/api/agents" && method === "GET")
+      return json(route, opts.agentsMeta ?? e2eAgentsMeta());
 
-    const mMsgs = path.match(/^\/api\/instances\/([^/]+)\/agents\/([^/]+)\/messages$/);
-    if (mMsgs && method === "GET") {
-      const instId = decodeURIComponent(mMsgs[1]);
-      const agentId = decodeURIComponent(mMsgs[2]);
-      const th = threads.get(`t/${instId}/${agentId}`);
-      return json(route, th ?? e2eEmptyThread(instId, agentId));
-    }
-
-    const mTask = path.match(/^\/api\/instances\/([^/]+)\/agents\/([^/]+)\/chat-task-state$/);
-    if (mTask) {
-      const key = `c/${decodeURIComponent(mTask[1])}/${decodeURIComponent(mTask[2])}`;
-      if (method === "PATCH") {
-        const cur = (chatTasks.get(key) ??
-          e2eChatTask().chatTaskState) as Record<string, unknown>;
-        const next = { ...cur, ...((body ?? {}) as Record<string, unknown>) };
-        chatTasks.set(key, next);
-        return json(route, { chatTaskState: next });
+    if (path === "/api/chat" && method === "POST") {
+      if (opts.sse && opts.localProgress) {
+        // Живой стрим с паузами между кадрами (см. localProgress выше):
+        // ответ сервера проксируется в страницу как есть (SSE-ридер
+        // клиента читает кадры по мере прихода).
+        const port = await localProgressServer();
+        return route.continue({ url: `http://127.0.0.1:${port}${path}` });
       }
-      return json(route, { chatTaskState: chatTasks.get(key) ?? e2eChatTask().chatTaskState });
-    }
-
-    if (path === "/api/agent/run" && method === "POST") {
-      const res = runImpl((body ?? {}) as { input?: string });
-      const b = (body ?? {}) as { instanceId?: string; agentId?: string };
-      const th = threads.get(`t/${b.instanceId}/${b.agentId}`);
-      if (th) {
-        const messages = (th as { messages: unknown[] }).messages;
-        messages.push({
-          id: `local-run-${calls.length}`,
-          role: "user",
-          content: b.input ?? "",
-          createdAt: "2026-10-03T09:31:00.000Z",
-        });
-        messages.push((res as { message: unknown }).message);
+      const res = chatImpl((body ?? {}) as ChatRequestBody);
+      if (chatDelayMs > 0) await sleep(chatDelayMs);
+      if (opts.sse) {
+        const events = [
+          { type: "step", step: "start", text: "вопрос принят" },
+          { type: "step", step: "rag_rewrite", text: "вариантов 2" },
+          { type: "step", step: "narrative", text: "генерация ответа" },
+          { type: "done", result: res },
+        ];
+        const sseBody = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+        return route.fulfill({ status: 200, contentType: "text/event-stream", body: sseBody });
       }
-      if (runDelayMs > 0) await new Promise((r) => setTimeout(r, runDelayMs));
       return json(route, res);
     }
 
@@ -150,5 +164,69 @@ export async function mockApi(context: BrowserContext, opts: MockApiOptions = {}
     return json(route, { error: `e2e-mock: unexpected ${method} ${path}` }, 404);
   });
 
-  return { calls, setRun(impl) { runImpl = impl; } };
+  return {
+    calls,
+    get chatCalls() {
+      return calls.filter((c) => c.method === "POST" && c.path === "/api/chat");
+    },
+    setChat(impl) {
+      chatImpl = impl;
+    },
+  };
+}
+
+/* — Посев локального состояния (треды/память) до загрузки страницы — */
+
+export interface LocalThreadStateRecord {
+  id: string;
+  memory?: { facts: unknown[]; deleted: unknown[] };
+  chatTask?: { goal: string; clarified: string[]; constraints_terms: string[] };
+  /** Задача-FSM (день 13) и инварианты (день 14) — per-тред, C+ хвосты. */
+  task?: unknown;
+  invariants?: unknown[];
+}
+
+export interface SeedOptions {
+  /** Записи th.threads.v1 (ChatThreadRecord); активный по умолчанию — новейший. */
+  threads?: ChatThreadRecord[];
+  /** Записи th.threadState.v1 (память/память задачи per-тред). */
+  threadState?: LocalThreadStateRecord[];
+}
+
+/**
+ * Засеять localStorage ДО первого скрипта страницы. Guarded-write: ключ
+ * пишется только при отсутствии — после boot'а хранилище принадлежит
+ * приложению, reload не откатывает его изменения (персист честно тестируется).
+ */
+export async function seedLocalData(context: BrowserContext, opts: SeedOptions = {}): Promise<void> {
+  const threads = opts.threads ?? [];
+  const states = opts.threadState ?? [];
+  await context.addInitScript(
+    (payload: { threads: unknown[]; states: unknown[] }) => {
+      try {
+        if (!localStorage.getItem("th.threads.v1")) {
+          localStorage.setItem(
+            "th.threads.v1",
+            JSON.stringify({ version: 1, records: payload.threads }),
+          );
+        }
+        if (payload.states.length > 0 && !localStorage.getItem("th.threadState.v1")) {
+          localStorage.setItem(
+            "th.threadState.v1",
+            JSON.stringify({ version: 1, records: payload.states }),
+          );
+        }
+      } catch {
+        /* localStorage недоступен — чистый старт */
+      }
+    },
+    { threads, states },
+  );
+}
+
+/** Активный тред (id из селектора шапки) — он же префикс data-turn-id ходов. */
+export async function activeThreadId(page: import("@playwright/test").Page): Promise<string> {
+  const value = await page.locator("select.session").inputValue();
+  if (!value) throw new Error("активный тред не выбран (селектор пуст)");
+  return value;
 }

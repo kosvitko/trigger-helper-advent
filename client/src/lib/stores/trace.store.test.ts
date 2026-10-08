@@ -1,18 +1,14 @@
 /**
- * UNIT 3 — trace store (trace.svelte.ts):
- * сборка хода (turnId=message.id, rag_ask-чип, LLM-нарратив, гейт dontKnow,
- * railViolated), смена скоупа, кэш th.trace.v1:<agentId> (debounce, кап 50,
+ * UNIT 3 — trace store (trace.svelte.ts): сборка хода из stateless-ответа
+ * /api/chat (rag_ask-чип, LLM-нарратив, гейт dontKnow, railViolated, трим,
+ * сжатие), смена скоупа, кэш th.trace.v1:<threadId> (debounce, кап 50,
  * drop-oldest), защищённое чтение битого/чужого кэша.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@trigger-helper/shared";
+import { buildTurnFromChat, trace, type TurnBlock } from "./trace.svelte";
 import {
-  buildTurnFromRun,
-  trace,
-  type TurnBlock,
-} from "./trace.svelte";
-import {
-  makeRunResponse,
+  makeChatResponse,
   ragDontKnowPayload,
   ragOkPayload,
 } from "../../test/fixtures";
@@ -23,35 +19,26 @@ beforeEach(() => {
   trace.setScope(null); // …и возвращаемся «вне сессии»
 });
 
-describe("trace · buildTurnFromRun", () => {
-  it("turnId = id ассистент-сообщения; rag_ask-шаг несёт вопрос/источники/цитаты/dontKnow", () => {
-    const res = makeRunResponse({ messageId: "msg-r1", rag: ragOkPayload("как помочь при боли в шее?") });
-    const t = buildTurnFromRun("вопрос пользователя", res);
-    expect(t.turnId).toBe("msg-r1");
+describe("trace · buildTurnFromChat (C+ stateless /api/chat)", () => {
+  it("turnId — клиентский параметр; rag_ask-шаг из trace.tool.calls.payload", () => {
+    const res = makeChatResponse({ rag: ragOkPayload("как помочь при боли в шее?") });
+    const t = buildTurnFromChat("вопрос", res, "th-1:3", 1200);
+    expect(t.turnId).toBe("th-1:3");
     const rag = t.steps.find((s) => s.kind === "rag");
     expect(rag).toBeDefined();
-    expect(rag!.title).toBe("rag_ask");
     expect(rag!.data.rag?.question).toBe("как помочь при боли в шее?");
     expect(rag!.data.rag?.sourcesCount).toBe(3);
     expect(rag!.data.rag?.quotesCount).toBe(2);
-    expect(rag!.data.rag?.dontKnow).toBe(false);
-    expect(rag!.data.rag?.topCosine).toBeCloseTo(0.713, 3);
-    expect(rag!.data.rag?.threshold).toBe(0.8375);
-  });
-
-  it("LLM-нарратив — отдельная строка с usage-цифрами", () => {
-    const res = makeRunResponse({ messageId: "m", rag: ragOkPayload("q") });
-    const t = buildTurnFromRun("в", res);
-    const llm = t.steps.find((s) => s.title === "Нарратив");
-    expect(llm).toBeDefined();
-    expect(llm!.data.cost).toBe("360"); // fmtTok(completion_tokens)
+    // модель агента умерла вместе с STATEFUL — модель из usage
+    expect(t.model).toBe(res.usage.model);
+    expect(t.latencyMs).toBe(1200); // клиентский замер (в ответе поля нет)
     // токены хода = LLM total + rag usage
     expect(t.tokens).toBe(res.usage.total_tokens + 640);
   });
 
   it("средние стадии пайплайна: подшаги rag + рельса-чек (Костя 041004)", () => {
-    const res = makeRunResponse({ messageId: "m-sub", rag: ragOkPayload("q") });
-    const t = buildTurnFromRun("в", res);
+    const res = makeChatResponse({ rag: ragOkPayload("q") });
+    const t = buildTurnFromChat("в", res, "th:0");
     const titles = t.steps.map((s) => s.title);
     expect(titles).toContain("· рерайт запроса");
     expect(titles).toContain("· поиск по базе");
@@ -71,23 +58,53 @@ describe("trace · buildTurnFromRun", () => {
     expect(rail.data.sub).toContain("✓");
   });
 
-  it("dontKnow-ход: гейт «не знаю» присутствует, позитивных источников нет", () => {
-    const res = makeRunResponse({ messageId: "m-dk", rag: ragDontKnowPayload("сколько весит лунный грунт?") });
-    const t = buildTurnFromRun("в", res);
-    const gate = t.steps.find((s) => s.kind === "gate");
-    expect(gate).toBeDefined();
-    expect(gate!.title).toContain("не знаю");
-    expect(gate!.data.sub).toContain("порога 0.8375"); // QA 041003: порог — числом
-    const rag = t.steps.find((s) => s.kind === "rag")!;
-    expect(rag.data.rag?.dontKnow).toBe(true);
-    expect(rag.data.rag?.sourcesCount).toBe(0);
+  it("contextTrimmed → шаг «Контекст обрезан» с числами (SEC-F4)", () => {
+    const res = makeChatResponse({
+      contextTrimmed: { droppedDialogue: 12, droppedSummaries: 1, charsBefore: 70000, charsAfter: 63000 },
+    });
+    const t = buildTurnFromChat("в", res, "th:0");
+    const trim = t.steps.find((s) => s.title === "Контекст обрезан");
+    expect(trim).toBeDefined();
+    expect(trim!.data.sub).toContain("−12 сообщ.");
+    expect(trim!.data.sub).toContain("−1 сводок");
+    expect(trim!.data.sub).toContain("70000 → 63000");
   });
 
-  it("railViolated отражается флагом хода", () => {
-    const ok = makeRunResponse({ messageId: "m", rag: ragOkPayload("q"), railViolated: false });
-    expect(buildTurnFromRun("в", ok).railViolated).toBe(false);
-    const bad = makeRunResponse({ messageId: "m", rag: ragOkPayload("q"), railViolated: true });
-    expect(buildTurnFromRun("в", bad).railViolated).toBe(true);
+  it("compress → лёгкий шаг сжатия (usage в инлайн-сжатии нет — карточки тоже)", () => {
+    const res = makeChatResponse({
+      compress: { summary: "сводка", keptTail: [{ role: "user", content: "q" }] },
+    });
+    const t = buildTurnFromChat("в", res, "th:0");
+    const c = t.steps.find((s) => s.kind === "compress");
+    expect(c).toBeDefined();
+    expect(c!.data.sub).toContain("хвост 1");
+    expect(c!.data.compress).toBeUndefined(); // структурной карточки нет — без usage
+  });
+
+  it("dontKnow-гейт и railViolated — те же семантики, что в run-ходе", () => {
+    const dk = buildTurnFromChat("в", makeChatResponse({ rag: ragDontKnowPayload("оффтоп?") }), "th:0");
+    const gate = dk.steps.find((s) => s.kind === "gate");
+    expect(gate).toBeDefined();
+    expect(gate!.data.sub).toContain("порога 0.8375");
+    expect(buildTurnFromChat("в", makeChatResponse({ railViolated: true }), "th:0").railViolated).toBe(true);
+    expect(buildTurnFromChat("в", makeChatResponse({ railViolated: false }), "th:0").railViolated).toBe(false);
+  });
+
+  it("addTurnFromChat заменяет pending-ход реальным и кэшируется", () => {
+    vi.useFakeTimers();
+    try {
+      trace.setScope("th-chat");
+      trace.beginPending("вопрос");
+      expect(trace.turns.has("__pending__")).toBe(true);
+      trace.addTurnFromChat("вопрос", makeChatResponse({ reply: "ок" }), "th-chat:0", 500);
+      expect(trace.turns.has("__pending__")).toBe(false);
+      expect(trace.turnBy("th-chat:0")?.userText).toBe("вопрос");
+      vi.advanceTimersByTime(600);
+      const saved = JSON.parse(sessionStorage.getItem("th.trace.v1:th-chat")!) as { turns: TurnBlock[] };
+      expect(saved.turns.map((t) => t.turnId)).toEqual(["th-chat:0"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -127,7 +144,7 @@ describe("trace · mergeThread — скелеты ходов из истории
     expect(sk.costRub).toBe(0.12);
     expect(sk.steps).toEqual([]);
     // живой ход с тем же id не перезаписывается скелетом
-    trace.addTurnFromRun("болит шея", makeRunResponse({ messageId: "a1", rag: ragOkPayload("q") }));
+    trace.addTurnFromChat("болит шея", makeChatResponse({ rag: ragOkPayload("q") }), "a1");
     trace.mergeThread(threadMsgs);
     expect(trace.turnBy("a1")!.restored ?? false).toBe(false);
   });
@@ -138,7 +155,7 @@ describe("trace · mergeThread — скелеты ходов из истории
     let t = trace.totals();
     expect(t.turns).toBe(2);
     expect(t.railTotal).toBe(0);
-    trace.addTurnFromRun("вопрос", makeRunResponse({ messageId: "live1", rag: ragOkPayload("q") }));
+    trace.addTurnFromChat("вопрос", makeChatResponse({ rag: ragOkPayload("q") }), "live1");
     t = trace.totals();
     expect(t.railTotal).toBe(1);
     expect(t.railOk).toBe(1);
@@ -149,8 +166,9 @@ describe("trace · mergeThread — скелеты ходов из истории
     expect(trace.lastLiveModel()).toBeNull();
     trace.mergeThread(threadMsgs);
     expect(trace.lastLiveModel()).toBeNull(); // только скелеты
-    trace.addTurnFromRun("в", makeRunResponse({ messageId: "live", rag: ragOkPayload("q") }));
-    expect(trace.lastLiveModel()).toBe(makeRunResponse({ messageId: "live", rag: ragOkPayload("q") }).agent.model);
+    const live = makeChatResponse({ rag: ragOkPayload("q") });
+    trace.addTurnFromChat("в", live, "live");
+    expect(trace.lastLiveModel()).toBe(live.usage.model);
   });
 
   it("restored-флаг переживает кэш (схема пропускает)", () => {
@@ -171,7 +189,7 @@ describe("trace · mergeThread — скелеты ходов из истории
 describe("trace · скоуп агента и кэш sessionStorage", () => {
   it("setScope(agentId) сбрасывает ходы (изоляция сессий)", () => {
     trace.setScope("agent-a");
-    trace.addTurnFromRun("q", makeRunResponse({ messageId: "m-a1" }));
+    trace.addTurnFromChat("q", makeChatResponse({}), "m-a1");
     expect(trace.turns.size).toBe(1);
     trace.setScope("agent-b");
     expect(trace.turns.size).toBe(0);
@@ -182,7 +200,7 @@ describe("trace · скоуп агента и кэш sessionStorage", () => {
     vi.useFakeTimers();
     try {
       trace.setScope("agent-cache");
-      trace.addTurnFromRun("q", makeRunResponse({ messageId: "m-c1" }));
+      trace.addTurnFromChat("q", makeChatResponse({}), "m-c1");
       expect(sessionStorage.getItem("th.trace.v1:agent-cache")).toBeNull(); // ещё не записан
       vi.advanceTimersByTime(600);
       const raw = sessionStorage.getItem("th.trace.v1:agent-cache");
@@ -200,7 +218,7 @@ describe("trace · скоуп агента и кэш sessionStorage", () => {
     try {
       trace.setScope("agent-cap");
       for (let i = 0; i < 52; i += 1) {
-        trace.addTurnFromRun(`q${i}`, makeRunResponse({ messageId: `m-${i}` }));
+        trace.addTurnFromChat(`q${i}`, makeChatResponse({}), `m-${i}`);
       }
       vi.advanceTimersByTime(600);
       expect(trace.turns.size).toBe(50);
@@ -232,7 +250,7 @@ describe("trace · скоуп агента и кэш sessionStorage", () => {
   });
 
   it("валидный кэш восстанавливается при setScope", () => {
-    const turn = buildTurnFromRun("q", makeRunResponse({ messageId: "m-load", rag: ragOkPayload("q") }));
+    const turn = buildTurnFromChat("q", makeChatResponse({ rag: ragOkPayload("q") }), "m-load");
     sessionStorage.setItem("th.trace.v1:good", JSON.stringify({ version: 1, turns: [turn] }));
     trace.setScope("good");
     expect(trace.turnBy("m-load")).not.toBeNull();

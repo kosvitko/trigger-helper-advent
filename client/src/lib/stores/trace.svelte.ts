@@ -1,14 +1,21 @@
 /**
- * Стор трейса: пост-хок таймлайн ходов из run-payload (D-4, модель F-8).
- * turnId = id финального ассистент-сообщения хода; много-тулзовые раунды
- * группируются под ним. Пошаговый трейс живёт в памяти SPA-сессии +
- * write-behind в sessionStorage th.trace.v1:<agentId> (05-M-5; кэш скоупится
- * на активного агента — смена сессии = смена скоупа, ходы не смешиваются).
+ * Стор трейса: пост-хок таймлайн ходов из run/chat-payload (D-4, модель F-8).
+ * turnId = id финального ассистент-сообщения хода (C+: клиентский
+ * `<threadId>:<index>`); много-тулзовые раунды группируются под ним.
+ * Пошаговый трейс живёт в памяти SPA-сессии + write-behind в sessionStorage
+ * th.trace.v1:<threadId> (05-M-5; кэш скоупится на активный тред — смена
+ * треда = смена скоупа, ходы не смешиваются).
  */
 import { SvelteMap } from "svelte/reactivity";
 import { z } from "zod";
 import { LlmUsageSchema } from "@trigger-helper/shared";
-import type { AgentMessage, AgentRunResponse, LlmUsage } from "@trigger-helper/shared";
+import type {
+  AgentMessage,
+  AgentRunContext,
+  ChatResponse,
+  LlmUsage,
+} from "@trigger-helper/shared";
+import { STAGE_LABELS } from "@trigger-helper/shared";
 import { fmtRub, fmtSec, fmtTok } from "../format";
 
 export type TraceStepKind =
@@ -42,7 +49,16 @@ export interface RagStepData {
   costRub: number | null;
   latencyMs: number | null;
   labels: string[];
-  quotes: { quote: string; source: string; section: string }[];
+  /** Корпус v2 (261005 D-5): атрибуция цитат — маркированные несут
+   * автор+книга (ст. 1274), факт-проза — пометку paraphrase («по:»). */
+  quotes: {
+    quote: string;
+    source: string;
+    section: string;
+    author?: string;
+    book?: string;
+    paraphrase?: boolean;
+  }[];
   error?: string;
 }
 
@@ -155,7 +171,16 @@ const RagStepDataSchema = z.object({
   costRub: z.number().nullable(),
   latencyMs: z.number().int().nullable(),
   labels: z.array(z.string()),
-  quotes: z.array(z.object({ quote: z.string(), source: z.string(), section: z.string() })),
+  quotes: z.array(
+    z.object({
+      quote: z.string(),
+      source: z.string(),
+      section: z.string(),
+      author: z.string().optional(),
+      book: z.string().optional(),
+      paraphrase: z.boolean().optional(),
+    }),
+  ),
   error: z.string().optional(),
 });
 
@@ -266,17 +291,41 @@ function isRagPayload(p: unknown): p is Record<string, unknown> {
   return typeof p === "object" && p !== null && "dontKnow" in p && "question" in p;
 }
 
-function coerceQuotes(v: unknown): { quote: string; source: string; section: string }[] {
+function coerceQuotes(v: unknown): {
+  quote: string;
+  source: string;
+  section: string;
+  author?: string;
+  book?: string;
+  paraphrase?: boolean;
+}[] {
   if (!Array.isArray(v)) return [];
-  const out: { quote: string; source: string; section: string }[] = [];
+  const out: {
+    quote: string;
+    source: string;
+    section: string;
+    author?: string;
+    book?: string;
+    paraphrase?: boolean;
+  }[] = [];
   for (const q of v) {
     if (typeof q === "object" && q !== null) {
-      const o = q as { quote?: unknown; source?: unknown; section?: unknown };
+      const o = q as {
+        quote?: unknown;
+        source?: unknown;
+        section?: unknown;
+        author?: unknown;
+        book?: unknown;
+        paraphrase?: unknown;
+      };
       if (typeof o.quote === "string" && typeof o.source === "string") {
         out.push({
           quote: o.quote,
           source: o.source,
           section: typeof o.section === "string" ? o.section : "",
+          ...(typeof o.author === "string" ? { author: o.author } : {}),
+          ...(typeof o.book === "string" ? { book: o.book } : {}),
+          ...(o.paraphrase === true ? { paraphrase: true } : {}),
         });
       }
     }
@@ -288,41 +337,23 @@ function strArr(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
-/** Сборка хода из run-payload (агенты не зовутся напрямую — только этот путь). */
-export function buildTurnFromRun(userText: string, res: AgentRunResponse): TurnBlock {
-  const turnId = res.message.id;
-  const ctx = res.context;
+/* — Общие сборщики шагов (run/chat-контексты совпадают по форме, CH-5b) — */
+
+interface ToolSteps {
+  steps: TraceStep[];
+  ragTokens: number;
+  ragCost: number;
+  ragData?: RagStepData;
+}
+
+/** Тулзы хода: rag_ask-карточка из структурного payload либо generic tool-call
+ *  + подшаги пайплайна (рерайт → поиск → черновик → верификация). */
+function toolCallsSteps(ctx: AgentRunContext, turnId: string): ToolSteps {
   const steps: TraceStep[] = [];
-
-  // Сжатие истории (Day09 — происходит до хода)
-  if (res.autoCompression) {
-    const { compression, before, after } = res.autoCompression;
-    steps.push({
-      id: `${turnId}:compress`,
-      kind: "compress",
-      title: "Сжатие истории",
-      data: {
-        sub: `сообщ. ${before.count} → summary −${fmtTok(compression.savedTokens)} ток в окне`,
-        cost: fmtTok(compression.usage.total_tokens),
-        compress: {
-          model: compression.model,
-          beforeCount: before.count,
-          beforeTokens: before.tokensEstimate,
-          afterCount: after.count,
-          afterTokens: after.tokensEstimate,
-          savedTokens: compression.savedTokens,
-          costRub: compression.cost_rub,
-          latencyMs: compression.latency_ms,
-        },
-      },
-    });
-  }
-
-  // Тулзы хода: rag_ask-карточка из структурного payload либо generic tool-call
   let ragTokens = 0;
   let ragCost = 0;
   let ragData: RagStepData | undefined;
-  const calls = ctx?.tool?.calls ?? [];
+  const calls = ctx.tool?.calls ?? [];
   calls.forEach((call, i) => {
     if (call.name === "rag_ask" && isRagPayload(call.payload)) {
       const p = call.payload;
@@ -424,60 +455,26 @@ export function buildTurnFromRun(userText: string, res: AgentRunResponse): TurnB
       });
     }
   });
+  return { steps, ragTokens, ragCost, ragData };
+}
 
-  // Гейт «не знаю» (payload.dontKnow/topCosine, D-4; порог — QA 041003)
-  if (ragData?.dontKnow) {
-    const cosine = ragData.topCosine !== null ? ragData.topCosine.toFixed(3) : "—";
-    const thr = ragData.threshold !== null && ragData.threshold !== undefined ? ` ${ragData.threshold}` : "";
-    steps.push({
-      id: `${turnId}:gate`,
-      kind: "gate",
-      title: "Гейт «не знаю»",
-      data: { sub: `косинус top-1 = ${cosine} < порога${thr} → ответ-вызов пропущен`, cost: "₽0" },
-    });
-  }
+/** Гейт «не знаю» (payload.dontKnow/topCosine, D-4; порог — QA 041003). */
+function gateStep(turnId: string, ragData: RagStepData | undefined): TraceStep | null {
+  if (!ragData?.dontKnow) return null;
+  const cosine = ragData.topCosine !== null ? ragData.topCosine.toFixed(3) : "—";
+  const thr = ragData.threshold !== null && ragData.threshold !== undefined ? ` ${ragData.threshold}` : "";
+  return {
+    id: `${turnId}:gate`,
+    kind: "gate",
+    title: "Гейт «не знаю»",
+    data: { sub: `косинус top-1 = ${cosine} < порога${thr} → ответ-вызов пропущен`, cost: "₽0" },
+  };
+}
 
-  // LLM-нарратив (usage — run-payload)
-  steps.push({
-    id: `${turnId}:llm`,
-    kind: "llm",
-    title: "Нарратив",
-    data: {
-      sub:
-        ragData && !ragData.dontKnow
-          ? `ответ с ${ragData.sourcesCount} источниками, метки [source › section]`
-          : "ответ модели",
-      cost: fmtTok(res.usage.completion_tokens),
-      llm: {
-        model: res.agent.model,
-        latencyMs: res.latency_ms,
-        prompt: res.usage.prompt_tokens,
-        completion: res.usage.completion_tokens,
-        total: res.usage.total_tokens,
-        cacheHit: res.usage.prompt_cache_hit_tokens,
-        costRub: res.usage.estimated_cost_rub,
-        replyClip: res.reply.length > 240 ? `${res.reply.slice(0, 240)}…` : res.reply,
-      },
-    },
-  });
-
-  // Рельса-чек (Day25; средняя стадия — Костя 041004): вызов был? метки на месте?
-  steps.push({
-    id: `${turnId}:rail`,
-    kind: "tool",
-    title: "Рельса-чек",
-    data: {
-      sub: res.meta?.railViolated
-        ? "нарушена: ответ без вызова/меток → был re-prompt"
-        : ragData && !ragData.dontKnow
-          ? "rag-вызов ✓ · метки источников в ответе ✓"
-          : "rag-вызов ✓ (dontKnow — метки не требуются)",
-      cost: "—",
-    },
-  });
-
-  // Слоистая память (Day11) — если был инжект/классификация
-  if (ctx?.memory) {
+/** Слоистая память (Day11) + эхо «Памяти задачи» (Day25, только rag-ходы). */
+function memorySteps(ctx: AgentRunContext, turnId: string): TraceStep[] {
+  const steps: TraceStep[] = [];
+  if (ctx.memory) {
     const inj = ctx.memory.inject;
     const count = inj.long.length + inj.working.length + inj.short.length;
     // Классификация фактов — отдельная LLM-стадия (средняя, Костя 041004)
@@ -512,9 +509,7 @@ export function buildTurnFromRun(userText: string, res: AgentRunResponse): TurnB
       });
     }
   }
-
-  // Эхо «Памяти задачи» после экстракта хода (Day25, только rag-ходы)
-  if (ctx?.chatTaskState) {
+  if (ctx.chatTaskState) {
     const cts = ctx.chatTaskState;
     steps.push({
       id: `${turnId}:chattask`,
@@ -531,16 +526,151 @@ export function buildTurnFromRun(userText: string, res: AgentRunResponse): TurnB
       },
     });
   }
+  return steps;
+}
+
+function narrativeSub(ragData: RagStepData | undefined): string {
+  return ragData && !ragData.dontKnow
+    ? `ответ с ${ragData.sourcesCount} источниками, метки [source › section]`
+    : "ответ модели";
+}
+
+function railSub(railViolated: boolean, ragData: RagStepData | undefined): string {
+  return railViolated
+    ? "нарушена: ответ без вызова/меток → был re-prompt"
+    : ragData && !ragData.dontKnow
+      ? "rag-вызов ✓ · метки источников в ответе ✓"
+      : "rag-вызов ✓ (dontKnow — метки не требуются)";
+}
+
+/**
+ * C+ (CH-5b): сборка хода из stateless-ответа POST /api/chat. turnId —
+ * клиентский `<threadId>:<index>` (серверного message.id нет); latencyMs —
+ * клиентский замер (в ответе поля нет; модель — из usage.model).
+ * Отличия старого run-пути больше нет — снят вместе с STATEFUL (D-10,
+ * «только новое»: инлайн-сжатие без usage — лёгкий шаг, факт трима
+ * контекста — шаг «Контекст обрезан» (SEC-F4), memoryDelta — в локальном
+ * персисте, на трейс не влияет).
+ */
+export function buildTurnFromChat(
+  userText: string,
+  res: ChatResponse,
+  turnId: string,
+  latencyMs = 0,
+): TurnBlock {
+  const ctx = res.trace;
+  const steps: TraceStep[] = [];
+
+  // Q-2: инлайн-сжатие этого хода — префикс треда схлопнут в сводку + хвост
+  if (res.compress) {
+    steps.push({
+      id: `${turnId}:compress`,
+      kind: "compress",
+      title: "Сжатие истории",
+      data: {
+        sub: `префикс → сводка + хвост ${res.compress.keptTail.length} сообщ.`,
+        cost: "—",
+      },
+    });
+  }
+
+  // SEC-F4: серверный трим хвоста — бейдж «контекст обрезан»
+  if (ctx.contextTrimmed) {
+    const t = ctx.contextTrimmed;
+    steps.push({
+      id: `${turnId}:trim`,
+      kind: "payload",
+      title: "Контекст обрезан",
+      data: {
+        sub:
+          `−${t.droppedDialogue} сообщ. диалога` +
+          (t.droppedSummaries > 0 ? ` · −${t.droppedSummaries} сводок` : "") +
+          ` · ${t.charsBefore} → ${t.charsAfter} симв.`,
+        cost: "—",
+      },
+    });
+  }
+
+  const tools = toolCallsSteps(ctx, turnId);
+  steps.push(...tools.steps);
+  const gate = gateStep(turnId, tools.ragData);
+  if (gate) steps.push(gate);
+
+  // LLM-нарратив (usage — chat-ответ; модель и латентность — из того, что есть)
+  steps.push({
+    id: `${turnId}:llm`,
+    kind: "llm",
+    title: "Нарратив",
+    data: {
+      sub: narrativeSub(tools.ragData),
+      cost: fmtTok(res.usage.completion_tokens),
+      llm: {
+        model: res.usage.model,
+        latencyMs,
+        prompt: res.usage.prompt_tokens,
+        completion: res.usage.completion_tokens,
+        total: res.usage.total_tokens,
+        cacheHit: res.usage.prompt_cache_hit_tokens,
+        costRub: res.usage.estimated_cost_rub,
+        replyClip: res.reply.length > 240 ? `${res.reply.slice(0, 240)}…` : res.reply,
+      },
+    },
+  });
+
+  // Рельса-чек (Day25): вызов был? метки на месте?
+  steps.push({
+    id: `${turnId}:rail`,
+    kind: "tool",
+    title: "Рельса-чек",
+    data: { sub: railSub(res.meta?.railViolated === true, tools.ragData), cost: "—" },
+  });
+
+  steps.push(...memorySteps(ctx, turnId));
+
+  // C+ хвосты (день 13/14): кадры задачи/инвариантов хода — контекст-чеки
+  // сервера (inject/check/retry) видны в таймлайне; вид «fsm» зарезервирован.
+  if (ctx.task) {
+    const t = ctx.task;
+    const retried = t.check?.retried === true ? " (после ретрая)" : "";
+    const checkNote = t.check ? ` · чек: ${t.check.note}${retried}` : "";
+    steps.push({
+      id: `${turnId}:task`,
+      kind: "fsm",
+      title: "Задача",
+      data: {
+        sub:
+          `${STAGE_LABELS[t.stage]} · шаг ${t.step}/${t.total}` +
+          (t.paused ? " · пауза" : "") +
+          (t.inject ? " · инжект стадии" : "") +
+          checkNote,
+        cost: "—",
+      },
+    });
+  }
+  if (ctx.invariants) {
+    const inv = ctx.invariants;
+    const retried = inv.check?.retried === true ? " (после ретрая)" : "";
+    const checkNote = inv.check ? ` · чек: ${inv.check.note}${retried}` : "";
+    steps.push({
+      id: `${turnId}:invariants`,
+      kind: "fsm",
+      title: "Инварианты",
+      data: {
+        sub: `рядов: ${inv.checked.length} · инжект ${inv.inject ? "✓" : "—"}` + checkNote,
+        cost: "—",
+      },
+    });
+  }
 
   return {
     turnId,
     userText,
-    model: res.agent.model,
-    latencyMs: res.latency_ms,
+    model: res.usage.model,
+    latencyMs,
     usage: res.usage,
     railViolated: res.meta?.railViolated === true,
-    tokens: res.usage.total_tokens + ragTokens,
-    costRub: (res.message.cost_rub ?? res.usage.estimated_cost_rub) + ragCost,
+    tokens: res.usage.total_tokens + tools.ragTokens,
+    costRub: res.usage.estimated_cost_rub + tools.ragCost,
     steps,
   };
 }
@@ -551,10 +681,11 @@ class TraceStore {
   /** Ключ кэша активного агента; null = сессия ещё не выбрана (boot не прошёл). */
   private scopeKey: string | null = null;
 
-  /** Смена активного агента — lifecycle-событие (F-2), не merge: сбрасываем
-   *  ходы и пересводим кэш на ключ агента. Восстановление — только через setScope. */
-  setScope(agentId: string | null): void {
-    const key = agentId !== null ? `${TRACE_KEY}:${agentId}` : null;
+  /** Смена активного треда (C+: раньше — агента) — lifecycle-событие (F-2),
+   *   не merge: сбрасываем ходы и пересводим кэш на ключ треда. Восстановление
+   *   — только через setScope. */
+  setScope(threadId: string | null): void {
+    const key = threadId !== null ? `${TRACE_KEY}:${threadId}` : null;
     if (key === this.scopeKey) return;
     if (this.timer !== null) {
       clearTimeout(this.timer);
@@ -675,7 +806,6 @@ class TraceStore {
       rag_ask: "rag_ask",
       narrative: "Нарратив",
       thinking: "Анализ",
-      memory: "Память · классификация",
       start: "Вопрос",
       // Средние стадии (Костя 041004): появляются по ходу пайплайна, а не пачкой
       rag_rewrite: "· рерайт запроса",
@@ -685,12 +815,13 @@ class TraceStore {
       memory_class: "Память · классификация",
       rail: "Рельса-чек",
       chattask: "Память задачи",
+      // День 26 (D-26-3): прогресс локальной генерации — иначе сырой ключ в RU UI
+      "local-gen": "Генерация (локальная)",
     };
     const kindMap: Record<string, TraceStep["kind"]> = {
       rag_ask: "rag",
       narrative: "llm",
       thinking: "llm",
-      memory: "memory",
       start: "llm",
       rag_rewrite: "rag",
       rag_search: "rag",
@@ -715,10 +846,16 @@ class TraceStore {
     this.turns.set(TraceStore.PENDING_ID, { ...pending }); // trigger reactivity
   }
 
-  /** upsert-by-id: пересборка того же хода (retry) не плодит дубликаты. */
-  addTurnFromRun(userText: string, res: AgentRunResponse): void {
+  /** C+ (CH-5b): ход из stateless-ответа /api/chat; turnId — клиентский
+   *   `<threadId>:<index>`, latencyMs — замер на клиенте. */
+  addTurnFromChat(
+    userText: string,
+    res: ChatResponse,
+    turnId: string,
+    latencyMs = 0,
+  ): void {
     this.cancelPending(); // заменяем оптимистичный placeholder реальным ходом
-    const turn = buildTurnFromRun(userText, res);
+    const turn = buildTurnFromChat(userText, res, turnId, latencyMs);
     this.turns.set(turn.turnId, turn);
     while (this.turns.size > MAX_TURNS) {
       const oldest = this.turns.keys().next().value;

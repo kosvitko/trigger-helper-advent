@@ -36,8 +36,8 @@
       type="button"
       id="composer-send"
       class="send"
-      disabled={dialog.typing || !session.activeAgentId}
-      title={session.activeAgentId ? undefined : "Нет активной сессии — создайте RAG-чат в шапке"}
+      disabled={dialog.typing || !session.activeThreadId}
+      title={session.activeThreadId ? undefined : "Нет активного чата — создайте RAG-чат в шапке"}
       onclick={() => void send()}
     >
       {dialog.typing ? "Отправляем…" : "Отправить"}

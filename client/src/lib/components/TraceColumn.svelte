@@ -3,6 +3,8 @@
   // Сворачивание ходов — эфемерный UI-стейт (F-2), живёт в колонке.
   import TurnBlock from "./TurnBlock.svelte";
   import TaskMemoryCard from "./TaskMemoryCard.svelte";
+  import TaskCard from "./TaskCard.svelte";
+  import InvariantsCard from "./InvariantsCard.svelte";
   import { trace } from "../stores/trace.svelte";
   import { fmtRub, fmtTok, plural } from "../format";
 
@@ -52,6 +54,11 @@
 <!-- Память задачи — внизу ТРЕЙСА (решение Кости 04.10): в «Диалоге» колонка
      погашена — карточка исчезает вместе с трейсом. -->
 <TaskMemoryCard />
+<!-- C+ хвосты: задача-FSM (день 13) и инварианты (день 14) — тот же слой
+     карточек: редакция владельца, персист локальный, в ход — через
+     contextTail. -->
+<TaskCard />
+<InvariantsCard />
 
 <div class="foot">
   Сессия: {totals.turns} {plural(totals.turns, "ход", "хода", "ходов")} · {fmtTok(totals.tokens)} ток ·

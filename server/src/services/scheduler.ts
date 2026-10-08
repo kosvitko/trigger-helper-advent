@@ -6,8 +6,6 @@ import { z } from "zod";
 import type { Env } from "../config/env.js";
 import type { DeepSeekService } from "./deepseek.js";
 import type { UsageLedgerService } from "./usage-ledger.js";
-import type { ThreadStore } from "./agent/threads.js";
-import { costRubFromUsage } from "./pricing.js";
 // Day19: PubMed client moved to its own module (shared with pipeline tools).
 import { efetchAbstract, esearch, esummary } from "./pubmed.js";
 
@@ -139,7 +137,6 @@ export class SchedulerService {
       env: Env;
       deepSeek: DeepSeekService;
       ledger: UsageLedgerService;
-      threads: ThreadStore;
     },
   ) {}
 
@@ -560,22 +557,9 @@ export class SchedulerService {
         }
       }
       this.store.counters.llmCalls += 1;
-      // Решение Кости 24.09 (вечер): сводка доставляется В ЧАТ — сообщение
-      // ассистента в самом свежем треде (не только секция в доке).
-      const target = this.opts.threads.latestThread();
-      if (target) {
-        const msg = this.opts.threads.createMessage({
-          role: "assistant",
-          content:
-            `⏰ Сводка по расписанию — ${mode === "fresh" ? "свежие публикации PubMed" : "ретро-обзор из архива"}:\n\n${result.reply}`,
-          label: "⏰ планировщик",
-          model: SUMMARY_MODEL,
-          latency_ms: result.latency_ms,
-          usage: result.usage,
-          cost_rub: costRubFromUsage(result.usage),
-        });
-        this.opts.threads.append(target.instanceId, target.agentId, msg);
-      }
+      // C+ CH-6 (D-10): серверных тредов больше нет — доставка сводки в
+      // личный чат снята; сводки живут в store и отдаются публично
+      // (snapshot → MCP-атлас), «сводки не в личных чатах» (таблица D-4).
     } catch (error) {
       console.warn(
         "[scheduler] summary LLM call failed:",
@@ -641,7 +625,6 @@ export function createSchedulerService(opts: {
   env: Env;
   deepSeek: DeepSeekService;
   ledger: UsageLedgerService;
-  threads: ThreadStore;
 }): SchedulerService {
   const file = opts.env.SCHEDULER_FILE
     ? path.resolve(opts.env.SCHEDULER_FILE)

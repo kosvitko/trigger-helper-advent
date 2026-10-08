@@ -1,28 +1,36 @@
 <script lang="ts">
-  // Model-chip (D-3): модель хода; P0-настройка — единственная (run-override).
-  // QA 041003 (F3): у пресетов нет defaultModel — захардкоженный «deepseek-chat»
-  // расходился с фактом (env-дефолт сервера). Правду знаем после живого хода.
+  // Model-chip (D-3): модель хода; P0-настройка — единственная (override).
+  // QA 041003 (F3): дефолт-модели агента больше нет (STATEFUL умер, CH-5b) —
+  // правду знаем после живого хода, до него — серверный дефолт.
+  // День 26 (D-26-2/D-26-4): в дропдаун добавляются ДОСТУПНЫЕ локальные
+  // записи («локальная · »); при активном rag_chat — суффикс «без RAG»
+  // (локальная ветка отвечает одной ходкой без поиска по базе).
   import { settings } from "../stores/settings.svelte";
   import { session } from "../stores/session.svelte";
   import { trace } from "../stores/trace.svelte";
 
-  let agentDefault = $derived(session.activeAgent?.defaultModel ?? null);
   let lastActual = $derived(trace.lastLiveModel());
   let current = $derived(
-    settings.overrides.model ?? agentDefault ?? lastActual ?? "по умолчанию агента",
+    settings.overrides.model ?? lastActual ?? "по умолчанию сервера",
+  );
+  let localSuffix = $derived(
+    session.activeThread?.preset === "rag_chat" ? " · без RAG" : "",
   );
 </script>
 
-<label class="model-chip" title="Модель хода (run-override, настройка P0)">
+<label class="model-chip" title="Модель хода (override, настройка P0)">
   Модель: <b>{current}</b>
   <select
     value={settings.overrides.model ?? ""}
     onchange={(e) => settings.setModel((e.currentTarget as HTMLSelectElement).value || undefined)}
     aria-label="Модель хода"
   >
-    <option value="">по умолчанию агента{agentDefault ? ` (${agentDefault})` : ""}</option>
+    <option value="">по умолчанию сервера</option>
     {#each settings.models as m (m.model)}
       <option value={m.model}>{m.model} · {m.label}</option>
+    {/each}
+    {#each settings.availableLocalModels as e (e.id)}
+      <option value={e.id}>локальная · {e.label}{localSuffix}</option>
     {/each}
   </select>
 </label>

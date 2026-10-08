@@ -32,9 +32,14 @@
       <div class="quotes">
         {#each shown.quotes as q, i (i)}
           <div class="qcard">
-            <p>«{q.quote}»</p>
+            <p class:par={q.paraphrase === true}>{q.paraphrase === true ? "" : "«"}{q.quote}{q.paraphrase === true ? "" : "»"}</p>
+            {#if q.author && q.book}
+              <span class="qattr">— {q.author}, «{q.book}»</span>
+            {:else if q.paraphrase === true}
+              <span class="qattr">по: {quoteLabel(q)}</span>
+            {/if}
             <span class="qlabel {reply.includes(quoteLabel(q)) ? 'ok' : ''}"
-              >{quoteLabel(q)} {reply.includes(quoteLabel(q)) ? "✓ в ответе" : "— не в ответе"}</span
+              >{q.paraphrase === true ? "«по:» — наш факт-реферат" : quoteLabel(q)} {reply.includes(quoteLabel(q)) ? "✓ в ответе" : "— не в ответе"}</span
             >
           </div>
         {/each}
@@ -87,6 +92,15 @@
     margin: 0 0 4px;
     color: var(--ink);
     line-height: 1.5;
+  }
+  .qcard p.par {
+    color: var(--muted);
+  }
+  .qattr {
+    display: block;
+    margin: 0 0 4px;
+    font: 600 12px/1.4 system-ui, sans-serif;
+    color: var(--muted);
   }
   .qlabel {
     font: 600 12px/1 system-ui, sans-serif;

@@ -1,28 +1,37 @@
 /**
- * E2E 12 — composer guard (баг 3): без активной сессии (пустой список
- * инстансов) кнопка «Отправить» задизейблена + подсказка; ввод текста не
- * отправляет ничего (ноль POST /api/agent/run).
+ * E2E 12 — composer guard (C+ CH-5b): boot без активного треда невозможен
+ * (ensureActive создаёт локальный RAG-чат) — старый гвард «нет сессии»
+ * недостижим. Намерение переносится на busy-гвард композера: во время хода
+ * кнопка «Отправить» задизейблена («Отправляем…»), повторные клики и Enter
+ * не плодят POST /api/chat.
  */
 import { test, expect } from "@playwright/test";
-import { mockApi } from "./helpers";
+import { activeThreadId, mockChat } from "./helpers";
 
-test("без сессий: send задизейблен, ноль POST", async ({ page, context }) => {
-  const api = await mockApi(context, {
-    instances: { instances: [], caps: { maxInstances: 8, maxAgentsPerInstance: 16 } },
-    createInstance: { status: 429, body: { error: "Лимит инстансов" } }, // бут-ретрай тоже падает
-  });
+test("typing: send заблокирован, двойной клик и Enter не дублируют POST", async ({ page, context }) => {
+  const api = await mockChat(context, { chatDelayMs: 600 });
   await page.goto("/");
+  const tid = await activeThreadId(page);
 
-  // кнопка disabled
   const send = page.locator("#composer-send");
+  await page.locator("#composer-input").fill("Болит шея справа, что делать?");
+  await send.click();
+
+  // во время хода: кнопка disabled с текстом «Отправляем…»
   await expect(send).toBeDisabled();
+  await expect(send).toHaveText("Отправляем…");
+  await expect(page.locator(".feed .typing")).toBeVisible();
 
-  // пустое состояние диалога остаётся
-  await expect(page.locator(".feed .empty")).toContainText("Опишите, что болит");
-
-  // попытка ввода и Enter ничего не шлёт
-  await page.locator("#composer-input").fill("тест");
+  // повторный клик и Enter игнорируются (busy-guard в Composer/DialogStore)
+  await send.click({ timeout: 1_000 }).catch(() => {});
   await page.locator("#composer-input").press("Enter").catch(() => {});
-  await page.waitForTimeout(300);
-  expect(api.calls.filter((c) => c.path === "/api/agent/run")).toHaveLength(0);
+
+  const assistant = page.locator(`.msg.bot[data-turn-id="${tid}:1"]`);
+  await expect(assistant).toBeVisible({ timeout: 10_000 });
+  expect(api.chatCalls).toHaveLength(1); // ровно один POST /api/chat
+
+  // ход завершён: кнопка снова доступна
+  await expect(send).toBeEnabled();
+  await expect(send).toHaveText("Отправить");
+  await expect(page.locator(".feed .typing")).toHaveCount(0);
 });

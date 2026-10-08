@@ -4,10 +4,10 @@
  * Transition 300 мс — ждём успокоения и ассертим финальные значения.
  */
 import { test, expect } from "@playwright/test";
-import { mockApi } from "./helpers";
+import { mockChat } from "./helpers";
 
 test("сегмент переключает 2-трековый грид: Диалог full / Оба split / Трейс full", async ({ page, context }) => {
-  await mockApi(context);
+  await mockChat(context);
   await page.goto("/");
 
   const cols = page.locator("main.cols");

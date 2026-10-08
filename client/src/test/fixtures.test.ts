@@ -1,119 +1,83 @@
 /**
  * Реалистичность фикстур: юнит-билдеры проходят safeParse схем
  * @trigger-helper/shared; e2e-payloadы проходят полный parse-путь
- * api-клиента (api.ts парсит ответы теми же схемами). Если тест падает —
- * фикстура разошлась с контрактом, а не продукт.
+ * клиента (api-клиент / ChatResponseSchema — те же схемы, что в
+ * api.ts/api-chat.ts). Если тест падает — фикстура разошлась с
+ * контрактом, а не продукт.
  */
 import { describe, expect, it } from "vitest";
 import {
   AgentInstanceSchema,
   AgentMessageSchema,
-  AgentRunResponseSchema,
+  ChatResponseSchema,
   ChatTaskStateSchema,
-  InstanceSchema,
+  ChatThreadRecordSchema,
 } from "@trigger-helper/shared";
 import { api } from "../lib/api";
+import { ChatThreadStateRecordSchema } from "../lib/chat-state";
 import {
   makeAgent,
   makeChatTask,
-  makeInstance,
   makeMessage,
-  makeRunResponse,
   ragDontKnowPayload,
   ragOkPayload,
 } from "./fixtures";
 import { stubFetch } from "./http";
 import {
-  AGENT_A2,
-  AGENT_CARE,
-  INST_A_ID,
-  e2eChatTask,
-  e2eEmptyThread,
-  e2eInstances,
+  e2eAgentsMeta,
+  e2eBackThread,
+  e2eCareThread,
+  e2eChatDontKnow,
+  e2eChatRag,
   e2eModels,
+  e2eNeckThread,
+  e2eNeckThreadState,
   e2eRagStats,
-  e2eRunDontKnow,
-  e2eRunRag,
-  e2eSettingsInstances,
-  e2eSettingsThreadCare,
-  e2eSettingsThreadRag,
-  e2eThreadA,
-  e2eThreadB,
-  emptyChatTask,
+  e2eThreadRecord,
 } from "../../e2e/fixtures";
 
 describe("unit-фикстуры валидны по схемам shared", () => {
-  it("makeRunResponse: rag-успех / dontKnow / ход без тулзов", () => {
-    const variants = [
-      makeRunResponse({ messageId: "m1", rag: ragOkPayload("q") }),
-      makeRunResponse({ messageId: "m2", rag: ragDontKnowPayload("q") }),
-      makeRunResponse({ messageId: "m3", rag: null }),
-      makeRunResponse({ messageId: "m4", railViolated: true, chatTask: makeChatTask() }),
-    ];
-    for (const v of variants) {
-      const r = AgentRunResponseSchema.safeParse(v);
-      if (!r.success) console.error(r.error.issues);
-      expect(r.success).toBe(true);
-    }
-  });
-
-  it("makeInstance/makeAgent/makeMessage/makeChatTask", () => {
-    expect(InstanceSchema.safeParse(makeInstance({ id: "i", agents: [makeAgent({ id: "a" })] })).success).toBe(true);
+  it("makeAgent/makeMessage/makeChatTask", () => {
     expect(AgentInstanceSchema.safeParse(makeAgent({ id: "a" })).success).toBe(true);
     expect(AgentMessageSchema.safeParse(makeMessage({ id: "m" })).success).toBe(true);
     expect(ChatTaskStateSchema.safeParse(makeChatTask()).success).toBe(true);
   });
 });
 
-describe("e2e-фикстуры проходят parse-путь api-клиента", () => {
-  it("инстансы, треды, модели, память задачи, оба run-ответа", async () => {
-    const rag = e2eRunRag("Болит шея справа");
-    const dontKnow = e2eRunDontKnow("Сколько весит лунный грунт?");
-    stubFetch([
-      { url: "/api/instances", method: "GET", json: e2eInstances() },
-      { url: "/api/instances", method: "POST", json: { instance: e2eInstances().instances[1] } },
-      { url: "/api/agent/run", method: "POST", json: rag },
-      { url: `/api/instances/${INST_A_ID}/agents/${AGENT_A2}/messages`, json: e2eThreadA() },
-      { url: "/models", json: e2eModels() },
-      { url: "/chat-task-state", method: "GET", json: e2eChatTask() },
-      { url: "/chat-task-state", method: "PATCH", json: emptyChatTask() },
-    ]);
-    // каждый вызов либо резолвится, либо это находка о расхождении фикстуры
-    const inst = await api.listInstances();
-    expect(inst.instances).toHaveLength(2);
-    await expect(api.runAgent({ instanceId: INST_A_ID, agentId: AGENT_A2, input: "q" })).resolves.toMatchObject({ message: { id: rag.message.id } });
-    await expect(api.listMessages(INST_A_ID, AGENT_A2)).resolves.toBeTruthy();
-    await expect(api.getModels()).resolves.toBeTruthy();
-    await expect(api.getChatTaskState(INST_A_ID, AGENT_A2)).resolves.toMatchObject({ goal: expect.any(String) });
-    await expect(api.patchChatTaskState(INST_A_ID, AGENT_A2, { goal: "новая цель" })).resolves.toBeTruthy();
-
-    // dontKnow-вариант — отдельным стабом
-    stubFetch([{ url: "/api/agent/run", method: "POST", json: dontKnow }]);
-    await expect(api.runAgent({ instanceId: INST_A_ID, agentId: AGENT_A2, input: "q2" })).resolves.toMatchObject({ message: { id: dontKnow.message.id } });
-
-    // тред B и пустой тред — тоже валидны (точные URL — приоритет точного совпадения)
-    stubFetch([{ url: "/api/instances/inst-b/agents/agent-b-rag/messages", json: e2eThreadB() }]);
-    await expect(api.listMessages("inst-b", "agent-b-rag")).resolves.toBeTruthy();
-    stubFetch([{ url: "/api/instances/x/agents/y/messages", json: e2eEmptyThread("x", "y") }]);
-    await expect(api.listMessages("x", "y")).resolves.toBeTruthy();
+describe("e2e-фикстуры проходят parse-путь клиента", () => {
+  it("chat-ответы: rag / dontKnow / compress+contextTrimmed+memoryDelta", () => {
+    // те же схемы, что api-chat.ts в не-SSE-ветке и на done-кадре
+    const variants = [
+      e2eChatRag("Болит шея справа"),
+      e2eChatRag("Болит шея справа", { compress: true, contextTrimmed: true, memoryDelta: true }),
+      e2eChatDontKnow("Сколько весит лунный грунт?"),
+    ];
+    for (const v of variants) {
+      const r = ChatResponseSchema.safeParse(v);
+      if (!r.success) console.error(r.error.issues);
+      expect(r.success).toBe(true);
+    }
   });
 
-  it("фикстуры настроек: инстанс rag+care, треды с usage/cost, rag/stats прод-форма", async () => {
+  it("локальные треды: записи threads/threadState валидны для th-local", () => {
+    for (const t of [e2eNeckThread(), e2eBackThread(), e2eCareThread(), e2eThreadRecord({ id: "t-x", title: "X" })]) {
+      const r = ChatThreadRecordSchema.safeParse(t);
+      if (!r.success) console.error(r.error.issues);
+      expect(r.success).toBe(true);
+    }
+    expect(ChatThreadStateRecordSchema.safeParse(e2eNeckThreadState()).success).toBe(true);
+  });
+
+  it("справочники: модели, мета пресетов, rag/stats прод-форма", async () => {
     stubFetch([
-      { url: "/api/instances", json: e2eSettingsInstances() },
-      { url: `/api/instances/${INST_A_ID}/agents/${AGENT_A2}/messages`, json: e2eSettingsThreadRag() },
-      { url: `/api/instances/${INST_A_ID}/agents/${AGENT_CARE}/messages`, json: e2eSettingsThreadCare() },
+      { url: "/api/models", json: e2eModels() },
+      { url: "/api/agents", json: e2eAgentsMeta() },
       { url: "/api/rag/stats", json: e2eRagStats() },
     ]);
-    const inst = await api.listInstances();
-    expect(inst.instances).toHaveLength(1);
-    expect(inst.instances[0]?.agents.map((a) => a.presetId)).toEqual(["care", "rag_chat"]);
-    await expect(api.listMessages(INST_A_ID, AGENT_A2)).resolves.toBeTruthy();
-    const care = await api.listMessages(INST_A_ID, AGENT_CARE);
-    const assistants = care.messages.filter((m) => m.role === "assistant");
-    expect(assistants).toHaveLength(2);
-    expect(assistants.every((m) => m.usage && m.cost_rub !== undefined)).toBe(true);
-
+    await expect(api.getModels()).resolves.toMatchObject({
+      models: [{ model: "deepseek-chat" }, { model: "deepseek-reasoner" }],
+    });
+    await expect(api.agentsMeta()).resolves.toEqual({ autoCompress: { defaultEvery: 10 } });
     const stats = await api.ragStats(); // РЕАЛЬНАЯ прод-форма проходит схему
     expect(stats.indexes.map((i) => i.chunks)).toEqual([128, 220]);
     expect(stats.compare?.byStrategy.structured?.hitAt1).toBeCloseTo(0.6667, 4);

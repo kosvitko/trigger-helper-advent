@@ -1,30 +1,15 @@
 /**
  * Типизированный REST-клиент SPA (P0-подмножество, design §3.1).
- * Zod-схемы — из @trigger-helper/shared, где контракт экспортирован
- * (agent-контракты); обёртки ответов и неэкспортированные роуты
- * (models/health) — локальные схемы (02b-F-9).
+ * C+ CH-6 (D-10): stateful-обёртки (instances, /api/agent/run, messages,
+ * chat-task-state, close/restore) сняты вместе с серверными роутами — ход
+ * диалога идёт через api-chat.ts (stateless POST /api/chat, SSE); остались
+ * только справочники. День 26: схема /api/models — СОВМЕСТНАЯ (shared
+ * schemas/models.ts), не локальная: локальный zod strip-ал бы новую
+ * local-секцию каталога локальных моделей (D-26-4), и она молча не дошла
+ * бы до UI (04-MED-3).
  */
 import { z } from "zod";
-import {
-  AddAgentRequestSchema,
-  AgentInstanceSchema,
-  AgentMessageSchema,
-  AgentRunResponseSchema,
-  ChatTaskStateSchema,
-  CreateInstanceRequestSchema,
-  InstanceSchema,
-} from "@trigger-helper/shared";
-import type {
-  AddAgentRequest,
-  AgentInstance,
-  AgentMessage,
-  AgentRunRequest,
-  AgentRunResponse,
-  ChatTaskState,
-  ChatTaskStatePatch,
-  CreateInstanceRequest,
-  Instance,
-} from "@trigger-helper/shared";
+import { ModelsResponseSchema } from "@trigger-helper/shared";
 
 /** Ошибка API: текст для пользователя + статус + сырое тело. */
 export class ApiError extends Error {
@@ -38,8 +23,7 @@ export class ApiError extends Error {
   }
 }
 
-/** Дефолтный таймаут запроса: зависший fetch ≠ «молча пустой UI» (баг 1).
- *  Для LLM-хода — свой, длинный (см. runAgent). */
+/** Дефолтный таймаут запроса: зависший fetch ≠ «молча пустой UI» (баг 1). */
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 /** Низкоуровневый fetch: JSON туда/обратно, не-2xx → ApiError. */
@@ -93,67 +77,8 @@ function parseWith<T>(schema: { safeParse: (data: unknown) => z.SafeParseReturnT
   return r.data;
 }
 
-/* — Локальные схемы роутов, которых нет в shared (обёртки ответов сервера) — */
-
-const InstancesResponseSchema = z.object({
-  instances: z.array(InstanceSchema),
-  caps: z.object({
-    maxInstances: z.number(),
-    maxAgentsPerInstance: z.number(),
-    usedInstances: z.number().optional(),
-  }),
-});
-
-const CreateInstanceResponseSchema = z.object({ instance: InstanceSchema });
-
-const AddAgentResponseSchema = z.object({ agent: AgentInstanceSchema });
-
-const ThreadResponseSchema = z.object({
-  instanceId: z.string(),
-  agentId: z.string(),
-  threadAgentId: z.string(),
-  messages: z.array(AgentMessageSchema),
-  facts: z.record(z.string(), z.string()),
-  branch: z.object({
-    forked: z.boolean(),
-    activeBranchId: z.string().nullable(),
-    checkpointCount: z.number(),
-  }),
-  contextStrategy: z.string().nullable(),
-});
-
-const ModelsResponseSchema = z.object({
-  models: z.array(
-    z.object({
-      tier: z.string(),
-      label: z.string(),
-      model: z.string(),
-      via: z.string(),
-    }),
-  ),
-});
-
 /** Элемент models[] ответа /api/models (после трима 04.10 — только поля SPA). */
-export type ModelInfo = z.infer<typeof ModelsResponseSchema>["models"][number];
-
-const ChatTaskStateResponseSchema = z.object({ chatTaskState: ChatTaskStateSchema });
-
-/* — Закрытие чата/инстанса + «Вернуть» (старый UI, agents.ts:164–253) — */
-
-const CloseAgentResponseSchema = z.object({
-  agent: AgentInstanceSchema,
-  messages: z.array(AgentMessageSchema),
-});
-
-const CloseInstanceResponseSchema = z.object({
-  instance: InstanceSchema,
-  threads: z.record(z.string(), z.array(AgentMessageSchema)),
-});
-
-const HealthResponseSchema = z.object({
-  status: z.string(),
-  service: z.string(),
-});
+export type ModelInfo = ModelsResponse["models"][number];
 
 /** GET /api/rag/stats — статистика индексов и контрольные прогоны (read-only). */
 const RagStatsResponseSchema = z.object({
@@ -189,63 +114,9 @@ const AgentsMetaResponseSchema = z.object({
   autoCompress: z.object({ defaultEvery: z.number().int() }).optional(),
 });
 
-export type InstancesResponse = z.infer<typeof InstancesResponseSchema>;
-export type ThreadResponse = z.infer<typeof ThreadResponseSchema>;
 export type ModelsResponse = z.infer<typeof ModelsResponseSchema>;
-export type HealthResponse = z.infer<typeof HealthResponseSchema>;
 
 export const api = {
-  /** Ход диалога: run-payload несёт всё для трейса (agents.ts:932–960). */
-  async runAgent(req: AgentRunRequest): Promise<AgentRunResponse> {
-    return parseWith(
-      AgentRunResponseSchema,
-      await request(
-        "/api/agent/run",
-        {
-          method: "POST",
-          body: JSON.stringify(req),
-        },
-        180_000, // LLM-ход небыстрый: таймаут хода ≠ таймаут справочников
-      ),
-    );
-  },
-
-  async listInstances(): Promise<InstancesResponse> {
-    return parseWith(InstancesResponseSchema, await request("/api/instances"));
-  },
-
-  async createInstance(req?: CreateInstanceRequest): Promise<z.infer<typeof CreateInstanceResponseSchema>> {
-    return parseWith(
-      CreateInstanceResponseSchema,
-      await request("/api/instances", {
-        method: "POST",
-        body: JSON.stringify(CreateInstanceRequestSchema.parse(req ?? {})),
-      }),
-    );
-  },
-
-  async addAgent(
-    instanceId: string,
-    req: AddAgentRequest,
-  ): Promise<z.infer<typeof AddAgentResponseSchema>> {
-    return parseWith(
-      AddAgentResponseSchema,
-      await request(`/api/instances/${encodeURIComponent(instanceId)}/agents`, {
-        method: "POST",
-        body: JSON.stringify(AddAgentRequestSchema.parse(req)),
-      }),
-    );
-  },
-
-  async listMessages(instanceId: string, agentId: string): Promise<ThreadResponse> {
-    return parseWith(
-      ThreadResponseSchema,
-      await request(
-        `/api/instances/${encodeURIComponent(instanceId)}/agents/${encodeURIComponent(agentId)}/messages`,
-      ),
-    );
-  },
-
   async getModels(): Promise<ModelsResponse> {
     return parseWith(ModelsResponseSchema, await request("/api/models"));
   },
@@ -258,80 +129,5 @@ export const api = {
   /** GET /api/rag/stats — read-only статистика индексов (экран настроек). */
   async ragStats(): Promise<z.infer<typeof RagStatsResponseSchema>> {
     return parseWith(RagStatsResponseSchema, await request("/api/rag/stats"));
-  },
-
-  async getChatTaskState(instanceId: string, agentId: string): Promise<ChatTaskState> {
-    const r = parseWith(
-      ChatTaskStateResponseSchema,
-      await request(
-        `/api/instances/${encodeURIComponent(instanceId)}/agents/${encodeURIComponent(agentId)}/chat-task-state`,
-      ),
-    );
-    return r.chatTaskState;
-  },
-
-  async patchChatTaskState(
-    instanceId: string,
-    agentId: string,
-    patch: ChatTaskStatePatch,
-  ): Promise<ChatTaskState> {
-    const r = parseWith(
-      ChatTaskStateResponseSchema,
-      await request(
-        `/api/instances/${encodeURIComponent(instanceId)}/agents/${encodeURIComponent(agentId)}/chat-task-state`,
-        { method: "PATCH", body: JSON.stringify(patch) },
-      ),
-    );
-    return r.chatTaskState;
-  },
-
-  async health(): Promise<HealthResponse> {
-    return parseWith(HealthResponseSchema, await request("/api/health"));
-  },
-
-  /** Закрыть чат (агента): DELETE возвращает снапшот для «Вернуть». */
-  async closeAgent(instanceId: string, agentId: string): Promise<z.infer<typeof CloseAgentResponseSchema>> {
-    return parseWith(
-      CloseAgentResponseSchema,
-      await request(
-        `/api/instances/${encodeURIComponent(instanceId)}/agents/${encodeURIComponent(agentId)}`,
-        { method: "DELETE" },
-      ),
-    );
-  },
-
-  /** Восстановить закрытый чат на прежнюю позицию. */
-  async restoreAgent(
-    instanceId: string,
-    snap: { agent: AgentInstance; messages: AgentMessage[]; index: number },
-  ): Promise<z.infer<typeof CloseAgentResponseSchema>> {
-    return parseWith(
-      CloseAgentResponseSchema,
-      await request(`/api/instances/${encodeURIComponent(instanceId)}/agents/restore`, {
-        method: "POST",
-        body: JSON.stringify(snap),
-      }),
-    );
-  },
-
-  /** Закрыть инстанс целиком (сессию); снапшот — для «Вернуть». */
-  async closeInstance(instanceId: string): Promise<z.infer<typeof CloseInstanceResponseSchema>> {
-    return parseWith(
-      CloseInstanceResponseSchema,
-      await request(`/api/instances/${encodeURIComponent(instanceId)}`, { method: "DELETE" }),
-    );
-  },
-
-  /** Восстановить закрытый инстанс. */
-  async restoreInstance(
-    snap: { instance: Instance; threads: Record<string, AgentMessage[]> },
-  ): Promise<z.infer<typeof CloseInstanceResponseSchema>> {
-    return parseWith(
-      CloseInstanceResponseSchema,
-      await request("/api/instances/restore", {
-        method: "POST",
-        body: JSON.stringify(snap),
-      }),
-    );
   },
 };

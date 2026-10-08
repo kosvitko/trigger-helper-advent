@@ -112,7 +112,11 @@ export function renderRagToolResult(p: RagToolPayload): string {
           q.quote.length > RENDER_QUOTE_CHAR_CAP
             ? `${q.quote.slice(0, RENDER_QUOTE_CHAR_CAP - 1)}…`
             : q.quote;
-        lines.push(`- «${text}» — ${q.source} › ${q.section || "—"}`);
+        // Корпус v2 (D-5): атрибуция доезжает и в контекст модели —
+        // маркированная цитата с автором/книгой, факт-проза с пометкой «по:».
+        const who = q.author && q.book ? `${q.author}, «${q.book}»` : "";
+        const mark = q.paraphrase === true ? "по: " : "";
+        lines.push(`- «${text}»${who ? ` — ${who}` : ""} — ${mark}${q.source} › ${q.section || "—"}`);
       }
     }
     if (p.labels.length > 0) {
@@ -187,7 +191,7 @@ export async function dispatchRagAsk(
     dontKnow: result.meta.dontKnow === true,
     topCosine: result.meta.topCosine ?? null,
     threshold: result.meta.threshold ?? null,
-      // Средние стадии (мета дня 23/24 — досанавливаем в payload для трейса)
+      // Средние стадии (мета дня 23/24 — прокидываем в payload для трейса)
       rewrite: result.meta.rewrite
         ? {
             variants: result.meta.rewrite.variants,

@@ -20,10 +20,13 @@ if (typeof globalThis.crypto?.randomUUID !== "function") {
   });
 }
 
-// Хранилища сторов (th.trace.v1:<agentId>, th.overrides.v1) — чистый лист
-// перед каждым тестом, чтобы кэш-тесты не влияли друг на друга.
+// Хранилища сторов (th.trace.v1:<threadId>, th.overrides.v1, th.active.v1)
+// — чистый лист перед каждым тестом, чтобы кэш-тесты не влияли друг на
+// друга. Коллекции th-local чистятся сами (replaceAll) — их тесты
+// управляют порядком записей.
 beforeEach(() => {
   sessionStorage.clear();
+  localStorage.clear();
 });
 
 afterEach(() => {

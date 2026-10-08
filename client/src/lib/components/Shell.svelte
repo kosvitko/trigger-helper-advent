@@ -1,7 +1,10 @@
 <script lang="ts">
   // Оболочка (D-2/D-6): topbar + постоянный двухтрековый грид.
   // Раскладка — эфемерный UI-стейт (F-2), живёт здесь, не в сторах.
+  // C+ CH-5b: один уровень чатов — локальные треды (session.threads);
+  // сессий-инстантов больше нет.
   import { onMount } from "svelte";
+  import { getChatPreset, type ChatThreadRecord } from "@trigger-helper/shared";
   import SegmentedControl from "./SegmentedControl.svelte";
   import DialogColumn from "./DialogColumn.svelte";
   import TraceColumn from "./TraceColumn.svelte";
@@ -19,36 +22,35 @@
   let focusTurnId = $state<string | null>(null);
   let colsEl = $state<HTMLElement | null>(null);
 
-  /** Агент, чей тред уже в ленте: один lifecycle-путь на boot/switch/создание —
+  /** Тред, чья лента уже в ленте: один lifecycle-путь на boot/switch/создание —
    *  ни один обработчик не может «забыть» сбросить ленту/трейс (баги 1–2). */
-  let loadedAgentId: string | null | undefined = undefined;
+  let loadedThreadId: string | null | undefined = undefined;
 
   onMount(() => {
-    // Модели для чипа — в фоне; стартовая сессия — блокирует диалог.
+    // Модели для чипа — в фоне; стартовый тред — локально (boot мгновенный).
     settings.loadModels().catch(() => undefined);
-    void boot();
+    session.ensureActive();
   });
-
-  async function boot(): Promise<void> {
-    try {
-      await session.ensureActive();
-    } catch (e) {
-      session.error = errMsg(e);
-    }
-  }
 
   function errMsg(e: unknown): string {
     return e instanceof Error ? e.message : String(e);
   }
 
-  // Смена активного агента (boot / выбор в шапке / + RAG-чат) → скоуп трейса
-  // + перезагрузка треда. loadThread сам очищает ленту до загрузки.
+  /** Метка треда в селекторе: title, иначе пресет + дата обновления. */
+  function threadLabel(t: ChatThreadRecord): string {
+    if (t.title) return t.title;
+    const preset = getChatPreset(t.preset)?.label ?? t.preset;
+    return `${preset} · ${new Date(t.updatedAt).toLocaleDateString("ru-RU")}`;
+  }
+
+  // Смена активного треда (boot / выбор в шапке / + RAG-чат) → скоуп трейса
+  // + перезагрузка ленты. loadThread сам очищает ленту до загрузки.
   $effect(() => {
-    const agentId = session.activeAgentId;
-    if (agentId === loadedAgentId) return;
-    if (agentId === null && loadedAgentId === undefined) return; // до boot — тишина
-    loadedAgentId = agentId;
-    trace.setScope(agentId);
+    const threadId = session.activeThreadId;
+    if (threadId === loadedThreadId) return;
+    if (threadId === null && loadedThreadId === undefined) return; // до boot — тишина
+    loadedThreadId = threadId;
+    trace.setScope(threadId);
     void dialog
       .loadThread()
       .then(() => {
@@ -83,34 +85,23 @@
   <div class="sp"></div>
   <select
     class="icon-btn session"
-    title="Активный чат (сессия → чат)"
-    value={session.activeChatValue}
-    onchange={(e) => {
-      const v = (e.currentTarget as HTMLSelectElement).value;
-      const sep = v.indexOf(":");
-      if (sep > 0) session.selectChat(v.slice(0, sep), v.slice(sep + 1));
-    }}
+    title="Активный чат (локальные треды)"
+    value={session.activeThreadId ?? ""}
+    onchange={(e) => session.selectThread((e.currentTarget as HTMLSelectElement).value)}
   >
-    {#if !session.instances.length}
-      <option value="">Сессий нет</option>
-    {:else if !session.activeChatValue}
+    {#if !session.threads.length}
+      <option value="">Чатов нет</option>
+    {:else if !session.activeThreadId}
       <option value="" disabled hidden>Выберите чат…</option>
     {/if}
-    {#each session.instances as inst (inst.id)}
-      <optgroup label={inst.label}>
-        {#each inst.agents as a (a.id)}
-          <option value={`${inst.id}:${a.id}`}>{a.label}</option>
-        {/each}
-      </optgroup>
+    {#each session.threads as t (t.id)}
+      <option value={t.id}>{threadLabel(t)}</option>
     {/each}
   </select>
-  <button id="close-chat" class="icon-btn close-btn" disabled={!session.canCloseAgent} title={session.canCloseAgent ? "Закрыть активный чат (5 с на «Вернуть»)" : "Нельзя закрыть последнего агента — закройте сессию"} onclick={() => void session.closeActiveAgent().catch((e) => (session.error = errMsg(e)))}>
+  <button id="close-chat" class="icon-btn close-btn" disabled={!session.canCloseThread} title={session.canCloseThread ? "Закрыть активный чат (5 с на «Вернуть»)" : "Нельзя закрыть последний чат — создайте новый"} onclick={() => void session.closeThread()}>
     ✕ чат
   </button>
-  <button id="close-session" class="icon-btn close-btn" disabled={!session.canCloseInstance} title={session.canCloseInstance ? "Закрыть сессию целиком (5 с на «Вернуть»)" : "Нельзя закрыть последнюю сессию"} onclick={() => void session.closeActiveInstance().catch((e) => (session.error = errMsg(e)))}>
-    ✕ сессия
-  </button>
-  <button id="new-rag-chat" class="icon-btn" title="Создать сессию RAG-чата одним кликом" onclick={() => void session.createRagChat().catch((e) => (session.error = errMsg(e)))}>
+  <button id="new-rag-chat" class="icon-btn" title="Создать RAG-чат одним кликом (локальный тред)" onclick={() => session.createRagChat()}>
     + RAG-чат
   </button>
   <button
@@ -143,12 +134,13 @@
   </main>
 {/if}
 
-<!-- Юридический футер (аудит 261004-legal-audit + 261004-copyright-audit:
-     MUST/SHOULD на каждом экране; пересказ-декларация и не-аффилированность) -->
+<!-- Юридический футер (аудит 261004-legal-audit + 261004-copyright-audit;
+     корпус v2 (261005): факт-рефераты + короткие цитаты с атрибуцией) -->
 <footer class="legal">
   Образовательный сервис самопомощи · не медицинская организация, медицинских услуг не оказывает ·
-  ответы ИИ основаны на пересказе клинической литературы о триггерных точках (Дж. Травелл, Д. Саймонс; Д. Дэвис) —
-  это не цитаты и не официальные издания, правообладатели с сервисом не связаны · без диагнозов и назначений ·
+  ответы ИИ основаны на фактах из клинической литературы о триггерных точках (Дж. Травелл, Д. Саймонс; Д. Дэвис)
+  и коротких цитатах с атрибуцией — официальные издания не воспроизводятся, правообладатели с сервисом не связаны ·
+  без диагнозов и назначений ·
   при острой или нарастающей боли, онемении, травме, температуре — обратитесь к врачу
 </footer>
 

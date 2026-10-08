@@ -1,142 +1,111 @@
 /**
- * UNIT 1 — session store (session.svelte.ts):
- * boot-загрузка списка, ретрай-политика, демо-дефолт «последний rag_chat»,
- * фолбэк на любого агента, create-флоу, кап-лимит 429 без крушения.
+ * UNIT 1 — session store (session.svelte.ts, C+ CH-5b): треды локальные,
+ * boot-дефолты (последний использованный th.active.v1 → новейший → первый
+ * rag_chat), create-флоу без сети, переключение, requireActiveThread,
+ * reloadThreads при исчезновении активного (импорт).
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { ApiError } from "../api";
 import { session } from "./session.svelte";
-import { makeAgent, makeInstance } from "../../test/fixtures";
+import { createThread, getThread, threadStateCollection } from "../chat-state";
+import { threadsCollection } from "../storage/th-local";
 import { stubFetch } from "../../test/http";
 
-const okInstances = {
-  instances: [makeInstance({ id: "i-1", agents: [makeAgent({ id: "a-1" })] })],
-  caps: { maxInstances: 5, maxAgentsPerInstance: 6, usedInstances: 1 },
-};
+const ACTIVE_KEY = "th.active.v1";
 
 beforeEach(() => {
-  session.instances = [];
-  session.activeInstanceId = null;
-  session.activeAgentId = null;
+  threadsCollection.replaceAll([]);
+  threadStateCollection.replaceAll([]);
+  localStorage.removeItem(ACTIVE_KEY);
+  session.threads = [];
+  session.activeThreadId = null;
   session.error = "";
+  session.undo = null;
 });
 
-describe("session store · load", () => {
-  it("boot load наполняет список инстантов", async () => {
-    const stub = stubFetch([{ url: "/api/instances", json: okInstances }]);
-    await session.load();
-    expect(session.instances.map((i) => i.id)).toEqual(["i-1"]);
-    expect(stub.calls).toHaveLength(1);
+describe("session store · boot (полностью локальный)", () => {
+  it("пусто → создаётся первый rag_chat-тред, активен и персистится (th.active.v1)", () => {
+    const stub = stubFetch([]); // любой fetch бросил бы «нет маршрута»
+    expect(() => session.ensureActive()).not.toThrow();
+    expect(session.threads).toHaveLength(1);
+    expect(session.threads[0].preset).toBe("rag_chat");
+    expect(session.activeThreadId).toBe(session.threads[0].id);
+    expect(localStorage.getItem(ACTIVE_KEY)).toBe(session.threads[0].id);
+    expect(stub.calls).toHaveLength(0); // boot не ходит в сеть
   });
 
-  it("один ретрай: первый сбой → вторая попытка успешна", async () => {
-    let attempt = 0;
-    const stub = stubFetch([
-      {
-        url: "/api/instances",
-        respond: () => {
-          attempt += 1;
-          return attempt === 1 ? Promise.reject(new TypeError("network down")) : { json: okInstances };
-        },
-      },
-    ]);
-    await session.load();
-    expect(session.instances).toHaveLength(1);
-    expect(stub.calls).toHaveLength(2); // ровно один ретрай
+  it("последний использованный тред (th.active.v1) выбирается на boot", () => {
+    createThread("th-1", "rag_chat", "тред 1");
+    createThread("th-2", "care", "тред 2");
+    localStorage.setItem(ACTIVE_KEY, "th-2");
+    session.ensureActive();
+    expect(session.activeThreadId).toBe("th-2");
   });
 
-  it("двойной сбой → ошибка всплывает, не «молча пусто»", async () => {
-    const stub = stubFetch([
-      { url: "/api/instances", respond: () => Promise.reject(new TypeError("network down")) },
-    ]);
-    await expect(session.load()).rejects.toBeInstanceOf(ApiError);
-    expect(session.instances).toEqual([]);
-    expect(stub.calls).toHaveLength(2); // 1 попытка + 1 ретрай, не бесконечно
-  });
-
-  it("ошибка сервера (500 {error}) доходит текстом", async () => {
-    stubFetch([{ url: "/api/instances", status: 500, json: { error: "база недоступна" } }]);
-    await expect(session.load()).rejects.toMatchObject({ message: "база недоступна" });
-  });
-});
-
-describe("session store · активная сессия (демо-дефолт D-2)", () => {
-  it("активен последний rag_chat новейшего инстанта (createdAt desc, не порядок массива)", async () => {
-    const ragOld = makeAgent({ id: "rag-old", presetId: "rag_chat" });
-    const ragLast = makeAgent({ id: "rag-last", presetId: "rag_chat" });
-    const older = makeInstance({
-      id: "i-old",
-      createdAt: "2026-10-01T10:00:00.000Z",
-      agents: [makeAgent({ id: "rag-in-old", presetId: "rag_chat" })],
-    });
-    // новейший стоит ПЕРВЫМ в массиве — сортировка по createdAt обязана это исправить
-    const newer = makeInstance({
-      id: "i-new",
-      createdAt: "2026-10-03T10:00:00.000Z",
-      agents: [ragOld, ragLast],
-    });
-    stubFetch([{ url: "/api/instances", json: { instances: [newer, older], caps: okInstances.caps } }]);
-    await session.ensureActive();
-    expect(session.activeInstanceId).toBe("i-new");
-    expect(session.activeAgentId).toBe("rag-last"); // последний rag_chat, не первый
-  });
-
-  it("нет ни одного rag_chat → фолбэк на любого агента", async () => {
-    const care = makeAgent({ id: "care-1", presetId: "care" });
-    stubFetch([
-      { url: "/api/instances", json: { instances: [makeInstance({ id: "i-1", agents: [care] })], caps: okInstances.caps } },
-    ]);
-    await session.ensureActive();
-    expect(session.activeInstanceId).toBe("i-1");
-    expect(session.activeAgentId).toBe("care-1");
+  it("сохранённый id не существует → новейший тред (updatedAt desc)", () => {
+    const old = createThread("th-old", "rag_chat", "");
+    threadsCollection.put({ ...old, updatedAt: "2026-10-01T10:00:00.000Z" });
+    const fresh = createThread("th-new", "care", "");
+    threadsCollection.put({ ...fresh, updatedAt: "2026-10-05T10:00:00.000Z" });
+    localStorage.setItem(ACTIVE_KEY, "ghost");
+    session.ensureActive();
+    expect(session.activeThreadId).toBe("th-new");
   });
 });
 
 describe("session store · создание RAG-чата", () => {
-  it("create flow (инстант+агент) делает его активным", async () => {
-    const created = makeInstance({ id: "i-new", agents: [makeAgent({ id: "rag-new", presetId: "rag_chat" })] });
-    const stub = stubFetch([
-      { url: "/api/instances", method: "GET", json: { instances: [], caps: okInstances.caps } },
-      { url: "/api/instances", method: "POST", json: { instance: created } },
-    ]);
-    await session.ensureActive(); // пусто → создаёт
-    expect(session.activeInstanceId).toBe("i-new");
-    expect(session.activeAgentId).toBe("rag-new");
-    expect(session.instances.map((i) => i.id)).toContain("i-new");
-    // тело POST: label + seedPresetIds=['rag_chat'] (создание одним кликом)
-    const post = stub.callsTo("/api/instances", "POST")[0];
-    expect(post.body).toMatchObject({ seedPresetIds: ["rag_chat"] });
-    expect((post.body as { label?: string }).label).toMatch(/^Демо · /);
-  });
-
-  it("кап-лимит инстантов (HTTP 429) всплывает ошибкой и не рушит стор", async () => {
-    const stub = stubFetch([
-      { url: "/api/instances", method: "GET", json: { instances: [], caps: okInstances.caps } },
-      { url: "/api/instances", method: "POST", status: 429, json: { error: "Достигнут лимит инстансов (макс. 2)" } },
-    ]);
-    // так делает Shell.boot: rejection → session.error (видимая ошибка)
-    const err = await session.ensureActive().catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ApiError);
-    expect((err as ApiError).message).toBe("Достигнут лимит инстансов (макс. 2)");
-    expect((err as ApiError).status).toBe(429);
-    // стор жив, без активной сессии, список не задет
-    expect(session.activeInstanceId).toBeNull();
-    expect(session.activeAgentId).toBeNull();
-    expect(session.instances).toEqual([]);
-    expect(stub.calls).toHaveLength(2);
+  it("createRagChat: локальный тред rag_chat становится активным (без сети)", () => {
+    const stub = stubFetch([]);
+    createThread("th-1", "care", "старый");
+    session.reloadThreads();
+    session.selectThread("th-1");
+    session.createRagChat();
+    expect(session.threads.map((t) => t.id)).toContain("th-1");
+    expect(session.threads).toHaveLength(2);
+    const created = session.threads.find((t) => t.id === session.activeThreadId)!;
+    expect(created.preset).toBe("rag_chat");
+    expect(created.title).toBe("");
+    expect(getThread(created.id)?.preset).toBe("rag_chat"); // записан в коллекцию
+    expect(localStorage.getItem(ACTIVE_KEY)).toBe(created.id);
+    expect(stub.calls).toHaveLength(0);
   });
 });
 
 describe("session store · переключение", () => {
-  it("selectInstance сбрасывает агента на rag_chat этого инстанта", () => {
-    const ragB = makeAgent({ id: "rag-b", presetId: "rag_chat" });
-    const instB = makeInstance({ id: "i-b", agents: [makeAgent({ id: "care-b", presetId: "care" }), ragB] });
-    session.instances = [instB];
-    session.selectInstance("i-b");
-    expect(session.activeAgentId).toBe("rag-b");
+  it("selectThread активирует и персистит; неизвестный id — no-op", () => {
+    createThread("th-1", "rag_chat", "");
+    createThread("th-2", "rag_chat", "");
+    session.reloadThreads();
+    session.selectThread("th-2");
+    expect(session.activeThreadId).toBe("th-2");
+    expect(localStorage.getItem(ACTIVE_KEY)).toBe("th-2");
+    session.selectThread("ghost");
+    expect(session.activeThreadId).toBe("th-2"); // не изменился
   });
 
-  it("requireIds бросает понятную ошибку без активной сессии", () => {
-    expect(() => session.requireIds()).toThrow(/Нет активной сессии/);
+  it("requireActiveThread отдаёт {threadId, preset} активного треда", () => {
+    createThread("th-care", "care", "");
+    session.reloadThreads();
+    session.selectThread("th-care");
+    expect(session.requireActiveThread()).toEqual({ threadId: "th-care", preset: "care" });
+  });
+
+  it("requireActiveThread бросает понятную ошибку без активного треда", () => {
+    expect(() => session.requireActiveThread()).toThrow(/Нет активного чата/);
+  });
+});
+
+describe("session store · reloadThreads (импорт «последний выигрывает»)", () => {
+  it("активный исчез из коллекции → переключение на новейший", () => {
+    const a = createThread("th-a", "rag_chat", "");
+    threadsCollection.put({ ...a, updatedAt: "2026-10-01T10:00:00.000Z" });
+    const b = createThread("th-b", "rag_chat", "");
+    threadsCollection.put({ ...b, updatedAt: "2026-10-05T10:00:00.000Z" });
+    session.reloadThreads();
+    session.selectThread("th-a");
+    threadsCollection.delete("th-a");
+    session.reloadThreads();
+    expect(session.threads.map((t) => t.id)).toEqual(["th-b"]);
+    expect(session.activeThreadId).toBe("th-b");
+    expect(localStorage.getItem(ACTIVE_KEY)).toBe("th-b");
   });
 });

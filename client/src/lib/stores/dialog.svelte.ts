@@ -1,28 +1,50 @@
 /**
  * Стор диалога: сообщения активного треда (upsert-by-id, F-2) + «Память задачи».
+ * C+ CH-5b: ход — stateless POST /api/chat (api-chat.sendChat); персист —
+ * локальный (chat-state: треды/память на устройстве). Серверные
+ * listMessages/getChatTaskState/patchChatTaskState умерли вместе с STATEFUL API.
  * Эфемерный UI-стейт (скролл-якорь, коллапсы) живёт в компонентах.
  */
 import { SvelteMap } from "svelte/reactivity";
-import type { AgentMessage, AgentRunResponse, ChatTaskState, ChatTaskStatePatch } from "@trigger-helper/shared";
-import { api } from "../api";
+import {
+  CHAT_COMPRESS_EVERY_DEFAULT,
+  type AgentMessage,
+  type ChatTaskState,
+  type ChatTaskStatePatch,
+  type ChatThreadRecord,
+  type InvariantRow,
+  type TaskCommand,
+  type TaskCommandResult,
+  type TaskState,
+} from "@trigger-helper/shared";
+import { sendChat } from "../api-chat";
+import {
+  applyTurnResult,
+  buildContextTail,
+  createTask as createLocalTask,
+  getThread,
+  getThreadState,
+  patchChatTask as patchLocalChatTask,
+  patchTask as patchLocalTask,
+  removeTask as removeLocalTask,
+  sendTaskCommand as sendLocalTaskCommand,
+  setInvariants as setLocalInvariants,
+  shouldCompressNow,
+} from "../chat-state";
+import { uid } from "../uid";
 import { session } from "./session.svelte";
 import { settings } from "./settings.svelte";
 import { trace } from "./trace.svelte";
 
-/** crypto.randomUUID существует только в secure context (https/localhost);
- *  на http://VPS его нет — синхронный throw убивал send до POST (грабля
- *  прод-смоука 03.10: локально всё зелёное, на проде — тишина).
- *  getRandomValues доступен и в insecure context — фолбэк через него. */
-function uid(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  const b = new Uint8Array(16);
-  crypto.getRandomValues(b);
-  b[6] = (b[6] & 0x0f) | 0x40; // версия 4
-  b[8] = (b[8] & 0x3f) | 0x80; // вариант RFC 4122
-  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+/** Локальный тред → лента сообщений: id = `<threadId>:<index>` (серверного
+ *  message.id в stateless-ходе нет); createdAt — updatedAt треда. */
+function threadMessages(threadId: string, thread: ChatThreadRecord): AgentMessage[] {
+  return thread.dialogue.map((m, i) => ({
+    id: `${threadId}:${i}`,
+    role: m.role,
+    content: m.content,
+    createdAt: thread.updatedAt,
+  }));
 }
 
 class DialogStore {
@@ -30,6 +52,10 @@ class DialogStore {
   typing = $state(false);
   error = $state("");
   chatTask = $state<ChatTaskState | null>(null);
+  /** Задача-FSM активного треда (день 13; хранение — локальное, D-4). */
+  task = $state<TaskState | null>(null);
+  /** Инварианты активного треда (день 14: строки — клиент). */
+  invariants = $state<InvariantRow[]>([]);
   /** Монотонный токен lifecycle: ответ старой сессии не попадает в ленту новой
    *  (гонка быстрых переключений / in-flight send — баг 2). */
   private loadEpoch = 0;
@@ -49,34 +75,39 @@ class DialogStore {
   reset(): void {
     this.messages.clear();
     this.chatTask = null;
+    this.task = null;
+    this.invariants = [];
     this.error = "";
     // In-flight run старой сессии не должен лочить композер новой (typing
     // сбрасываем; ответ всё равно будет отброшен по loadEpoch в send).
     this.typing = false;
   }
 
-  /** Загрузка треда + памяти задачи активного агента (GET on load).
-   *  Lifecycle: очистка ленты — ДО requireIds, чтобы переключение на сессию
-   *  без агента не оставляло чужие сообщения (баг 2); гонки гасит loadEpoch. */
+  /** Загрузка активного треда (лока только что стал локальным — мгновенно).
+   *  Lifecycle: очистка ленты — ДО requireActiveThread, чтобы переключение
+   *  без активного треда не оставляло чужие сообщения (баг 2). */
   async loadThread(): Promise<void> {
     const epoch = ++this.loadEpoch;
     this.reset();
-    const { instanceId, agentId } = session.requireIds();
-    const thread = await api.listMessages(instanceId, agentId);
-    if (epoch !== this.loadEpoch) return; // сессия сменилась, пока грузился тред
-    for (const m of thread.messages) this.upsert(m);
+    const { threadId } = session.requireActiveThread();
+    const thread = getThread(threadId);
+    if (!thread || epoch !== this.loadEpoch) return;
+    const messages = threadMessages(threadId, thread);
+    for (const m of messages) this.upsert(m);
     // QA 041003 (F1): ходы, которых нет в кэше трейса, добираем скелетами
     // из сообщений треда — свежий браузер видит полную историю ходов.
-    trace.mergeThread(thread.messages);
-    this.chatTask = await api.getChatTaskState(instanceId, agentId);
-    if (epoch !== this.loadEpoch) return;
+    trace.mergeThread(messages);
+    const st = getThreadState(threadId);
+    this.chatTask = st.chatTask;
+    this.task = st.task;
+    this.invariants = st.invariants;
   }
 
   /**
-   * Один ход: optimistic user → POST run → assistant + трейс + эхо памяти.
-   * Возвращает true, если ход прошёл (текст можно убрать из композера).
-   * {instanceId, agentId} снимаются в момент клика; сессия сменилась в полёте —
-   * ответ отбрасывается по loadEpoch, текст остаётся в композере (баги 3).
+   * Один ход: optimistic user → POST /api/chat → applyTurnResult (локальный
+   * персист) + assistant-бабл + трейс. Возвращает true, если ход прошёл
+   * (текст можно убрать из композера). {threadId, preset} снимаются в момент
+   * клика; тред сменился в полёте — ответ отбрасывается по loadEpoch.
    */
   async send(text: string): Promise<boolean> {
     const input = text.trim();
@@ -86,7 +117,7 @@ class DialogStore {
     this.error = "";
     let userMsg: AgentMessage | null = null;
     try {
-      const { instanceId, agentId } = session.requireIds();
+      const { threadId, preset } = session.requireActiveThread();
       userMsg = {
         id: `local-${uid()}`,
         role: "user",
@@ -96,15 +127,41 @@ class DialogStore {
       this.upsert(userMsg);
       trace.beginPending(input);
 
-      // Day25 UX SSE: fetch + getReader — шаги наполняются в реальном времени.
-      // sendSse сам обрабатывает JSON-ответ (моки/старый сервер) без fallback.
-      const res = await this.sendSse(input, instanceId, agentId);
+      const startedAt = performance.now();
+      // SSE-шаги наполняют pending-ход трейса в реальном времени (Day25 UX);
+      // ошибки (до/после hijack) — ChatApiError {code, httpStatus, message}.
+      const res = await sendChat(
+        {
+          input,
+          preset,
+          contextTail: buildContextTail(threadId),
+          overrides: settings.chatOverrides(),
+          compress: shouldCompressNow(
+            threadId,
+            settings.overrides.compressEvery ?? CHAT_COMPRESS_EVERY_DEFAULT,
+          ),
+          clientTurnId: uid(),
+        },
+        { onStep: (step, text) => trace.updatePendingStep(step, text) },
+      );
 
       trace.cancelPending(); // заменяем SSE-ход реальным (с токенами/₽)
       if (epoch !== this.loadEpoch) return false;
-      this.upsert(res.message);
-      trace.addTurnFromRun(input, res);
-      if (res.context?.chatTaskState) this.chatTask = res.context.chatTaskState;
+      const { thread } = applyTurnResult(threadId, preset, input, res);
+      const turnId = `${threadId}:${thread.dialogue.length - 1}`;
+      if (res.compress) {
+        // Сжатие схлопнуло префикс треда: индексные id ленты разошлись бы с
+        // тредом (коллизия перезаписала бы старый пузырь — ревью CH-5b,
+        // MAJOR). Честный ребилд ленты из персистентного треда.
+        await this.loadThread();
+      } else {
+        this.upsert({ id: turnId, role: "assistant", content: res.reply, createdAt: thread.updatedAt });
+      }
+      trace.addTurnFromChat(input, res, turnId, performance.now() - startedAt);
+      const st = getThreadState(threadId);
+      this.chatTask = st.chatTask;
+      this.task = st.task;
+      this.invariants = st.invariants;
       return true;
     } catch (e) {
       if (epoch === this.loadEpoch) {
@@ -118,86 +175,39 @@ class DialogStore {
     }
   }
 
-  /** Day25 UX SSE: POST /api/agent/run с Accept: text/event-stream.
-   *  Шаги приходят как {type:"step"}, финал — {type:"done", result}. */
-  private async sendSse(
-    input: string,
-    instanceId: string,
-    agentId: string,
-  ): Promise<AgentRunResponse> {
-    const response = await fetch("/api/agent/run", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "text/event-stream",
-      },
-      body: JSON.stringify({
-        instanceId,
-        agentId,
-        input,
-        overrides: settings.runOverrides(),
-      }),
-    });
-    if (!response.ok) {
-      const err = (await response.json().catch(() => ({}))) as { error?: string };
-      throw new Error(err.error ?? `HTTP ${response.status}`);
-    }
+  /** Локальный PATCH «Памяти задачи» (blur полей; C+: персист на устройстве). */
+  async patchChatTask(patch: ChatTaskStatePatch): Promise<void> {
+    const { threadId } = session.requireActiveThread();
+    this.chatTask = patchLocalChatTask(threadId, patch).chatTask;
+  }
 
-    // Если сервер вернул JSON (не SSE) — это обычный ответ, парсим напрямую.
-    // Работает с моками и старым сервером без SSE-поддержки.
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.includes("text/event-stream")) {
-      return (await response.json()) as AgentRunResponse;
-    }
+  /** Задача-FSM: создание/патч/команда/снятие — локально (день 13, D-4). */
+  createTask(input: { id: string; title: string; plan: string[]; expectedAction?: string }): void {
+    const { threadId } = session.requireActiveThread();
+    this.task = createLocalTask(threadId, input).task;
+  }
 
-    if (!response.body) throw new Error("SSE: нет потока");
+  patchTask(patch: import("../chat-state").TaskPatch): void {
+    const { threadId } = session.requireActiveThread();
+    this.task = patchLocalTask(threadId, patch).task;
+  }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let result: AgentRunResponse | null = null;
-    let error: string | null = null;
-
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop() ?? "";
-      for (const part of parts) {
-        if (!part.startsWith("data: ")) continue;
-        const jsonStr = part.slice(6);
-        if (jsonStr === "[DONE]") continue;
-        try {
-          const data = JSON.parse(jsonStr) as {
-            type: string;
-            step?: string;
-            text?: string;
-            result?: AgentRunResponse;
-            error?: string;
-          };
-          if (data.type === "step" && data.step && data.text) {
-            trace.updatePendingStep(data.step, data.text);
-          } else if (data.type === "done" && data.result) {
-            result = data.result;
-          } else if (data.type === "error" && data.error) {
-            error = data.error;
-          }
-        } catch {
-          /* невалидный JSON в SSE — пропускаем */
-        }
-      }
-    }
-
-    if (error) throw new Error(error);
-    if (!result) throw new Error("SSE: поток закрылся без результата");
+  taskCommand(command: TaskCommand): TaskCommandResult | null {
+    const { threadId } = session.requireActiveThread();
+    const { state, result } = sendLocalTaskCommand(threadId, command);
+    this.task = state.task;
     return result;
   }
 
-  /** PATCH «Памяти задачи» (blur полей); absent = keep (02b-F-1). */
-  async patchChatTask(patch: ChatTaskStatePatch): Promise<void> {
-    const { instanceId, agentId } = session.requireIds();
-    this.chatTask = await api.patchChatTaskState(instanceId, agentId, patch);
+  removeTask(): void {
+    const { threadId } = session.requireActiveThread();
+    this.task = removeLocalTask(threadId).task;
+  }
+
+  /** Инварианты: полная замена набора (панель владеет списком). */
+  setInvariants(rows: InvariantRow[]): void {
+    const { threadId } = session.requireActiveThread();
+    this.invariants = setLocalInvariants(threadId, rows).invariants;
   }
 }
 

@@ -6,10 +6,11 @@ import type { Env } from "../config/env.js";
 function isRateLimitedPath(method: string, url: string): boolean {
   if (method !== "POST") return false;
   const path = url.split("?")[0] ?? "";
-  if (path === "/api/agent/run") return true;
-  if (path === "/api/instances") return true;
+  // C+ CH-6 (cutover, D-10/04-MAJ-4): stateful-пути сняты вместе с роутами
+  // — в ведре остались stateless-ход и MCP. 429 отсюда уходит до hijack
+  // реальным HTTP (05-MINOR-4 — отдельная ветка клиента).
+  if (path === "/api/chat") return true;
   if (path === "/mcp") return true;
-  if (/^\/api\/instances\/[^/]+\/agents$/.test(path)) return true;
   return false;
 }
 
