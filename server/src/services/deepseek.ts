@@ -39,7 +39,9 @@ export type ChatOptions = {
   model?: string;
   /** Day17: function-calling tools; absent = plain chat (day16 behavior). */
   tools?: ToolSpec[];
-  toolChoice?: "auto";
+  /** Day27-fix: "auto" (default) | "required" — принудительный вызов тулзы
+   *  (rail-повтор ветки (б): модель ответила без вызова rag_ask). */
+  toolChoice?: "auto" | "required";
   /**
    * Day18: per-call timeout override (scheduler summary — 60 s instead of the
    * 1-hour default; a hung background call must not stall the pipeline).
@@ -347,7 +349,11 @@ export class DeepSeekService {
     );
     const reply = rawMessage?.content?.trim() ?? "";
     if (!reply && toolCalls.length === 0) {
-      throw new Error(`${endpoint.label} returned an empty reply`);
+      // Day27-fix: finish_reason/completion_tokens в сообщении — диагноз
+      // пустых ответов (gemini-режимы ProxyAPI: finish=stop, 0 ток).
+      throw new Error(
+        `${endpoint.label} returned an empty reply (finish_reason=${choice?.finish_reason ?? "none"}, completion_tokens=${payload.usage?.completion_tokens ?? "?"})`,
+      );
     }
 
     const resolvedModel = payload.model ?? model;

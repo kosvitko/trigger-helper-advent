@@ -56,7 +56,9 @@
     })();
   });
 
-  /* — Локальная модель (день 26, D-26-4): статус рантайма + каталог.
+  /* — Локальные модели (день 26, D-26-4; cust-fix 10.10: слиты в пункт
+     «Модель» по замечанию Кости — ручка overrides.model ОДНА, а два пункта
+     настроек с разными списками опций показывали противоречивое состояние).
      Поля runtimeOk в контракте нет — клиентская эвристика: рантайм поднят,
      если секция включена и хотя бы одна модель установлена (при лежащем
      рантайме или kill-switch сервер отдаёт installed=false у всех записей).
@@ -76,6 +78,16 @@
           ? "доступен"
           : "недоступен",
   );
+  /** Все записи каталога — включая недоступные (видны с бейджем, D-26-4). */
+  const localEntries = $derived(settings.localModels?.entries ?? []);
+  /** Выбранный id найден среди облачных или локальных; иначе (kill-switch,
+   *  чужой sessionStorage) значение показывается как «вне каталога» —
+   *  select без совпадающей опции выглядел бы пустым. */
+  const modelKnown = $derived(
+    !settings.overrides.model ||
+      settings.models.some((m) => m.model === settings.overrides.model) ||
+      localEntries.some((e) => e.id === settings.overrides.model),
+  );
 
   function localBadge(e: LocalModelEntry): string {
     if (!localRuntimeOk) return "рантайм недоступен";
@@ -87,7 +99,6 @@
 
   const sections = [
     { id: "model", label: "Модель", icon: "🧠" },
-    { id: "local", label: "Локальная модель", icon: "🖥️" },
     { id: "context", label: "Контекст и память", icon: "📚" },
     { id: "search", label: "Поиск по базе", icon: "🔎" },
     { id: "interface", label: "Интерфейс", icon: "🎨" },
@@ -221,16 +232,28 @@
   <div class="content">
     {#if openSection === "model"}
       <h2>Модель</h2>
-      <p class="sub">Влияет на все новые ходы; текущий ход не прерывается.</p>
+      <p class="sub">Влияет на все новые ходы; текущий ход не прерывается. Облачные и локальные модели — один список: локальные (Ollama) отвечают без сети и без списания бюджета, в RAG-чате — одной ходкой без поиска по базе («без RAG» в чипе). Выбор здесь и в чипе композера — одна ручка.</p>
 
       <div class="card">
         <div class="row">
           <div class="lbl"><b>Модель ответов</b><span>Генерирует нарратив поверх найденного</span></div>
-          <select bind:value={settings.overrides.model} onchange={() => settings.persist()}>
-            <option value="">по умолчанию агента</option>
-            {#each settings.models as m (m.model)}
-              <option value={m.model}>{m.label} · {m.model}</option>
-            {/each}
+          <select bind:value={settings.overrides.model} onchange={() => settings.persist()} aria-label="Модель ответов">
+            <option value="">по умолчанию сервера</option>
+            {#if !modelKnown}
+              <option value={settings.overrides.model}>{settings.overrides.model} · вне каталога</option>
+            {/if}
+            <optgroup label="Облачные">
+              {#each settings.models as m (m.model)}
+                <option value={m.model}>{m.label} · {m.model}</option>
+              {/each}
+            </optgroup>
+            {#if localEntries.length}
+              <optgroup label="Локальные (Ollama)">
+                {#each localEntries as e (e.id)}
+                  <option value={e.id} disabled={!e.available}>{e.label} · {localBadge(e)}</option>
+                {/each}
+              </optgroup>
+            {/if}
           </select>
         </div>
         <div class="row">
@@ -249,25 +272,13 @@
           ></button>
         </div>
       </div>
-    {:else if openSection === "local"}
-      <h2>Локальная модель</h2>
-      <p class="sub">Ollama на этом устройстве: ответы без сети и без списания бюджета. В RAG-чате локальная модель отвечает одной ходкой без поиска по базе — в чипе модели есть пометка «без RAG».</p>
 
       <div class="card">
         <div class="row">
           <div class="lbl"><b>Рантайм Ollama</b><span>Локальный рантайм (127.0.0.1:11434): включён и отвечает</span></div>
           <span class="value">{localStatus}</span>
         </div>
-        <div class="row">
-          <div class="lbl"><b>Локальная модель ответов</b><span>Та же ручка, что «Модель ответов»; действует на новые ходы</span></div>
-          <select bind:value={settings.overrides.model} onchange={() => settings.persist()} aria-label="Локальная модель">
-            <option value="">не использовать</option>
-            {#each settings.localModels?.entries ?? [] as e (e.id)}
-              <option value={e.id} disabled={!e.available}>{e.label} · {localBadge(e)}</option>
-            {/each}
-          </select>
-        </div>
-        {#each settings.localModels?.entries ?? [] as e (e.id)}
+        {#each localEntries as e (e.id)}
           <div class="row">
             <div class="lbl">
               <b>{e.label}</b>

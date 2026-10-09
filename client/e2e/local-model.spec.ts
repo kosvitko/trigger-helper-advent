@@ -1,8 +1,10 @@
 /**
- * E2E день 26 — локальная модель (D-26-2/3/4):
- *  (а) рантайм ок → секция «Локальная модель» с бейджами каталога,
- *      выбор 0.5b пишется в СУЩЕСТВУЮЩИЙ override (sessionStorage
- *      th.overrides.v1) и переживает reload;
+ * E2E день 26 — локальная модель (D-26-2/3/4; cust-fix 10.10 — блок слит
+ *  в пункт «Модель»: ручка overrides.model одна, пункт меню «Локальная
+ *  модель» упразднён):
+ *  (а) рантайм ок → в пункте «Модель» групповой дропдаун (облако + локальные)
+ *      с бейджами каталога, выбор 0.5b пишется в СУЩЕСТВУЮЩИЙ override
+ *      (sessionStorage th.overrides.v1) и переживает reload;
  *  (б) рантайм недоступен → статус «недоступен», записи видны с бейджем,
  *      но не выбираются; в чипе композера локальных записей нет;
  *  (б2) kill-switch (LOCAL_LLM_ENABLED=0) → статус «отключён»;
@@ -17,8 +19,8 @@ const openSettings = (page: import("@playwright/test").Page) =>
   page.getByRole("button", { name: "⚙ Настройки" }).click();
 const navItem = (page: import("@playwright/test").Page, label: string) =>
   page.locator(".settings .nav-item", { hasText: label });
-const localSelect = (page: import("@playwright/test").Page) =>
-  page.locator('.settings select[aria-label="Локальная модель"]');
+const modelSelect = (page: import("@playwright/test").Page) =>
+  page.locator('.settings select[aria-label="Модель ответов"]');
 /** Строка каталога (с бейджем .value) по метке записи — select-строку
  *  (опции содержат тот же текст) не задаевает. */
 const catalogRow = (page: import("@playwright/test").Page, label: string) =>
@@ -36,8 +38,7 @@ test("локальная модель: каталог с бейджами, вы�
   await page.goto("/");
   await expect(page.locator("select.session")).toHaveCount(1); // boot готов
 
-  await openSettings(page);
-  await navItem(page, "Локальная модель").click();
+  await openSettings(page); // секция «Модель» открыта по умолчанию
 
   // статус рантайма — доступен; каталог с бейджами причин (D-26-4)
   await expect(runtimeRow(page)).toContainText("доступен");
@@ -45,12 +46,12 @@ test("локальная модель: каталог с бейджами, вы�
   await expect(catalogRow(page, "Qwen2.5 1.5B")).toContainText("не установлена");
   await expect(catalogRow(page, "Qwen2.5 3B")).toContainText("мало RAM");
 
-  // недоступные записи видны, но выбрать нельзя (D-26-4)
-  await expect(localSelect(page).locator("option[value='qwen2.5:1.5b']")).toBeDisabled();
-  await expect(localSelect(page).locator("option[value='qwen2.5:3b']")).toBeDisabled();
+  // недоступные записи видны в дропдауне, но выбрать нельзя (D-26-4)
+  await expect(modelSelect(page).locator("option[value='qwen2.5:1.5b']")).toBeDisabled();
+  await expect(modelSelect(page).locator("option[value='qwen2.5:3b']")).toBeDisabled();
 
-  // выбор доступной записи → тот же override, что и «Модель ответов»
-  await localSelect(page).selectOption("qwen2.5:0.5b");
+  // выбор доступной записи → единый override (ручка одна на облако и локальные)
+  await modelSelect(page).selectOption("qwen2.5:0.5b");
   const stored = await page.evaluate(() => sessionStorage.getItem("th.overrides.v1"));
   expect(JSON.parse(stored ?? "{}")).toMatchObject({ model: "qwen2.5:0.5b" });
 
@@ -58,8 +59,7 @@ test("локальная модель: каталог с бейджами, вы�
   await page.reload();
   await expect(page.locator("select.session")).toHaveCount(1);
   await openSettings(page);
-  await navItem(page, "Локальная модель").click();
-  await expect(localSelect(page)).toHaveValue("qwen2.5:0.5b");
+  await expect(modelSelect(page)).toHaveValue("qwen2.5:0.5b");
 });
 
 test("рантайм недоступен: секция «недоступен», в чипе композера локальных нет", async ({
@@ -76,11 +76,10 @@ test("рантайм недоступен: секция «недоступен»
   await expect(chipOptions.filter({ hasText: "локальная" })).toHaveCount(0);
 
   await openSettings(page);
-  await navItem(page, "Локальная модель").click();
   await expect(runtimeRow(page)).toContainText("недоступен");
   // записи каталога видны, но все с бейджем «рантайм недоступен» и не выбираются
   await expect(catalogRow(page, "Qwen2.5 0.5B")).toContainText("рантайм недоступен");
-  await expect(localSelect(page).locator("option[value='qwen2.5:0.5b']")).toBeDisabled();
+  await expect(modelSelect(page).locator("option[value='qwen2.5:0.5b']")).toBeDisabled();
 });
 
 test("kill-switch LOCAL_LLM_ENABLED=0: секция «отключён»", async ({ page, context }) => {
@@ -93,10 +92,9 @@ test("kill-switch LOCAL_LLM_ENABLED=0: секция «отключён»", async
   await expect(chipOptions.filter({ hasText: "локальная" })).toHaveCount(0);
 
   await openSettings(page);
-  await navItem(page, "Локальная модель").click();
   await expect(runtimeRow(page)).toContainText("отключён");
   await expect(catalogRow(page, "Qwen2.5 0.5B")).toContainText("рантайм недоступен");
-  await expect(localSelect(page).locator("option[value='qwen2.5:0.5b']")).toBeDisabled();
+  await expect(modelSelect(page).locator("option[value='qwen2.5:0.5b']")).toBeDisabled();
 });
 
 test("ход с локальной моделью: SSE-прогресс «● N ток» виден в стриме, ответ рендерится", async ({

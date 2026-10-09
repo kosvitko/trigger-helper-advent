@@ -20,7 +20,9 @@ import {
  *
  * Run: npm run local-llm:check            (модель — дефолт каталога 0.5b)
  *      npm run local-llm:check -- --model qwen2.5:1.5b
- *
+ *      npm run local-llm:check -- --history [--model …] (день 27: диалог из
+ *        2 ходов — ход 2 «почему?» содержательно требует хода 1; PASS =
+ *        ответы непустые И prompt_tokens вырос — история доехала до Ollama)
  * Модель берётся из КАТАЛОГА (дефолт qwen2.5:0.5b), не из env — env может
  * задавать только адрес рантайма/таймаут/kill-switch (OLLAMA_URL,
  * OLLAMA_TIMEOUT_MS, LOCAL_LLM_ENABLED).
@@ -106,6 +108,12 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  // День 27 (proposals 261009 §3.1-3): режим мульти-хода — wiring-проверка
+  // истории вместо 3 отдельных запросов.
+  if (process.argv.includes("--history")) {
+    return runHistoryCheck(env, model);
+  }
+
   const rows: CheckRow[] = [];
   for (let i = 0; i < QUERIES.length; i += 1) {
     const { title, q } = QUERIES[i];
@@ -138,6 +146,65 @@ async function main(): Promise<number> {
       `| ${i + 1} | ${title} | ${String(row.deltas).padStart(5)} | ${String(row.promptTokens).padStart(6)} | ${String(row.completionTokens).padStart(5)} | ${fmtSec(row.totalMs).padStart(9)} с |`,
     );
   });
+  return 0;
+}
+
+/** День 27: диалог из 2 ходов через ту же chatLocalLlm, что и продукт
+ * (proposals 261009 §3.1-3). Ход 2 «почему?» содержательно требует хода 1.
+ * Пара V2 (сухой прогон 09.10, temp/dryrun-day27-candidates.mjs: 5/5 на 1.5b;
+ * V1 «да/нет» флюкнула — грабля day26). PASS = оба ответа непустые И
+ * prompt_tokens хода 2 > хода 1 (история реально уехала в Ollama — wiring,
+ * качество текста 0.5b не метрика, day26). */
+async function runHistoryCheck(
+  env: ReturnType<typeof loadEnv>,
+  model: string,
+): Promise<number> {
+  const q1 = QUERIES[1].q;
+  const q2 =
+    "Почему мышцу проверяют сзади, на лопатке, хотя болит спереди? Опираясь на предыдущий ход, ответь одним предложением.";
+
+  console.log("\n[1/2] Ход 1 (суммаризация карточки) — без истории");
+  console.log("─".repeat(72));
+  const a1 = await chatLocalLlm(env, { model, q: q1 }, (d) =>
+    process.stdout.write(d),
+  );
+  process.stdout.write("\n");
+  console.log(
+    `→ prompt ${a1.promptTokens} · completion ${a1.completionTokens} · ${fmtSec(a1.totalMs)} с`,
+  );
+
+  console.log("\n[2/2] Ход 2 («почему?») — с историей хода 1");
+  console.log("─".repeat(72));
+  const a2 = await chatLocalLlm(
+    env,
+    {
+      model,
+      q: q2,
+      history: [
+        { role: "user", content: q1 },
+        { role: "assistant", content: a1.reply },
+      ],
+    },
+    (d) => process.stdout.write(d),
+  );
+  process.stdout.write("\n");
+  console.log(
+    `→ prompt ${a2.promptTokens} · completion ${a2.completionTokens} · ${fmtSec(a2.totalMs)} с`,
+  );
+
+  if (!a1.reply.trim() || !a2.reply.trim()) {
+    console.error("FAIL: пустой ответ локальной модели");
+    return 1;
+  }
+  if (a2.promptTokens <= a1.promptTokens) {
+    console.error(
+      `FAIL: prompt_tokens не вырос (${a1.promptTokens} → ${a2.promptTokens}) — история не доехала`,
+    );
+    return 1;
+  }
+  console.log(
+    `PASS: история доехала (prompt ${a1.promptTokens} → ${a2.promptTokens} ток)`,
+  );
   return 0;
 }
 

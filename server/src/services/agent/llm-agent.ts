@@ -1282,48 +1282,73 @@ export class LlmAgent {
         }
       } else if (railCheck(applyOutputPolicy(agent, current.reply))) {
         railRetried = true;
-        // Day25: в followup уходит только очищенный от DSML текст; пусто — не кладём
-        // вовсе: сырой DSML-ответ как assistant-пример учит модель повторять формат.
-        const cleanedForRetry = stripDsmlLines(current.reply);
-        if (cleanedForRetry.length > 0) {
-          followup.push({ role: "assistant", content: cleanedForRetry });
-        }
-        followup.push({
-          role: "system",
-          content: ragCalledThisTurn
-            ? "В прошлом ответе нет меток источников [source › section] из результата rag_ask. " +
-              "Ответь снова, перечислив источники в формате [source › section] из результата тулзы; " +
-              "dontKnow=true — так и скажи, источники не перечисляй и не выдумывай. " +
-              "Вызов инструмента делай только штатным механизмом function-calling, не вставляй синтаксис вызова текстом."
-            : "Отвечать без вызова rag_ask в текущем ходе запрещено. Сейчас вызови rag_ask с самодостаточным " +
-              "вопросом, затем ответь по результату тулзы, перечислив источники [source › section]; " +
-              "dontKnow=true — скажи, что в базе нет релевантного, без выдумывания источников. " +
-              "Вызов инструмента делай только штатным механизмом function-calling, не вставляй синтаксис вызова текстом.",
-        });
-        if (ragCalledThisTurn) {
-          // Ветка (а): тулз-история жива ⇒ system-напоминание в followup +
-          // ОДИН no-tools вызов (паттерн caps-exhaust). current.usage уже в
-          // usages (замкнут в processToolChain) — не дублируем.
-          const second = await chatGuard(followup, baseChatOptions);
-          usages.push(second.usage);
-          latencySum += second.latency_ms;
-          current = second;
-        } else {
-          // Ветка (б): тулза не звалась вообще ⇒ повторный вызов С тулзами,
-          // ре-ентер того же tool-loop (05-M-4).
-          if (!enteredLoop) {
-            usages.push(current.usage);
-            latencySum += current.latency_ms;
+        // Day27-fix (замечание Кости 09.10): сбой rail-повтора не должен
+        // валить ход. Форма повтора (история с готовым ответом ассистента +
+        // системный приказ «вызови тулзу») приводит ProxyAPI/gemini к пустому
+        // content с finish=stop и 0 ток (замер 09.10, flash-lite 2/3 хода)
+        // — до фикса это превращалось в upstream_error 502 и теряло уже
+        // готовый первый ответ. Fail-open по образцу повторного нарушения
+        // рельсы: первый ответ остаётся, meta.railViolated=true.
+        const preRetry = current;
+        try {
+          // Day25: в followup уходит только очищенный от DSML текст; пусто — не кладём
+          // вовсе: сырой DSML-ответ как assistant-пример учит модель повторять формат.
+          const cleanedForRetry = stripDsmlLines(current.reply);
+          if (cleanedForRetry.length > 0) {
+            followup.push({ role: "assistant", content: cleanedForRetry });
           }
-          const retry = await chatGuard(followup, {
-            ...baseChatOptions,
-            ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
+          followup.push({
+            role: "system",
+            content: ragCalledThisTurn
+              ? "В прошлом ответе нет меток источников [source › section] из результата rag_ask. " +
+                "Ответь снова, перечислив источники в формате [source › section] из результата тулзы; " +
+                "dontKnow=true — так и скажи, источники не перечисляй и не выдумывай. " +
+                "Вызов инструмента делай только штатным механизмом function-calling, не вставляй синтаксис вызова текстом."
+              : "Отвечать без вызова rag_ask в текущем ходе запрещено. Сейчас вызови rag_ask с самодостаточным " +
+                "вопросом, затем ответь по результату тулзы, перечислив источники [source › section]; " +
+                "dontKnow=true — скажи, что в базе нет релевантного, без выдумывания источников. " +
+                "Вызов инструмента делай только штатным механизмом function-calling, не вставляй синтаксис вызова текстом.",
           });
-          usages.push(retry.usage);
-          latencySum += retry.latency_ms;
-          current = await processToolChain(retry);
+          if (ragCalledThisTurn) {
+            // Ветка (а): тулз-история жива ⇒ system-напоминание в followup +
+            // ОДИН no-tools вызов (паттерн caps-exhaust). current.usage уже в
+            // usages (замкнут в processToolChain) — не дублируем.
+            const second = await chatGuard(followup, baseChatOptions);
+            usages.push(second.usage);
+            latencySum += second.latency_ms;
+            current = second;
+          } else {
+            // Ветка (б): тулза не звалась вообще ⇒ повторный вызов С тулзами,
+            // ре-ентер того же tool-loop (05-M-4). Day27-fix: tool_choice
+            // "required" — иначе ProxyAPI/gemini на форме «история с готовым
+            // ответом + приказ звать тулзу» отвечает пустым контентом или
+            // снова текстом без вызова; форс снимает оба класса. Провайдер
+            // без поддержки "required" кинет ошибку — её ловит catch ниже.
+            if (!enteredLoop) {
+              usages.push(current.usage);
+              latencySum += current.latency_ms;
+            }
+            const retry = await chatGuard(followup, {
+              ...baseChatOptions,
+              ...(toolSpecs.length > 0
+                ? { tools: toolSpecs, toolChoice: "required" as const }
+                : {}),
+            });
+            usages.push(retry.usage);
+            latencySum += retry.latency_ms;
+            current = await processToolChain(retry);
+          }
+        } catch {
+          // Day27-fix: провайдер сбросил rail-повтор (пустой ответ/транспорт)
+          // — нарушение фиксируем честным флагом; если retry успел оставить
+          // current без текста (tool_calls-кадр до сбоя цепочки) — откат на
+          // дореtry-ответ, чтобы не отдавать пустой reply 200.
+          railViolated = true;
+          if (!String(current.reply ?? "").trim()) {
+            current = preRetry;
+          }
         }
-        if (railCheck(applyOutputPolicy(agent, current.reply))) {
+        if (railViolated !== true && railCheck(applyOutputPolicy(agent, current.reply))) {
           railViolated = true;
         }
       }

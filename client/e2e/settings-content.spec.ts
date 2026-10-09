@@ -24,12 +24,15 @@ test("все вкладки настроек показывают живые д�
 
   await openSettings(page);
 
-  // — «Модель»: дропдаун со замоканными моделями + тумблер рельсы —
+  // — «Модель»: один дропдаун (облако + локальные — ручка одна) + тумблер рельсы —
   const modelSelect = page.locator(".settings select");
   await expect(modelSelect).toHaveCount(1);
   await expect(modelSelect).toContainText("Chat · deepseek-chat");
   await expect(modelSelect).toContainText("Reasoner · deepseek-reasoner");
-  await expect(modelSelect).toContainText("по умолчанию агента");
+  await expect(modelSelect).toContainText("по умолчанию сервера");
+  // метка optgroup не входит в текст select — ассерт по локатору группы
+  await expect(modelSelect.locator("optgroup[label='Локальные (Ollama)'] option")).toHaveCount(3);
+  await expect(modelSelect).toContainText("Qwen2.5 0.5B · доступна");
   const toggle = page.getByRole("switch", { name: "Жёсткая рельса источников" });
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-checked", "true");

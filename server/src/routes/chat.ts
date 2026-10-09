@@ -23,6 +23,7 @@ import type { DeepSeekService } from "../services/deepseek.js";
 import {
   chatLocalLlm,
   isLocalCatalogId,
+  localHistoryTurns,
   probeLocalLlm,
 } from "../services/local-llm.js";
 import { isExpensiveModel } from "../services/model-cost-tier.js";
@@ -214,13 +215,20 @@ export async function registerChatRoutes(
 
         // Доступна — стрим одной ходки. Прогресс (D-26-3): существующие
         // step-события, ключ local-gen, тротл ~300 мс, N = число дельт.
+        // День 27: история диалога — клиентский contextTail с локальными
+        // капами (num_ctx 2048); в trace — ровно то, что ушло в Ollama.
+        const localHistory = localHistoryTurns(body.contextTail);
+        request.log.info(
+          { clientTurnId: body.clientTurnId, model: requested, history: localHistory.length },
+          "chat: local turn",
+        );
         let replyText = "";
         let deltaCount = 0;
         let lastStepAt = 0;
         const localT0 = Date.now();
         const localResult = await chatLocalLlm(
           deps.env,
-          { model: requested, q: body.input },
+          { model: requested, q: body.input, history: localHistory },
           (delta) => {
             replyText += delta;
             deltaCount += 1;
@@ -253,7 +261,7 @@ export async function registerChatRoutes(
 
         const response: ChatResponse = {
           reply: replyText || localResult.reply,
-          trace: { historyMessages: [] },
+          trace: { historyMessages: localHistory },
           usage,
         };
         if (wantsSse) {

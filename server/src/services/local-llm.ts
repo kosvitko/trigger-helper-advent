@@ -1,8 +1,12 @@
 import os from "node:os";
+import type { ChatContextTail } from "@trigger-helper/shared";
 import type { Env } from "../config/env.js";
 
 /**
  * День 26 — локальная LLM в продукте (design §2.1, D-26-1/3/4).
+ * День 27 — история диалога (proposals 261009 §3.1): ходка принимает history
+ * (клиентский contextTail через localHistoryTurns с локальными капами) —
+ * messages = system + history + user; trace.historyMessages — evidence.
  *
  * Рантайм — Ollama на 127.0.0.1:11434 (D-26-1, одинаковый локально и на
  * VPS); продукт ходит в него нативным fetch — зависимости сервера +0.
@@ -179,6 +183,40 @@ const LOCAL_LLM_SYSTEM_PROMPT =
 export interface LocalLlmChatParams {
   model: string;
   q: string;
+  /** День 27: история диалога (contextTail → localHistoryTurns, капы ниже). */
+  history?: LocalLlmHistoryTurn[];
+}
+
+/** Роль сообщения истории — контракту ChatTraceSchema.historyMessages отвечает. */
+export interface LocalLlmHistoryTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** Капы истории локальной ветки под num_ctx 2048 (proposals 261009 §3.1):
+ * system ≈40 ток + история ≤1500 симв (~500–700 ток) + вопрос + ответ —
+ * с запасом; общие капы normalizeContextTail для 2048 не годятся. */
+const LOCAL_HISTORY_MAX_MESSAGES = 6;
+const LOCAL_HISTORY_MESSAGE_CHARS = 400;
+const LOCAL_HISTORY_TOTAL_CHARS = 1500;
+
+/** День 27: клиентский contextTail → история локальной ходки. Последние
+ * сообщения диалога, per-message клип, суммарный бюджет — старейшие
+ * отрезаются первыми. Экспорт для чек-скрипта и прямых юнит-проверок. */
+export function localHistoryTurns(
+  tail: ChatContextTail | undefined,
+): LocalLlmHistoryTurn[] {
+  const recent = (tail?.dialogue ?? []).slice(-LOCAL_HISTORY_MAX_MESSAGES);
+  const clipped = recent.map((m) => ({
+    role: m.role,
+    content: clip(m.content, LOCAL_HISTORY_MESSAGE_CHARS),
+  }));
+  let total = clipped.reduce((a, m) => a + m.content.length, 0);
+  while (total > LOCAL_HISTORY_TOTAL_CHARS && clipped.length > 0) {
+    total -= clipped[0]!.content.length;
+    clipped.shift();
+  }
+  return clipped;
 }
 
 export interface LocalLlmChatResult {
@@ -209,7 +247,7 @@ function clip(s: string, max: number): string {
  */
 export async function chatLocalLlm(
   env: Env,
-  { model, q }: LocalLlmChatParams,
+  { model, q, history }: LocalLlmChatParams,
   onDelta?: (delta: string) => void,
 ): Promise<LocalLlmChatResult> {
   const { baseUrl, timeoutMs } = localLlmConfig(env);
@@ -223,6 +261,7 @@ export async function chatLocalLlm(
         model,
         messages: [
           { role: "system", content: LOCAL_LLM_SYSTEM_PROMPT },
+          ...(history ?? []).map((m) => ({ role: m.role, content: m.content })),
           { role: "user", content: q },
         ],
         stream: true,
