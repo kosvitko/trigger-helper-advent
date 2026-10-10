@@ -3,8 +3,9 @@
   // QA 041003 (F3): дефолт-модели агента больше нет (STATEFUL умер, CH-5b) —
   // правду знаем после живого хода, до него — серверный дефолт.
   // День 26 (D-26-2/D-26-4): в дропдаун добавляются ДОСТУПНЫЕ локальные
-  // записи («локальная · »); при активном rag_chat — суффикс «без RAG»
-  // (локальная ветка отвечает одной ходкой без поиска по базе).
+  // записи («локальная · »). День 28: в rag_chat локальная ветка ДЕЛАЕТ
+  // retrieval по базе (proposals 261009 §3.1-1) — суффикс « · RAG» (факт
+  // поиска); прочие пресеты — без суффикса (как до дня 28).
   import { settings } from "../stores/settings.svelte";
   import { session } from "../stores/session.svelte";
   import { trace } from "../stores/trace.svelte";
@@ -14,7 +15,7 @@
     settings.overrides.model ?? lastActual ?? "по умолчанию сервера",
   );
   let localSuffix = $derived(
-    session.activeThread?.preset === "rag_chat" ? " · без RAG" : "",
+    session.activeThread?.preset === "rag_chat" ? " · RAG" : "",
   );
 </script>
 

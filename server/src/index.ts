@@ -54,6 +54,9 @@ async function main(): Promise<void> {
   // Day21: RAG index over docs/ (build artifact in data/rag/, see rag:index).
   // The service never touches the embeddings model at boot — lazy on search.
   const rag = createRagService(env);
+  // Day23 (design F-04-1): cross-encoder reranker — hoisted (день 28: локальная
+  // rag-ветка чата ходит тем же реранкером, что и ragAnswer).
+  const reranker = createReranker(env);
   // Day22: RAG answer (question → chunks → LLM), two fair modes (design D-2).
   // Day23 (design F-04-1): + reranker (cross-encoder, tune-artifact threshold)
   // and rewriter (multi-query) — lazy init inside the services, boot untouched.
@@ -61,7 +64,7 @@ async function main(): Promise<void> {
     rag,
     deepSeek: deepSeekService,
     ledger: usageLedger,
-    reranker: createReranker(env),
+    reranker,
     rewriter: createRewriteQueries(deepSeekService),
   });
   // Day20: MCP registry — own server (in-process specs) + optional externals
@@ -89,8 +92,16 @@ async function main(): Promise<void> {
   await registerAgentRoutes(app, { env });
   // C+ CH-3: stateless-ход POST /api/chat — единственный чат-путь после
   // cutover (D-10). CH-4: allow-list моделей (SEC-F1) через справочник
-  // /api/models + free-фолбэк дорогих.
-  await registerChatRoutes(app, { llmAgent, usageLedger, deepSeekService, env });
+  // /api/models + free-фолбэк дорогих. День 28: rag/reranker — детерминиро-
+  // ванный retrieval локальной rag-ветки (proposals 261009 §3.1-1).
+  await registerChatRoutes(app, {
+    llmAgent,
+    usageLedger,
+    deepSeekService,
+    env,
+    rag,
+    reranker,
+  });
   // Day17: own MCP server (product atlas) on POST /mcp — tools/call target.
   // Day22: atlas tools read the point-cards corpus (data/points/*.md, D-12).
   await registerOwnMcpRoute(app, { scheduler, pipelines });

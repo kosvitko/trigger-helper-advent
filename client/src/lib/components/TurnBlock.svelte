@@ -13,6 +13,20 @@
     ontoggle,
     focused = false,
   }: { turn: TurnBlockData; index: number; open: boolean; ontoggle: () => void; focused?: boolean } = $props();
+
+  // (г, cust-fix 10.10): живой таймер pending-хода — тикает на клиенте каждую
+  // секунду (⏱ N с в заголовке): серверные step-события замирают, пока
+  // CPU-реранкер блокирует event-loop сервера.
+  let elapsed = $state(0);
+  $effect(() => {
+    if (!turn.pending || !turn.startedAtMs) return;
+    const update = () => {
+      elapsed = Math.round((Date.now() - turn.startedAtMs!) / 1000);
+    };
+    update();
+    const t = setInterval(update, 1000);
+    return () => clearInterval(t);
+  });
 </script>
 
 <div class="turn" class:focused data-turn-id={turn.turnId}>
@@ -23,9 +37,15 @@
     {#if turn.railViolated}
       <span class="rail" title="Рельса «RAG каждый ход + источники» нарушена">рельса ✕</span>
     {/if}
-    <span class="tm">
-      {turn.model} · {fmtSec(turn.latencyMs)} · {fmtTok(turn.tokens)} ток · {fmtRub(turn.costRub)}
-    </span>
+    {#if turn.pending}
+      <span class="tm" title="Ход выполняется — время с отправки вопроса">
+        ⏱ {elapsed} с
+      </span>
+    {:else}
+      <span class="tm">
+        {turn.model} · {fmtSec(turn.latencyMs)} · {fmtTok(turn.tokens)} ток · {fmtRub(turn.costRub)}
+      </span>
+    {/if}
   </button>
   {#if open}
     <div class="steps">

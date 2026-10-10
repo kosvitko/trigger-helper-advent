@@ -10,7 +10,7 @@
     "dev": "npm run build -w @trigger-helper/shared && npm run dev -w @trigger-helper/server",
     "build": "npm run build -w @trigger-helper/shared && npm run build -w @trigger-helper/server && npm run build -w @trigger-helper/client",
     "dev:spa": "npm run build -w @trigger-helper/shared && npm run dev -w @trigger-helper/client",
-    "test": "npm run test -w @trigger-helper/client",
+    "test": "npm run test -w @trigger-helper/client && npm run test -w @trigger-helper/server",
     "test:e2e": "npm run test:e2e -w @trigger-helper/client",
     "start": "npm run start -w @trigger-helper/server",
     "record:demo:day26": "node scripts/record-day26-demo.mjs",

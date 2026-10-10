@@ -122,6 +122,33 @@ function emptyStore(): Store {
   };
 }
 
+/**
+ * Boot restore: skip-and-advance — сдвигает `nextRunAt` за `now`,
+ * накапливает missed. Без PubMed/таймеров (гейт 261009 D-2).
+ * Мутирует job in-place; возвращает число пропущенных тиков этого прохода.
+ */
+export function countAndAdvanceMissedTicks(
+  job: { nextRunAt: number; everySec: number; missed: number },
+  now: number,
+): number {
+  if (job.nextRunAt > now) return 0;
+  let missed = 0;
+  while (job.nextRunAt <= now) {
+    job.nextRunAt += job.everySec * 1000;
+    missed += 1;
+  }
+  job.missed += missed;
+  return missed;
+}
+
+/** Джоба протухла по TTL (expiresAt). */
+export function isJobExpired(
+  job: { expiresAt: string },
+  now: number,
+): boolean {
+  return now > Date.parse(job.expiresAt);
+}
+
 /* ------------------------------ Service ---------------------------------- */
 
 export class SchedulerService {
@@ -253,17 +280,12 @@ export class SchedulerService {
     let mostOverdue: Job | null = null;
     for (const job of this.store.jobs) {
       if (!job.active) continue;
-      if (now > Date.parse(job.expiresAt)) {
+      if (isJobExpired(job, now)) {
         job.active = false;
         continue;
       }
       if (job.nextRunAt <= now) {
-        let missed = 0;
-        while (job.nextRunAt <= now) {
-          job.nextRunAt += job.everySec * 1000;
-          missed += 1;
-        }
-        job.missed += missed;
+        const missed = countAndAdvanceMissedTicks(job, now);
         this.store.counters.missed += missed;
         if (!mostOverdue || job.nextRunAt < mostOverdue.nextRunAt) {
           mostOverdue = job;

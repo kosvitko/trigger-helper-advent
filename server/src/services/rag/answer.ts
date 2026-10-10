@@ -610,8 +610,9 @@ function rewriteExtras(rewrite: RewriteResult | null): Partial<RagAskResult["met
 }
 
 /** Day24 (design D-3): an injected chunk — body text WITHOUT the header line
- *  `[source | section | chunk_id]`, plus the quote payload fill. */
-interface InjectedChunk {
+ *  `[source | section | chunk_id]`, plus the quote payload fill.
+ *  Export — unit-тест validateQuotes (гейт 261009 D-3). */
+export interface InjectedChunk {
   text: string;
   source: string;
   section: string;
@@ -698,8 +699,9 @@ function parseMarkedQuotes(body: string): { text: string; author: string; book: 
  *  its chunk: leading/trailing trims are fine (normalization eats them),
  *  internal «…»/omissions break the substring and are rejected. A
  *  hallucinated chunk_id is rebound when the fragment matches exactly one
- *  injected chunk; everything else drops silently into the counter. */
-function validateQuotes(
+ *  injected chunk; everything else drops silently into the counter.
+ *  Export — unit (гейт 261009 D-3); UI-метки источников — на клиенте. */
+export function validateQuotes(
   quotes: { quote: string; chunk_id: string }[],
   injected: Map<string, InjectedChunk>,
 ): { valid: RagAskQuote[]; dropped: number } {

@@ -5,8 +5,11 @@ import {
   LOCAL_LLM_DEFAULT_MODEL,
   LOCAL_LLM_CATALOG,
   localLlmConfig,
+  localRagRetrieve,
   probeLocalLlm,
 } from "../services/local-llm.js";
+import { createReranker } from "../services/rag/rerank.js";
+import { createRagService } from "../services/rag/store.js";
 
 /**
  * День 26 — живая проверка локальной LLM (design §2.1, D-26-6):
@@ -23,6 +26,11 @@ import {
  *      npm run local-llm:check -- --history [--model …] (день 27: диалог из
  *        2 ходов — ход 2 «почему?» содержательно требует хода 1; PASS =
  *        ответы непустые И prompt_tokens вырос — история доехала до Ollama)
+ *      npm run local-llm:check -- --rag [--model …] (день 28: retrieval по
+ *        базе (localRagRetrieve, тот же конвейер, что в /api/chat) → ход
+ *        с контекстом против хода без контекста; PASS = ответ непуст И
+ *        prompt_tokens RAG-хода > хода без контекста — контекст доехал.
+ *        Качество текста маленькой модели — НЕ метрика (day26/day27).)
  * Модель берётся из КАТАЛОГА (дефолт qwen2.5:0.5b), не из env — env может
  * задавать только адрес рантайма/таймаут/kill-switch (OLLAMA_URL,
  * OLLAMA_TIMEOUT_MS, LOCAL_LLM_ENABLED).
@@ -112,6 +120,12 @@ async function main(): Promise<number> {
   // истории вместо 3 отдельных запросов.
   if (process.argv.includes("--history")) {
     return runHistoryCheck(env, model);
+  }
+
+  // День 28 (proposals 261009 §3.1-1): режим RAG — wiring-проверка контекста
+  // (тот же паттерн, что --history: факт доезда виден по prompt_tokens).
+  if (process.argv.includes("--rag")) {
+    return runRagCheck(env, model);
   }
 
   const rows: CheckRow[] = [];
@@ -204,6 +218,69 @@ async function runHistoryCheck(
   }
   console.log(
     `PASS: история доехала (prompt ${a1.promptTokens} → ${a2.promptTokens} ток)`,
+  );
+  return 0;
+}
+
+/** День 28: один вопрос по базе (on-corpus контрольный, косинус top-1 выше
+ * порога гейта — tune-dontknow.json on-01) → retrieval (localRagRetrieve,
+ * тот же конвейер, что локальная ветка /api/chat) → два хода той же модели:
+ * без контекста и с SEC-F3-контекстом. PASS = ответ с контекстом непуст И
+ * prompt_tokens вырос — контекст реально доехал в Ollama (качество текста
+ * 0.5b — не метрика, day26). */
+async function runRagCheck(
+  env: ReturnType<typeof loadEnv>,
+  model: string,
+): Promise<number> {
+  const q =
+    "Сухой приступообразный кашель может быть от триггерной точки? В какой мышце?";
+
+  console.log("\n[1/2] Ход без контекста — тот же вопрос");
+  console.log("─".repeat(72));
+  const a1 = await chatLocalLlm(env, { model, q }, (d) =>
+    process.stdout.write(d),
+  );
+  process.stdout.write("\n");
+  console.log(
+    `→ prompt ${a1.promptTokens} · completion ${a1.completionTokens} · ${fmtSec(a1.totalMs)} с`,
+  );
+
+  console.log("\n[2/2] Retrieval + ход с контекстом (localRagRetrieve)");
+  console.log("─".repeat(72));
+  const rag = createRagService(env);
+  const reranker = createReranker(env);
+  const retrieval = await localRagRetrieve(rag, reranker, q);
+  if (retrieval.dontKnow) {
+    console.error(
+      `FAIL: dontKnow-гейт (косинус top-1 ${retrieval.topCosine} < порога ${retrieval.threshold}) — контекста нет, wiring не проверить`,
+    );
+    return 1;
+  }
+  console.log(
+    `→ retrieval: пул ${retrieval.poolRanked} → в контексте ${retrieval.injectedCount} · косинус top-1 ${retrieval.topCosine} · ${fmtSec(retrieval.latencyMs)} с (реранк ${fmtSec(retrieval.rerankLatencyMs)} с)`,
+  );
+  const a2 = await chatLocalLlm(
+    env,
+    { model, q, context: retrieval.contextBlock },
+    (d) => process.stdout.write(d),
+  );
+  process.stdout.write("\n");
+  console.log(
+    `→ prompt ${a2.promptTokens} · completion ${a2.completionTokens} · ${fmtSec(a2.totalMs)} с`,
+  );
+
+  if (!a2.reply.trim()) {
+    console.error("FAIL: пустой ответ локальной модели с контекстом");
+    return 1;
+  }
+  if (a2.promptTokens <= a1.promptTokens) {
+    console.error(
+      `FAIL: prompt_tokens не вырос (${a1.promptTokens} → ${a2.promptTokens}) — контекст не доехал`,
+    );
+    return 1;
+  }
+  console.log(
+    `PASS: контекст доехал (prompt ${a1.promptTokens} → ${a2.promptTokens} ток, ${retrieval.injectedCount} фрагментов базы)`,
   );
   return 0;
 }

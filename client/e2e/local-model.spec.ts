@@ -113,9 +113,10 @@ test("ход с локальной моделью: SSE-прогресс «● N 
   await page.goto("/");
   const tid = await activeThreadId(page); // без посева тредов ensureActive создаёт rag_chat
 
-  // чип: доступная локальная запись с префиксом; активный пресет rag_chat → суффикс (D-26-2)
+  // чип: доступная локальная запись с префиксом; активный пресет rag_chat → суффикс « · RAG»
+  // (день 28: локальная ветка в rag_chat делает retrieval — proposals 261009 §3.1)
   await expect(
-    page.locator(".model-chip option", { hasText: "локальная · Qwen2.5 0.5B · без RAG" }),
+    page.locator(".model-chip option", { hasText: "локальная · Qwen2.5 0.5B · RAG" }),
   ).toHaveCount(1);
 
   await page.locator("#composer-input").fill("Как снять напряжение с трапеции?");

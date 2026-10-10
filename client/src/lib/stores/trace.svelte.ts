@@ -133,6 +133,9 @@ export interface TurnBlock {
   steps: TraceStep[];
   /** Ход в процессе выполнения — оптимистичный placeholder (отзыв Кости 03.10). */
   pending?: boolean;
+  /** (г, cust-fix 10.10): старт pending-хода (мс) — клиентский тикер ⏱ в
+   *  заголовке: серверные таймеры замирают, пока реранкер блокирует event-loop. */
+  startedAtMs?: number;
   /** QA 041003 (F1): скелет, восстановленный из сообщений треда (свежий
    *  браузер на той же сессии) — без пошаговых деталей; рельса неизвестна. */
   restored?: boolean;
@@ -246,6 +249,7 @@ const TurnBlockSchema = z.object({
   costRub: z.number(),
   steps: z.array(TraceStepSchema),
   pending: z.boolean().optional(),
+  startedAtMs: z.number().optional(),
   restored: z.boolean().optional(),
 });
 
@@ -783,6 +787,7 @@ class TraceStore {
       tokens: 0,
       costRub: 0,
       pending: true,
+      startedAtMs: Date.now(),
       steps: [
         {
           id: "pending:wait",
@@ -817,6 +822,8 @@ class TraceStore {
       chattask: "Память задачи",
       // День 26 (D-26-3): прогресс локальной генерации — иначе сырой ключ в RU UI
       "local-gen": "Генерация (локальная)",
+      // День 28: retrieval локальной rag-ветки (до/после — «Ищу по базе…»)
+      "local-rag": "Поиск по базе (локальная)",
     };
     const kindMap: Record<string, TraceStep["kind"]> = {
       rag_ask: "rag",
@@ -830,20 +837,29 @@ class TraceStore {
       memory_class: "memory",
       rail: "tool",
       chattask: "memory",
+      "local-gen": "llm",
+      "local-rag": "rag",
     };
     const title = titleMap[step] ?? step;
     const existing = pending.steps.find((s) => s.title === title);
-    if (existing) {
-      existing.data.sub = text;
-    } else {
-      pending.steps.push({
-        id: `sse:${step}`,
-        kind: (kindMap[step] ?? "llm") as TraceStep["kind"],
-        title,
-        data: { sub: text, cost: "…" },
-      });
-    }
-    this.turns.set(TraceStore.PENDING_ID, { ...pending }); // trigger reactivity
+    // (г, cust-fix 10.10): шаг ЗАМЕЩАЕМ новым объектом (и массив — новым),
+    // а не мутируем на месте: keyed-each при том же ref пропускает
+    // перерисовку StepChip — саб замирал на первом значении (heartbeat
+    // «Ищу по базе… N с» не был виден, счётчик «● N ток» не тикал).
+    const steps = existing
+      ? pending.steps.map((s) =>
+          s.id === existing.id ? { ...s, data: { ...s.data, sub: text } } : s,
+        )
+      : [
+          ...pending.steps,
+          {
+            id: `sse:${step}`,
+            kind: (kindMap[step] ?? "llm") as TraceStep["kind"],
+            title,
+            data: { sub: text, cost: "…" },
+          },
+        ];
+    this.turns.set(TraceStore.PENDING_ID, { ...pending, steps });
   }
 
   /** C+ (CH-5b): ход из stateless-ответа /api/chat; turnId — клиентский

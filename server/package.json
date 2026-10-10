@@ -7,10 +7,12 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/services/mcp-registry.baseline.json','dist/services/mcp-registry.baseline.json')\"",
     "start": "node dist/index.js",
+    "test": "vitest run",
     "rag:index": "tsx src/scripts/build-rag-index.ts",
     "rag:eval": "tsx src/scripts/eval-rag-answer.ts",
     "rag:eval-chat": "tsx src/scripts/eval-rag-chat.ts",
     "rag:tune": "tsx src/scripts/tune-dontknow.ts && tsx src/scripts/tune-rerank.ts",
+    "rag:compare": "tsx src/scripts/compare-local-rag.ts",
     "local-llm:check": "tsx src/scripts/local-llm-check.ts"
   },
   "dependencies": {
@@ -26,6 +28,7 @@
   "devDependencies": {
     "@types/node": "^22.13.10",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^5.0.3"
   }
 }
