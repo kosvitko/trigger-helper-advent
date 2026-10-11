@@ -36,6 +36,7 @@ import {
   localRagRetrieve,
   probeLocalLlm,
 } from "../services/local-llm.js";
+import { getLocalLlmGate } from "../services/local-llm-gate.js";
 import type { Reranker } from "../services/rag/rerank.js";
 import type { RagService } from "../services/rag/store.js";
 import { isExpensiveModel } from "../services/model-cost-tier.js";
@@ -108,9 +109,21 @@ export async function registerChatRoutes(
       "text/event-stream",
     );
 
+    /** Day30 cust-fix: кадр очереди иначе сидит в буфере Node/прокси до
+     *  следующего write (когда слот уже отпущен) — клиент видит «Очередь»
+     *  слишком поздно. flush + X-Accel-Buffering: no. */
+    const sseFlush = (): void => {
+      const raw = reply.raw as { flush?: () => void };
+      try {
+        raw.flush?.();
+      } catch {
+        /* сокет закрыт */
+      }
+    };
     const sseSend = wantsSse
       ? (data: unknown): void => {
           reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+          sseFlush();
         }
       : undefined;
     const sseFail = (
@@ -132,12 +145,15 @@ export async function registerChatRoutes(
         "content-type": "text/event-stream",
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
+        // nginx/caddy: не буферить SSE (иначе local-queue доезжает при старте хода)
+        "x-accel-buffering": "no",
       });
       reply.hijack(); // Fastify: raw-сокет — обычный JSON-return выключен
       // nginx рвал тихие длинные ходы (закрепление 051005): пинг каждые 15 с.
       const ka = setInterval(() => {
         try {
           reply.raw.write(": ping\n\n");
+          sseFlush();
         } catch {
           /* сокет закрыт — clearInterval ниже по "close" */
         }
@@ -235,203 +251,231 @@ export async function registerChatRoutes(
           return reply.status(503).send(failPayload("upstream_error", reason));
         }
 
-        // Доступна — стрим одной ходки. Прогресс (D-26-3): существующие
-        // step-события, ключ local-gen, тротл ~300 мс, N = число дельт.
-        // День 27: история диалога — клиентский contextTail с локальными
-        // капами (num_ctx 2048); в trace — ровно то, что ушло в Ollama.
-        const localHistory = localHistoryTurns(body.contextTail);
-
-        // День 28 (proposals 261009 §3.1-1): rag_chat на локальной модели —
-        // детерминированный retrieval ДО генерации: rankByQueries (один
-        // запрос, БЕЗ rewrite — облачный шаг) → реранк (порог tune-rerank.json)
-        // → dontKnow-гейт (косинус top-1 против tune-dontknow.json) → контекст
-        // с ЛОКАЛЬНЫМ бюджетом (≤~1000 ток, k≈6; облачные 3k/16 не
-        // переиспользуются). CPU-ретривал — десятки секунд (реранкер ~544 МиБ,
-        // прогрев): живой прогресс — heartbeat-таймер каждые 2 с + фазы
-        // конвейера через onPhase (cust-fix 10.10: без него поиск «выглядит
-        // как зависание»), ключ local-rag (новых SSE-кодов нет). Ветка по-прежнему ДО allow-list
-        // (D-26-9): ledger ₽0 / countExpensive:false — без изменений.
-        const wantsLocalRag =
-          body.preset === "rag_chat" || body.overrides?.ragTool === true;
-        let rag: Awaited<ReturnType<typeof localRagRetrieve>> | null = null;
-        if (wantsLocalRag) {
-          onProgress?.("local-rag", "Ищу по базе…");
-          // (г, cust-fix 10.10): CPU-ретривал молчит десятки секунд —
-          // heartbeat каждые 2 с держит живой таймер в sub шага «Поиск по
-          // базе», фазы конвейера — через onPhase; таймер общий, от старта
-          // поиска. clearInterval в finally — при любом исходе retrieval.
-          const searchT0 = Date.now();
-          let searchPhase = "Ищу по базе…";
-          const heartbeat: ReturnType<typeof setInterval> | null = onProgress
-            ? setInterval(() => {
-                const sec = Math.round((Date.now() - searchT0) / 1000);
-                try {
-                  onProgress("local-rag", `${searchPhase} ${sec} с`);
-                } catch {
-                  /* сокет закрыт — таймер снимается ниже по "close" */
-                }
-              }, 2000)
-            : null;
-          // Клиент ушёл посреди поиска — таймер не пишет в мёртвый сокет
-          // (паттерн ka-пинга выше).
-          if (heartbeat !== null) reply.raw.on("close", () => clearInterval(heartbeat));
-          try {
-            rag = await localRagRetrieve(deps.rag, deps.reranker, body.input, {
-              // День 29 (proposals 261010 §3.1-1): бюджет контекста —
-              // из тюнинг-профиля модели (0.5b: 1000, 1.5b: 2000 ток).
-              promptTokenBudget: localLlmTuning(requested).ragPromptTokenBudget,
-              onPhase: (text) => {
-                searchPhase = text;
-                onProgress?.("local-rag", text);
-              },
-            });
-          } finally {
-            if (heartbeat !== null) clearInterval(heartbeat);
-          }
+        // День 30 (proposals 261011 §3.1-2): семафор локальной ветки
+        // (default 1 = OLLAMA_NUM_PARALLEL). Второй клиент ждёт — SSE
+        // `local-queue` показывает позицию; release в finally при любом исходе.
+        const localGate = getLocalLlmGate();
+        const releaseLocal = await localGate.acquire((position, snap) => {
           onProgress?.(
-            "local-rag",
-            rag.dontKnow
-              ? `В базе нет релевантного (косинус top-1 ${rag.topCosine.toFixed(3)} < порога)`
-              : `Нашёл ${rag.injectedCount} фрагментов`,
+            "local-queue",
+            `В очереди · позиция ${position}`,
           );
-        }
-
-        request.log.info(
-          {
-            clientTurnId: body.clientTurnId,
-            model: requested,
-            history: localHistory.length,
-            // День 29: фактические options ходки (тюнинг-профиль) — evidence
-            // смока/логов; форма — как уходит в Ollama (snake_case).
-            localOpts: localLlmWireOptions(requested),
-            ...(rag
-              ? {
-                  localRag: {
-                    dontKnow: rag.dontKnow,
-                    injected: rag.injectedCount,
-                    topCosine: rag.topCosine,
-                    latencyMs: rag.latencyMs,
-                  },
-                }
-              : {}),
-          },
-          "chat: local turn",
-        );
-
-        // Гейт «не знаю» (контракт дня 24, локально): canned-ответ, вызов
-        // генерации не происходит — ₽0; usage-литерал нулей (zod-дефолт не
-        // срабатывает — сервер строит полный литерал, паттерн D-26-5).
-        let replyText = "";
-        let usage: ChatResponse["usage"];
-        if (rag?.dontKnow) {
-          replyText = localDontKnowAnswer(body.input);
-          usage = {
-            model: requested,
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            prompt_cache_hit_tokens: 0,
-            prompt_cache_miss_tokens: 0,
-            estimated_cost_usd: 0,
-            estimated_cost_rub: 0,
-          };
-        } else {
-          let deltaCount = 0;
-          let lastStepAt = 0;
-          const localT0 = Date.now();
-          const localResult = await chatLocalLlm(
-            deps.env,
+          request.log.info(
             {
+              clientTurnId: body.clientTurnId,
               model: requested,
-              q: body.input,
-              history: localHistory,
-              // День 28: retrieved-контекст SEC-F3-блоком (localRagRetrieve).
-              ...(rag ? { context: rag.contextBlock } : {}),
+              position,
+              localQueue: snap,
             },
-            (delta) => {
-              replyText += delta;
-              deltaCount += 1;
-              const now = Date.now();
-              if (onProgress && now - lastStepAt >= 300) {
-                lastStepAt = now;
-                const sec = ((now - localT0) / 1000).toFixed(1).replace(".", ",");
-                onProgress("local-gen", `● ${deltaCount} ток · ${sec} с`);
-              }
-            },
+            "chat: local queue",
           );
-          // Падение рантайма посреди стрима ловит общий catch ниже —
-          // существующий enum-код (новых кодов SSE не вводим).
-          if (!replyText) replyText = localResult.reply;
-          usage = {
-            model: requested,
-            prompt_tokens: localResult.promptTokens,
-            completion_tokens: localResult.completionTokens,
-            total_tokens:
-              localResult.promptTokens + localResult.completionTokens,
-            prompt_cache_hit_tokens: 0,
-            prompt_cache_miss_tokens: 0,
-            // Локальный ответ бесплатен: оба нуля пишем явно — zod-дефолт
-            // срабатывает только при parse, сервер строит полный литерал.
-            estimated_cost_usd: 0,
-            estimated_cost_rub: 0,
-          };
-        }
-        // D-26-5: usage в ledger с нулевой стоимостью, в дорогие не считается.
-        await deps.usageLedger.record(usage, { countExpensive: false });
+        });
+        try {
+          // Доступна — стрим одной ходки. Прогресс (D-26-3): существующие
+          // step-события, ключ local-gen, тротл ~300 мс, N = число дельт.
+          // День 27: история диалога — клиентский contextTail с локальными
+          // капами (num_ctx 2048); в trace — ровно то, что ушло в Ollama.
+          const localHistory = localHistoryTurns(body.contextTail);
 
-        // День 28: retrieval-факт — в СУЩЕСТВУЮЩУЮ форму rag-пейлоада
-        // (trace.tool.calls[].payload, день 25): те же поля, что заполняет
-        // облачный путь → чип «Источники N» и трейс работают без новой схемы.
-        // Цитаты опущены (решение в коде, альтернатива «без цитат» OQ-3):
-        // JSON-цитаты 0.5b/1.5b не держит (§3.1-6), а server_fallback-
-        // механика фрагментов приватна для облачного answer.ts (скоуп дня —
-        // облачные пути не трогать) → чип рендерит только «Источники N».
-        const trace: ChatTrace = { historyMessages: localHistory };
-        if (rag) {
-          const ragPayload: RagToolPayload = {
-            question: body.input,
-            answer: replyText,
-            quotes: [],
-            sources: rag.sources,
-            labels: rag.sources.map((s) => ragSourceLabel(s)),
-            dontKnow: rag.dontKnow,
-            topCosine: rag.topCosine,
-            threshold: rag.threshold,
-            poolRanked: rag.poolRanked,
-            keptAfterFilter: rag.keptAfterFilter,
-            injectedCount: rag.injectedCount,
-            quotesValid: null,
-            quotesSource: null,
-            // Локальный retrieval+генерация — ₽0; токены хода — в usage ответа.
-            usage,
-            latencyMs: rag.latencyMs,
-          };
-          trace.tool = {
-            calls: [
+          // День 28 (proposals 261009 §3.1-1): rag_chat на локальной модели —
+          // детерминированный retrieval ДО генерации: rankByQueries (один
+          // запрос, БЕЗ rewrite — облачный шаг) → реранк (порог tune-rerank.json)
+          // → dontKnow-гейт (косинус top-1 против tune-dontknow.json) → контекст
+          // с ЛОКАЛЬНЫМ бюджетом (≤~1000 ток, k≈6; облачные 3k/16 не
+          // переиспользуются). CPU-ретривал — десятки секунд (реранкер ~544 МиБ,
+          // прогрев): живой прогресс — heartbeat-таймер каждые 2 с + фазы
+          // конвейера через onPhase (cust-fix 10.10: без него поиск «выглядит
+          // как зависание»), ключ local-rag (новых SSE-кодов нет). Ветка по-прежнему ДО allow-list
+          // (D-26-9): ledger ₽0 / countExpensive:false — без изменений.
+          const wantsLocalRag =
+            body.preset === "rag_chat" || body.overrides?.ragTool === true;
+          let rag: Awaited<ReturnType<typeof localRagRetrieve>> | null = null;
+          if (wantsLocalRag) {
+            onProgress?.("local-rag", "Ищу по базе…");
+            // (г, cust-fix 10.10): CPU-ретривал молчит десятки секунд —
+            // heartbeat каждые 2 с держит живой таймер в sub шага «Поиск по
+            // базе», фазы конвейера — через onPhase; таймер общий, от старта
+            // поиска. clearInterval в finally — при любом исходе retrieval.
+            const searchT0 = Date.now();
+            let searchPhase = "Ищу по базе…";
+            const heartbeat: ReturnType<typeof setInterval> | null = onProgress
+              ? setInterval(() => {
+                  const sec = Math.round((Date.now() - searchT0) / 1000);
+                  try {
+                    onProgress("local-rag", `${searchPhase} ${sec} с`);
+                  } catch {
+                    /* сокет закрыт — таймер снимается ниже по "close" */
+                  }
+                }, 2000)
+              : null;
+            // Клиент ушёл посреди поиска — таймер не пишет в мёртвый сокет
+            // (паттерн ka-пинга выше).
+            if (heartbeat !== null) {
+              reply.raw.on("close", () => clearInterval(heartbeat));
+            }
+            try {
+              rag = await localRagRetrieve(deps.rag, deps.reranker, body.input, {
+                // День 29 (proposals 261010 §3.1-1): бюджет контекста —
+                // из тюнинг-профиля модели (0.5b: 1000, 1.5b: 2000 ток).
+                promptTokenBudget: localLlmTuning(requested).ragPromptTokenBudget,
+                onPhase: (text) => {
+                  searchPhase = text;
+                  onProgress?.("local-rag", text);
+                },
+              });
+            } finally {
+              if (heartbeat !== null) clearInterval(heartbeat);
+            }
+            onProgress?.(
+              "local-rag",
+              rag.dontKnow
+                ? `В базе нет релевантного (косинус top-1 ${rag.topCosine.toFixed(3)} < порога)`
+                : `Нашёл ${rag.injectedCount} фрагментов`,
+            );
+          }
+
+          request.log.info(
+            {
+              clientTurnId: body.clientTurnId,
+              model: requested,
+              history: localHistory.length,
+              localQueue: localGate.snapshot(),
+              // День 29: фактические options ходки (тюнинг-профиль) — evidence
+              // смока/логов; форма — как уходит в Ollama (snake_case).
+              localOpts: localLlmWireOptions(requested),
+              ...(rag
+                ? {
+                    localRag: {
+                      dontKnow: rag.dontKnow,
+                      injected: rag.injectedCount,
+                      topCosine: rag.topCosine,
+                      latencyMs: rag.latencyMs,
+                    },
+                  }
+                : {}),
+            },
+            "chat: local turn",
+          );
+
+          // Гейт «не знаю» (контракт дня 24, локально): canned-ответ, вызов
+          // генерации не происходит — ₽0; usage-литерал нулей (zod-дефолт не
+          // срабатывает — сервер строит полный литерал, паттерн D-26-5).
+          let replyText = "";
+          let usage: ChatResponse["usage"];
+          if (rag?.dontKnow) {
+            replyText = localDontKnowAnswer(body.input);
+            usage = {
+              model: requested,
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              total_tokens: 0,
+              prompt_cache_hit_tokens: 0,
+              prompt_cache_miss_tokens: 0,
+              estimated_cost_usd: 0,
+              estimated_cost_rub: 0,
+            };
+          } else {
+            let deltaCount = 0;
+            let lastStepAt = 0;
+            const localT0 = Date.now();
+            const localResult = await chatLocalLlm(
+              deps.env,
               {
-                name: RAG_TOOL_NAME,
-                arguments: { question: body.input },
-                ok: true,
-                latencyMs: rag.latencyMs,
-                resultClip: clipToolResult(renderRagToolResult(ragPayload)),
-                payload: ragPayload,
+                model: requested,
+                q: body.input,
+                history: localHistory,
+                // День 28: retrieved-контекст SEC-F3-блоком (localRagRetrieve).
+                ...(rag ? { context: rag.contextBlock } : {}),
               },
-            ],
-          };
-        }
+              (delta) => {
+                replyText += delta;
+                deltaCount += 1;
+                const now = Date.now();
+                if (onProgress && now - lastStepAt >= 300) {
+                  lastStepAt = now;
+                  const sec = ((now - localT0) / 1000)
+                    .toFixed(1)
+                    .replace(".", ",");
+                  onProgress("local-gen", `● ${deltaCount} ток · ${sec} с`);
+                }
+              },
+            );
+            // Падение рантайма посреди стрима ловит общий catch ниже —
+            // существующий enum-код (новых кодов SSE не вводим).
+            if (!replyText) replyText = localResult.reply;
+            usage = {
+              model: requested,
+              prompt_tokens: localResult.promptTokens,
+              completion_tokens: localResult.completionTokens,
+              total_tokens:
+                localResult.promptTokens + localResult.completionTokens,
+              prompt_cache_hit_tokens: 0,
+              prompt_cache_miss_tokens: 0,
+              // Локальный ответ бесплатен: оба нуля пишем явно — zod-дефолт
+              // срабатывает только при parse, сервер строит полный литерал.
+              estimated_cost_usd: 0,
+              estimated_cost_rub: 0,
+            };
+          }
+          // D-26-5: usage в ledger с нулевой стоимостью, в дорогие не считается.
+          await deps.usageLedger.record(usage, { countExpensive: false });
 
-        const response: ChatResponse = {
-          reply: replyText,
-          trace,
-          usage,
-        };
-        if (wantsSse) {
-          sseSend!({ type: "done", result: response });
-          reply.raw.write("data: [DONE]\n\n");
-          reply.raw.end();
-          return reply;
+          // День 28: retrieval-факт — в СУЩЕСТВУЮЩУЮ форму rag-пейлоада
+          // (trace.tool.calls[].payload, день 25): те же поля, что заполняет
+          // облачный путь → чип «Источники N» и трейс работают без новой схемы.
+          // Цитаты опущены (решение в коде, альтернатива «без цитат» OQ-3):
+          // JSON-цитаты 0.5b/1.5b не держит (§3.1-6), а server_fallback-
+          // механика фрагментов приватна для облачного answer.ts (скоуп дня —
+          // облачные пути не трогать) → чип рендерит только «Источники N».
+          const trace: ChatTrace = { historyMessages: localHistory };
+          if (rag) {
+            const ragPayload: RagToolPayload = {
+              question: body.input,
+              answer: replyText,
+              quotes: [],
+              sources: rag.sources,
+              labels: rag.sources.map((s) => ragSourceLabel(s)),
+              dontKnow: rag.dontKnow,
+              topCosine: rag.topCosine,
+              threshold: rag.threshold,
+              poolRanked: rag.poolRanked,
+              keptAfterFilter: rag.keptAfterFilter,
+              injectedCount: rag.injectedCount,
+              quotesValid: null,
+              quotesSource: null,
+              // Локальный retrieval+генерация — ₽0; токены хода — в usage ответа.
+              usage,
+              latencyMs: rag.latencyMs,
+            };
+            trace.tool = {
+              calls: [
+                {
+                  name: RAG_TOOL_NAME,
+                  arguments: { question: body.input },
+                  ok: true,
+                  latencyMs: rag.latencyMs,
+                  resultClip: clipToolResult(renderRagToolResult(ragPayload)),
+                  payload: ragPayload,
+                },
+              ],
+            };
+          }
+
+          const response: ChatResponse = {
+            reply: replyText,
+            trace,
+            usage,
+          };
+          if (wantsSse) {
+            sseSend!({ type: "done", result: response });
+            reply.raw.write("data: [DONE]\n\n");
+            reply.raw.end();
+            return reply;
+          }
+          return reply.send(response);
+        } finally {
+          releaseLocal();
         }
-        return reply.send(response);
       }
 
       // SEC-F4: мягкий трим хвоста (жёсткие капы уже отработала zod-ветка).

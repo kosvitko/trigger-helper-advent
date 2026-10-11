@@ -63,6 +63,12 @@ const envSchema = z.object({
    */
   LOCAL_LLM_ENABLED: z.string().optional(),
   /**
+   * Day30: max concurrent local-branch turns (product semaphore around
+   * RAG+generation). Default 1 — matches OLLAMA_NUM_PARALLEL=1 (gate D-1).
+   * Second client waits; SSE step `local-queue` shows position.
+   */
+  LOCAL_MAX_CONCURRENT: z.coerce.number().int().positive().optional(),
+  /**
    * Day20: external MCP servers, comma-separated `name=url` (name: [a-z0-9]+).
    * Own server is always registered from PORT; absent value = own-only (day19).
    * Per-server LLM injection filter: MCP_INJECT_<NAME> (comma-list of native

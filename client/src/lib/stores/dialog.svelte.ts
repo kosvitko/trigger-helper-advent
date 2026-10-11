@@ -50,6 +50,8 @@ function threadMessages(threadId: string, thread: ChatThreadRecord): AgentMessag
 class DialogStore {
   messages = new SvelteMap<string, AgentMessage>();
   typing = $state(false);
+  /** День 30: текст typing-бабла при ожидании семафора («Ваш запрос N в очереди.»). */
+  queueStatus = $state<string | null>(null);
   error = $state("");
   chatTask = $state<ChatTaskState | null>(null);
   /** Задача-FSM активного треда (день 13; хранение — локальное, D-4). */
@@ -81,6 +83,7 @@ class DialogStore {
     // In-flight run старой сессии не должен лочить композер новой (typing
     // сбрасываем; ответ всё равно будет отброшен по loadEpoch в send).
     this.typing = false;
+    this.queueStatus = null;
   }
 
   /** Загрузка активного треда (лока только что стал локальным — мгновенно).
@@ -130,6 +133,7 @@ class DialogStore {
       const startedAt = performance.now();
       // SSE-шаги наполняют pending-ход трейса в реальном времени (Day25 UX);
       // ошибки (до/после hijack) — ChatApiError {code, httpStatus, message}.
+      // День 30: local-queue → typing-бабл «Ваш запрос N в очереди.» (N обновляется).
       const res = await sendChat(
         {
           input,
@@ -142,9 +146,21 @@ class DialogStore {
           ),
           clientTurnId: uid(),
         },
-        { onStep: (step, text) => trace.updatePendingStep(step, text) },
+        {
+          onStep: (step, text) => {
+            trace.updatePendingStep(step, text);
+            if (step === "local-queue") {
+              const m = /позиция\s+(\d+)/i.exec(text);
+              this.queueStatus = `Ваш запрос ${m?.[1] ?? "…"} в очереди.`;
+            } else if (this.queueStatus !== null) {
+              // Слот получен — дальше обычный «…» / прогресс в трейсе.
+              this.queueStatus = null;
+            }
+          },
+        },
       );
 
+      this.queueStatus = null;
       trace.cancelPending(); // заменяем SSE-ход реальным (с токенами/₽)
       if (epoch !== this.loadEpoch) return false;
       const { thread } = applyTurnResult(threadId, preset, input, res);
@@ -166,12 +182,16 @@ class DialogStore {
     } catch (e) {
       if (epoch === this.loadEpoch) {
         trace.cancelPending();
+        this.queueStatus = null;
         if (userMsg) this.messages.delete(userMsg.id);
         this.error = e instanceof Error ? e.message : String(e);
       }
       return false;
     } finally {
-      if (epoch === this.loadEpoch) this.typing = false;
+      if (epoch === this.loadEpoch) {
+        this.typing = false;
+        this.queueStatus = null;
+      }
     }
   }
 

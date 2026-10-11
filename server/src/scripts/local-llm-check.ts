@@ -4,11 +4,14 @@ import {
   isLocalCatalogId,
   LOCAL_LLM_DEFAULT_MODEL,
   LOCAL_LLM_CATALOG,
+  LOCAL_LLM_NUM_PREDICT,
   localLlmConfig,
   localLlmTuning,
+  localLlmWireOptions,
   localRagRetrieve,
   probeLocalLlm,
 } from "../services/local-llm.js";
+import { createLocalLlmGate } from "../services/local-llm-gate.js";
 import { createReranker } from "../services/rag/rerank.js";
 import { createRagService } from "../services/rag/store.js";
 
@@ -32,6 +35,9 @@ import { createRagService } from "../services/rag/store.js";
  *        с контекстом против хода без контекста; PASS = ответ непуст И
  *        prompt_tokens RAG-хода > хода без контекста — контекст доехал.
  *        Качество текста маленькой модели — НЕ метрика (day26/day27).)
+ *      npm run local-llm:check -- --concurrent [--model …] (день 30: два
+ *        параллельных хода через семафор max=1 — как продукт; PASS = оба
+ *        ответа непусты И хотя бы один ждал в очереди; wall ≈ сумма gen).
  * Модель берётся из КАТАЛОГА (дефолт qwen2.5:0.5b), не из env — env может
  * задавать только адрес рантайма/таймаут/kill-switch (OLLAMA_URL,
  * OLLAMA_TIMEOUT_MS, LOCAL_LLM_ENABLED).
@@ -127,6 +133,11 @@ async function main(): Promise<number> {
   // (тот же паттерн, что --history: факт доезда виден по prompt_tokens).
   if (process.argv.includes("--rag")) {
     return runRagCheck(env, model);
+  }
+
+  // День 30 (proposals 261011 §3.1-2): ≥2 одновременных клиента, очередь.
+  if (process.argv.includes("--concurrent")) {
+    return runConcurrentCheck(env, model);
   }
 
   const rows: CheckRow[] = [];
@@ -290,11 +301,127 @@ async function runRagCheck(
   return 0;
 }
 
+/** День 30: два параллельных non-RAG хода через тот же семафор max=1,
+ * что продукт (LOCAL_MAX_CONCURRENT / OLLAMA_NUM_PARALLEL=1). PASS =
+ * оба ответа непусты И хотя бы один клиент видел очередь (position≥1).
+ * Wall-время ≈ сумма gen — evidence «очередь, не parallel=2». */
+async function runConcurrentCheck(
+  env: ReturnType<typeof loadEnv>,
+  model: string,
+): Promise<number> {
+  const wire = localLlmWireOptions(model);
+  const tuning = localLlmTuning(model);
+  console.log("\nОграничения сервиса (evidence max context / rate limit):");
+  console.log(
+    `  max context: num_ctx=${wire.num_ctx ?? "—"} · num_predict=${wire.num_predict ?? LOCAL_LLM_NUM_PREDICT} · RAG-бюджет ${tuning.ragPromptTokenBudget} ток · история ≤6 сообщ. / ≤1500 симв.`,
+  );
+  console.log(
+    `  rate limit: RATE_LIMIT_MAX=${env.RATE_LIMIT_MAX} / ${Math.round(env.RATE_LIMIT_WINDOW_MS / 1000)} с на POST /api/chat (демо 429 — временно RATE_LIMIT_MAX=3)`,
+  );
+  console.log(
+    `  concurrent: LOCAL_MAX_CONCURRENT=${env.LOCAL_MAX_CONCURRENT ?? 1} (семафор продукта; Ollama NUM_PARALLEL=1)`,
+  );
+
+  const gate = createLocalLlmGate(1);
+  const clients: Array<{ id: string; q: string }> = [
+    { id: "A", q: "Ответь одним словом: сколько будет два плюс два?" },
+    { id: "B", q: "Ответь одним словом: какого цвета снег?" },
+  ];
+
+  type ConcRow = {
+    id: string;
+    queued: boolean;
+    queueWaitMs: number;
+    genMs: number;
+    wallMs: number;
+    promptTokens: number;
+    completionTokens: number;
+    replyLen: number;
+  };
+
+  const runOne = async (id: string, q: string): Promise<ConcRow> => {
+    const t0 = Date.now();
+    let queuedAt: number | null = null;
+    const release = await gate.acquire((pos) => {
+      queuedAt = Date.now();
+      console.log(`  [${id}] в очереди · позиция ${pos}`);
+    });
+    const acquiredAt = Date.now();
+    try {
+      process.stdout.write(`  [${id}] генерация: `);
+      const result = await chatLocalLlm(env, { model, q }, (d) => {
+        process.stdout.write(d);
+      });
+      process.stdout.write("\n");
+      const doneAt = Date.now();
+      return {
+        id,
+        queued: queuedAt !== null,
+        queueWaitMs: queuedAt !== null ? acquiredAt - t0 : 0,
+        genMs: result.totalMs,
+        wallMs: doneAt - t0,
+        promptTokens: result.promptTokens,
+        completionTokens: result.completionTokens,
+        replyLen: result.reply.trim().length,
+      };
+    } finally {
+      release();
+    }
+  };
+
+  console.log("\nДва одновременных клиента (семафор max=1, non-RAG):");
+  console.log("─".repeat(72));
+  const wall0 = Date.now();
+  const rows = await Promise.all(clients.map((c) => runOne(c.id, c.q)));
+  const wallMs = Date.now() - wall0;
+
+  console.log("\n| Клиент | Очередь | Ждал, с | Gen, с | Wall, с | Prompt | Compl | Ответ |");
+  console.log("|--------|---------|---------|--------|---------|--------|-------|-------|");
+  for (const r of rows) {
+    console.log(
+      `| ${r.id.padEnd(6)} | ${(r.queued ? "да" : "нет").padEnd(7)} | ${fmtSec(r.queueWaitMs).padStart(7)} | ${fmtSec(r.genMs).padStart(6)} | ${fmtSec(r.wallMs).padStart(7)} | ${String(r.promptTokens).padStart(6)} | ${String(r.completionTokens).padStart(5)} | ${String(r.replyLen).padStart(5)} |`,
+    );
+  }
+  const genSum = rows.reduce((a, r) => a + r.genMs, 0);
+  console.log(
+    `\nWall обоих: ${fmtSec(wallMs)} с · сумма gen: ${fmtSec(genSum)} с · отношение wall/sum=${(wallMs / Math.max(genSum, 1)).toFixed(2)}`,
+  );
+
+  if (rows.some((r) => r.replyLen === 0)) {
+    console.error("FAIL: пустой ответ у одного из клиентов");
+    return 1;
+  }
+  if (!rows.some((r) => r.queued)) {
+    console.error(
+      "FAIL: никто не ждал в очереди — семафор max=1 не сработал (оба вошли сразу?)",
+    );
+    return 1;
+  }
+  // Очередь: wall должен быть ближе к сумме, чем к max (порог 0.7×sum —
+  // запас на overlap старта/освобождения слота).
+  if (wallMs < genSum * 0.7) {
+    console.error(
+      `FAIL: wall ${fmtSec(wallMs)} с слишком мал vs сумма gen ${fmtSec(genSum)} с — похоже на parallel>1`,
+    );
+    return 1;
+  }
+  console.log(
+    "PASS: ≥2 клиента — оба ответили, очередь сработала, wall≈сумма gen (NUM_PARALLEL=1)",
+  );
+  return 0;
+}
+
 main()
-  .then((code) => process.exit(code))
-  .catch((err: unknown) => {
+  .then(async (code) => {
+    // Windows: жёсткий process.exit при ещё открытых undici-сокетах Ollama
+    // даёт UV_HANDLE_CLOSING assert (concurrent ×2 стрима) — тик на закрытие.
+    await new Promise((r) => setTimeout(r, 100));
+    process.exit(code);
+  })
+  .catch(async (err: unknown) => {
     console.error(
       `FAIL: ${err instanceof Error ? err.message : String(err)}`,
     );
+    await new Promise((r) => setTimeout(r, 100));
     process.exit(1);
   });

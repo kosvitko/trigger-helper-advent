@@ -41,6 +41,7 @@
   $effect(() => {
     void dialog.messages.size;
     void dialog.typing;
+    void dialog.queueStatus;
     if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
   });
 </script>
@@ -69,7 +70,11 @@
     {/if}
   {/each}
   {#if dialog.typing}
-    <div class="msg bot typing" aria-label="Модель отвечает">…</div>
+    <div
+      class="msg bot typing"
+      class:queue={!!dialog.queueStatus}
+      aria-label={dialog.queueStatus ?? "Модель отвечает"}
+    >{dialog.queueStatus ?? "…"}</div>
   {/if}
 </div>
 
@@ -124,6 +129,11 @@
   }
   .msg.typing {
     color: var(--muted);
+  }
+  /* День 30: статус очереди — читаемый статус, не «мигающие точки». */
+  .msg.typing.queue {
+    color: var(--ink);
+    font-style: italic;
   }
   .sysmsg {
     align-self: center;

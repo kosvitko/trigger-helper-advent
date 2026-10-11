@@ -22,6 +22,7 @@ import { createReranker } from "./services/rag/rerank.js";
 import { createRewriteQueries } from "./services/rag/rewrite.js";
 import { createRagService } from "./services/rag/store.js";
 import { createSchedulerService } from "./services/scheduler.js";
+import { initLocalLlmGate } from "./services/local-llm-gate.js";
 
 const serverRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -30,6 +31,8 @@ const serverRoot = path.resolve(
 
 async function main(): Promise<void> {
   const env = loadEnv();
+  // День 30: семафор локальной ветки (default 1 = OLLAMA_NUM_PARALLEL).
+  initLocalLlmGate(env.LOCAL_MAX_CONCURRENT ?? 1);
   // trustProxy: nginx X-Forwarded-For → real client IP for rate limit
   const app = Fastify({ logger: true, trustProxy: true });
 

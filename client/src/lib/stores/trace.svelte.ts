@@ -824,6 +824,8 @@ class TraceStore {
       "local-gen": "Генерация (локальная)",
       // День 28: retrieval локальной rag-ветки (до/после — «Ищу по базе…»)
       "local-rag": "Поиск по базе (локальная)",
+      // День 30: ожидание семафора при ≥2 одновременных локальных ходах
+      "local-queue": "Очередь (локальная)",
     };
     const kindMap: Record<string, TraceStep["kind"]> = {
       rag_ask: "rag",
@@ -839,6 +841,7 @@ class TraceStore {
       chattask: "memory",
       "local-gen": "llm",
       "local-rag": "rag",
+      "local-queue": "llm",
     };
     const title = titleMap[step] ?? step;
     const existing = pending.steps.find((s) => s.title === title);
