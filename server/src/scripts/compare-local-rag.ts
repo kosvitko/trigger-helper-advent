@@ -7,8 +7,10 @@ import { createUsageLedgerService } from "../services/usage-ledger.js";
 import {
   chatLocalLlm,
   isLocalCatalogId,
-  LOCAL_LLM_SYSTEM_PROMPT,
+  localLlmTuning,
+  localLlmWireOptions,
   localRagRetrieve,
+  localSystemPrompt,
   probeLocalLlm,
 } from "../services/local-llm.js";
 import { repoRoot } from "../services/rag/paths.js";
@@ -32,8 +34,8 @@ import { normalizeRu } from "../services/rag/text.js";
  * в контексте) → два генератора с ОДИНАКОВЫМ промптом (LOCAL_LLM_SYSTEM_PROMPT
  * + SEC-F3-контекст — так строит system chatLocalLlm) — армы отличаются
  * только генератором:
- *   local — qwen2.5:1.5b через chatLocalLlm (num_ctx 2048, температура
- *           рантайма по умолчанию — параметры не настраиваем, это день 29);
+ *   local — qwen2.5:1.5b через chatLocalLlm (тюнинг-профиль каталога
+ *           дня 29: темп 0.2 / num_predict 320 / num_ctx 4096 / RAG-промпт);
  *   cloud — дефолтная free deepseek (env.DEEPSEEK_MODEL) прямым chat(),
  *           plain text без jsonMode (рельса AGENTS §4 — дефолтная модель),
  *           параметры плоского вызова дня 22: temperature 0, maxTokens 900.
@@ -268,7 +270,7 @@ function printComparisonTable(
         ? String(r.injectedMin)
         : `${r.injectedMin}–${r.injectedMax}`;
     console.log(
-      `\nПоиск по базе (общий на вопрос, ${r.questions} вопросов): медиана ${ru(r.p50Ms / 1000)} с · в контекст ${injected} фрагм. (бюджет ≤~1000 ток, k≤6)`,
+      `\nПоиск по базе (общий на вопрос, ${r.questions} вопросов): медиана ${ru(r.p50Ms / 1000)} с · в контекст ${injected} фрагм. (бюджет тюнинг-профиля локальной модели, k≤6)`,
     );
   }
   console.log("\nКак читать таблицу:");
@@ -430,12 +432,17 @@ async function main(): Promise<number> {
     // Retrieval ОДИН РАЗ на вопрос, без dontKnow-гейта (скоуп §3.1-4).
     const retrieval = await localRagRetrieve(rag, reranker, question.q, {
       dontKnowGate: false,
+      // День 29: бюджет контекста — тюнинг-профиль модели (1.5b: 2000 ток);
+      // до дня 29 — константа 1000.
+      promptTokenBudget: localLlmTuning(LOCAL_MODEL).ragPromptTokenBudget,
     });
     console.log(
       `пул ${retrieval.poolRanked} → ${retrieval.injectedCount} в контексте · ${round(retrieval.latencyMs / 1000, 1)} с`,
     );
-    // Одинаковый промпт обоим arm'ам — как строит system chatLocalLlm.
-    const system = `${LOCAL_LLM_SYSTEM_PROMPT}\n\n${retrieval.contextBlock}`;
+    // День 29: тот же system, что строит chatLocalLlm по умолчанию (RAG-промпт
+    // + контекст) — армы по-прежнему отличаются ТОЛЬКО генератором (день 28
+    // давал обоим базовый промпт; профиль поменялся синхронно).
+    const system = localSystemPrompt({ context: retrieval.contextBlock });
 
     const localRuns: RunRow[] = [];
     for (let i = 0; i < RUNS; i += 1) {
@@ -495,15 +502,15 @@ async function main(): Promise<number> {
       runs: RUNS,
       limit: LIMIT,
       budgets: {
-        retrieval: "общий на вопрос · локальный бюджет ≤~1000 ток, k≤6 (num_ctx 2048)",
+        retrieval: `общий на вопрос · бюджет тюнинг-профиля модели дня 29 (${localLlmTuning(LOCAL_MODEL).ragPromptTokenBudget} ток, k≤6)`,
         cloudProduct: "продуктовый облачный путь — 3k/16 (answer.ts), здесь НЕ воспроизведено",
       },
       params: {
-        local: "chatLocalLlm, num_ctx 2048, температура рантайма по умолчанию (настройка — день 29)",
+        local: `chatLocalLlm — тюнинг-профиль каталога (день 29): ${JSON.stringify(localLlmWireOptions(LOCAL_MODEL))}`,
         cloud: `deepseek.chat: temperature ${CLOUD_TEMPERATURE}, maxTokens ${CLOUD_MAX_TOKENS}, plain text (без jsonMode)`,
       },
       stubPolicy: `day25-класс: ответ облака < ${STUB_MIN_CHARS} симв. → 1 ретрай (runs[].stubRetry)`,
-      note: "Честно: retrieval один на вопрос с ЛОКАЛЬНЫМ бюджетом (≤~1000 ток, k≈6) — оба арма получили одинаковый контекст и одинаковый промпт; армы отличаются только генератором. Продуктовый облачный RAG-путь использует бюджет 3k/16 — сравнение его не воспроизводит. Заземление-прокси — по ключевым словам источников (basename+title через normalizeRu), не по меткам [source › section].",
+      note: `Честно: retrieval один на вопрос с бюджетом тюнинг-профиля локальной модели (${localLlmTuning(LOCAL_MODEL).ragPromptTokenBudget} ток, k≈6) — оба арма получили одинаковый контекст и одинаковый промпт; армы отличаются только генератором. Продуктовый облачный RAG-путь использует бюджет 3k/16 — сравнение его не воспроизводит. Заземление-прокси — по ключевым словам источников (basename+title через normalizeRu), не по меткам [source › section].`,
     },
     questions: rows,
     aggregate: {

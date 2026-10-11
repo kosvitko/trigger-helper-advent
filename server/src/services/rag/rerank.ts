@@ -170,11 +170,17 @@ export interface RerankResult {
 export interface Reranker {
   readonly model: string;
   /** Ask-pipeline precheck (F-04-2): loads model + tune artifact BEFORE any
-   *  rewrite spend; failure → RagUnavailableError → mode-scoped 503. */
+   * rewrite spend; failure → RagUnavailableError → mode-scoped 503. */
   ensureReady(): Promise<void>;
   /** Second stage: top-pool → cross-encoder scores → threshold cut → re-sort.
-   *  Anti-regression guard: the post-rerank rank-1 never drops (D-3). */
+   * Anti-regression guard: the post-rerank rank-1 never drops (D-3). */
   rerank(query: string, hits: SearchHit[]): Promise<RerankResult>;
+  /** Хвост дня 29 (11.10): размер пула из артефакта — для ЧЕСТНОЙ фазы
+   * «Уточняю релевантность N фрагментов…» (local-llm раньше показывала весь
+   * косинус-пул 262, а кросс-энкодер читает только топ-pool). Читает ТОЛЬКО
+   * артефакт, БЕЗ загрузки модели — фаза не должна ждать холодный старт
+   * ONNX-сессии; null = реранкер выключен/артефакт бит (base-деградация). */
+  rerankPoolSize(): Promise<number | null>;
 }
 
 export function createReranker(env: Env): Reranker {
@@ -233,6 +239,19 @@ export function createReranker(env: Env): Reranker {
     model: RERANK_MODEL,
     ensureReady(): Promise<void> {
       return ensureReady().then(() => undefined);
+    },
+    async rerankPoolSize(): Promise<number | null> {
+      if (disabled) return null;
+      try {
+        const raw = await fs.readFile(
+          path.join(repoRoot, "data", "rag", "tune-rerank.json"),
+          "utf8",
+        );
+        const parsed = tuneArtifactSchema.safeParse(JSON.parse(raw));
+        return parsed.success ? parsed.data.pool : null;
+      } catch {
+        return null;
+      }
     },
     async rerank(query: string, hits: SearchHit[]): Promise<RerankResult> {
       const { scorer, artifact } = await ensureReady();

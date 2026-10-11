@@ -24,7 +24,13 @@ import { createRagService, writeJsonAtomic } from "../services/rag/store.js";
  * частично пересекающиеся с пробами", never as an independent test set.
  */
 
-const POOL = 40;
+/** Пул реранка (топ косинуса, который читает кросс-энкодер). 23: 40;
+ * 11.10 (замечание Кости о долгом поиске): 40 → 24 — 3 батча вместо 5
+ * (≈24 с вместо ≈39 с на CPU, замер в артефакте rerankLatencyMs), при этом
+ * худший косинус-ранг ожидаемой карточки по пробам corpus v1 = 20 — pool 24
+ * сохраняет запас; corpus v2 (hit@1 0.59→0.91) ранги только улучшает.
+ * Прогоны ниже это подтверждают (∉пул у on-corpus проб быть не должно). */
+const POOL = 24;
 const STRATEGY = "structured" as const;
 
 interface ProbeRow {

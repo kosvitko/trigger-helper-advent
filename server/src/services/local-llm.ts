@@ -18,6 +18,10 @@ import { RagUnavailableError, type RagService, type SearchHit } from "./rag/stor
  * День 28 — RAG в локальной ветке (proposals 261009 §3.1-1/2): детерминиро-
  * ванный retrieval (localRagRetrieve) + retrieved-контекст параметром
  * context (SEC-F3-блок в system-промпт).
+ * День 29 — тюнинг-профиль (proposals 261010 §3.1): параметры генерации
+ * (темп 0.2 / num_predict 320 / num_ctx и бюджет контекста per-entry из
+ * каталога) + RAG-промпт под кейс; localRagAssemble выделен для A/B
+ * скрипта local-llm:tune (бюджеты baseline/tuned из одного ranking).
  *
  * Рантайм — Ollama на 127.0.0.1:11434 (D-26-1, одинаковый локально и на
  * VPS); продукт ходит в него нативным fetch — зависимости сервера +0.
@@ -37,6 +41,15 @@ import { RagUnavailableError, type RagService, type SearchHit } from "./rag/stor
  * генерации (в chat.ts уходит в существующий upstream_error-контракт).
  */
 
+/** День 29 (proposals 261010 §3.1-1): per-entry параметры тюнинга — окно
+ * контекста ходки и бюджет retrieved-контекста в промпте. 0.5b — профиль
+ * дня 28 (2048/1000, прод VPS 1,9 ГБ RAM без изменений); 1.5b — расширенный
+ * (4096/2000: KV ≈100–110 МБ, в контекст 3–6 кусков вместо 1–2). */
+export interface LocalLlmTuning {
+  readonly numCtx: number;
+  readonly ragPromptTokenBudget: number;
+}
+
 export interface LocalLlmCatalogEntry {
   readonly id: string;
   readonly label: string;
@@ -44,12 +57,32 @@ export interface LocalLlmCatalogEntry {
   readonly minTotalRamMb: number;
   /** Размер весов — для бейджа в UI, МБ. */
   readonly sizeMb: number;
+  /** День 29: параметры тюнинга генерации/контекста (per-entry). */
+  readonly tuning: LocalLlmTuning;
 }
 
 export const LOCAL_LLM_CATALOG: readonly LocalLlmCatalogEntry[] = [
-  { id: "qwen2.5:0.5b", label: "Qwen2.5 0.5B", minTotalRamMb: 1500, sizeMb: 400 },
-  { id: "qwen2.5:1.5b", label: "Qwen2.5 1.5B", minTotalRamMb: 4000, sizeMb: 1000 },
-  { id: "qwen2.5:3b", label: "Qwen2.5 3B", minTotalRamMb: 7000, sizeMb: 1900 },
+  {
+    id: "qwen2.5:0.5b",
+    label: "Qwen2.5 0.5B",
+    minTotalRamMb: 1500,
+    sizeMb: 400,
+    tuning: { numCtx: 2048, ragPromptTokenBudget: 1000 },
+  },
+  {
+    id: "qwen2.5:1.5b",
+    label: "Qwen2.5 1.5B",
+    minTotalRamMb: 4000,
+    sizeMb: 1000,
+    tuning: { numCtx: 4096, ragPromptTokenBudget: 2000 },
+  },
+  {
+    id: "qwen2.5:3b",
+    label: "Qwen2.5 3B",
+    minTotalRamMb: 7000,
+    sizeMb: 1900,
+    tuning: { numCtx: 4096, ragPromptTokenBudget: 2000 },
+  },
 ];
 
 /** Дефолт каталога — его же использует npm run local-llm:check без --model. */
@@ -57,6 +90,18 @@ export const LOCAL_LLM_DEFAULT_MODEL = "qwen2.5:0.5b";
 
 export function isLocalCatalogId(id: string): boolean {
   return LOCAL_LLM_CATALOG.some((entry) => entry.id === id);
+}
+
+/** Тюнинг-профиль модели; неизвестный id — консервативный дефолт дня 28
+ * (num_ctx 2048 / бюджет 1000): каталог приходит открытой строкой в
+ * overrides, dispatch выше уже отфильтровал неизвестные id. */
+export function localLlmTuning(model: string): LocalLlmTuning {
+  return (
+    LOCAL_LLM_CATALOG.find((entry) => entry.id === model)?.tuning ?? {
+      numCtx: 2048,
+      ragPromptTokenBudget: 1000,
+    }
+  );
 }
 
 export interface LocalLlmConfig {
@@ -193,6 +238,51 @@ async function fetchInstalledModels(
 export const LOCAL_LLM_SYSTEM_PROMPT =
   "Ассистент Trigger Helper — приложения самопомощи по триггерным точкам. Отвечай кратко, по делу, на русском языке.";
 
+/** День 29 (proposals 261010 §3.1-2): промпт под конкретный кейс — RAG-ответ
+ * по базе триггерных точек; включается при наличии retrieved-контекста.
+ * Вывод Кости дня 28: ответы «кратко» хуже для кейса — нужны 2–4 предложения
+ * с конкретикой и жёсткая опора на блок ДАННЫХ (анти-галлюцинации малой
+ * модели, день 24 в локальной ветке). */
+export const LOCAL_LLM_RAG_PROMPT =
+  "Ассистент Trigger Helper — приложения самопомощи по триггерным точкам. Ниже в блоке «ДАННЫЕ» — фрагменты базы знаний по триггерным точкам. Отвечай на вопрос ТОЛЬКО по этим фрагментам: называй мышцу, технику и симптомы конкретно, как в базе. Ответ — 2–4 предложения на русском языке. Чего нет во фрагментах — не выдумывай; если данных не хватает, скажи об этом прямо.";
+
+/** День 29 (proposals 261010 §3.1-1): параметры генерации (глобальные для
+ * всех локальных моделей). Температура 0.2 — прямой ответ грабле day26 (на
+ * дефолтных 0.8 модель теряла «не» и путала мышцы); num_predict 320 —
+ * потолок ответа «2–4 предложения» (max tokens задания), защита от
+ * разгонов при неограниченном дефолте рантайма. */
+export const LOCAL_LLM_TEMPERATURE = 0.2;
+export const LOCAL_LLM_NUM_PREDICT = 320;
+
+/** Override-форма (camelCase): замена профиля ПО ЗАДАННЫМ ПОЛЯМ — поля не
+ * указаны → в Ollama не едут (дефолт рантайма). Baseline-arm скрипта
+ * local-llm:tune передаёт {numCtx: 2048} — wire-формат дня 28 без
+ * temperature/num_predict. */
+export interface LocalLlmOptionsOverride {
+  temperature?: number;
+  numCtx?: number;
+  numPredict?: number;
+}
+
+/** Wire-options Ollama (snake_case, только заданные поля). Без override —
+ * тюнинг-профиль дня 29: темп 0.2 + num_predict 320 + num_ctx каталога. */
+export function localLlmWireOptions(
+  model: string,
+  override?: LocalLlmOptionsOverride,
+): { temperature?: number; num_ctx?: number; num_predict?: number } {
+  const src: LocalLlmOptionsOverride = override ?? {
+    temperature: LOCAL_LLM_TEMPERATURE,
+    numCtx: localLlmTuning(model).numCtx,
+    numPredict: LOCAL_LLM_NUM_PREDICT,
+  };
+  const wire: { temperature?: number; num_ctx?: number; num_predict?: number } =
+    {};
+  if (src.temperature !== undefined) wire.temperature = src.temperature;
+  if (src.numCtx !== undefined) wire.num_ctx = src.numCtx;
+  if (src.numPredict !== undefined) wire.num_predict = src.numPredict;
+  return wire;
+}
+
 export interface LocalLlmChatParams {
   model: string;
   q: string;
@@ -201,6 +291,24 @@ export interface LocalLlmChatParams {
   /** День 28: retrieved-контекст (localRagRetrieve.contextBlock, SEC-F3) —
    * дописывается в system-промпт ПОСЛЕ базового (данные, не инструкции). */
   context?: string;
+  /** День 29: базовый системный промпт (скрипт local-llm:tune: baseline-arm
+   * воспроизводит день 28 старым промптом). По умолчанию — RAG-промпт при
+   * наличии context, иначе базовый. */
+  systemPrompt?: string;
+  /** День 29: замена тюнинг-профиля options (см. LocalLlmOptionsOverride). */
+  options?: LocalLlmOptionsOverride;
+}
+
+/** System-сообщение ходки: базовый промпт (override → RAG-промпт при
+ * контексте → базовый) + SEC-F3-блок контекста после него. Экспорт —
+ * юнит-тест и скрипт local-llm:tune (сборка system без ходки). */
+export function localSystemPrompt(
+  params: Pick<LocalLlmChatParams, "systemPrompt" | "context">,
+): string {
+  const base =
+    params.systemPrompt ??
+    (params.context ? LOCAL_LLM_RAG_PROMPT : LOCAL_LLM_SYSTEM_PROMPT);
+  return params.context ? `${base}\n\n${params.context}` : base;
 }
 
 /** Роль сообщения истории — контракту ChatTraceSchema.historyMessages отвечает. */
@@ -260,6 +368,10 @@ export interface LocalRagRetrieval {
   rerankLatencyMs: number;
   latencyMs: number;
   dontKnow: boolean;
+  /** День 29: ПОСЛЕ-реранк список hits — скрипт local-llm:tune собирает из
+   * одного ranking+rerank контексты разных бюджетов (baseline 1000 ток)
+ * без повторного реранка. */
+  rerankedHits: SearchHit[];
 }
 
 /** Копия схемы артефакта answer.ts:621 (приватной там; скоуп дня 28 облачный
@@ -321,11 +433,28 @@ function round4(n: number): number {
  * ошибки конвейера (нет индекса и т.п.) — RagUnavailableError наверх:
  * у пресета, обещающего RAG, тихая деградация «без базы» была бы нечестной
  * (fail-closed). */
+/** Русская плюрализация для фазы реранка (24 → «фрагмента», 40 → «фрагментов»). */
+function pluralFragments(n: number): string {
+  const a = Math.abs(n) % 100;
+  const b = a % 10;
+  if (a > 10 && a < 20) return "фрагментов";
+  if (b > 1 && b < 5) return "фрагмента";
+  if (b === 1) return "фрагмент";
+  return "фрагментов";
+}
+
 export async function localRagRetrieve(
   rag: RagService,
   reranker: Reranker,
   q: string,
-  opts: { dontKnowGate?: boolean; onPhase?: (text: string) => void } = {},
+  opts: {
+    dontKnowGate?: boolean;
+    onPhase?: (text: string) => void;
+    /** День 29: override k/бюджета сборки (по умолчанию — константы дня 28;
+     * продуктовый путь chat.ts передаёт бюджет профиля модели). */
+    k?: number;
+    promptTokenBudget?: number;
+  } = {},
 ): Promise<LocalRagRetrieval> {
   const t0 = Date.now();
   const ranked = await rag.rankByQueries([q], LOCAL_RAG_STRATEGY);
@@ -349,6 +478,7 @@ export async function localRagRetrieve(
       rerankLatencyMs: 0,
       latencyMs: Date.now() - t0,
       dontKnow: true,
+      rerankedHits: [],
     };
   }
 
@@ -356,8 +486,16 @@ export async function localRagRetrieve(
   let keptAfterFilter = poolRanked;
   let rerankLatencyMs = 0;
   // Реранк — самая долгая фаза (CPU, десятки секунд): сообщаем её старт,
-  // чтобы шаг «Поиск по базе» не молчал (cust-fix 10.10 «г»).
-  opts.onPhase?.(`Уточняю релевантность ${poolRanked} фрагментов…`);
+  // чтобы шаг «Поиск по базе» не молчал (cust-fix 10.10 «г»). Число — ЧЕСТНЫЙ
+  // размер пула кросс-энкодера из артефакта (хвост 11.10, замечание Кости:
+  // раньше показывали весь косинус-пул poolRanked=262, а реранкер читает
+  // только топ-pool — 24 с 11.10); null = реранкер выключен (base-режим VPS).
+  const rerankPool = await reranker.rerankPoolSize();
+  opts.onPhase?.(
+    rerankPool != null
+      ? `Уточняю релевантность ${rerankPool} ${pluralFragments(rerankPool)}…`
+      : "Уточняю релевантность…",
+  );
   try {
     const reranked = await reranker.rerank(q, ranked.hits);
     hits = reranked.hits;
@@ -371,13 +509,47 @@ export async function localRagRetrieve(
     console.warn("[local-llm] reranker недоступен — base-retrieval (топ-k по косинусу)");
   }
 
+  const assembly = localRagAssemble(hits, {
+    k: opts.k,
+    promptTokenBudget: opts.promptTokenBudget,
+  });
+  return {
+    ...assembly,
+    topCosine,
+    threshold,
+    poolRanked,
+    keptAfterFilter,
+    rerankLatencyMs,
+    latencyMs: Date.now() - t0,
+    dontKnow: false,
+    rerankedHits: hits,
+  };
+}
+
+/** День 29: сборка SEC-F3-блока контекста из ранжированных hits — выделена
+ * из localRagRetrieve, чтобы скрипт local-llm:tune собирал из ОДНОГО
+ * ranking+rerank контексты разных бюджетов (baseline 1000 / tuned 2000)
+ * без повторного реранка. Жадная whole-chunk сборка (D-3 дня 28): чанк
+ * не режется, хвост выбрасывается первым, первый чанк остаётся всегда. */
+export interface LocalRagAssembly {
+  contextBlock: string;
+  sources: RagAskSource[];
+  injectedCount: number;
+}
+
+export function localRagAssemble(
+  hits: readonly SearchHit[],
+  opts: { k?: number; promptTokenBudget?: number } = {},
+): LocalRagAssembly {
+  const k = opts.k ?? LOCAL_RAG_K_FINAL;
+  const budget = opts.promptTokenBudget ?? LOCAL_RAG_PROMPT_TOKEN_BUDGET;
   const kept: { text: string; source: RagAskSource }[] = [];
   let tokens = 0;
-  for (const { chunk, score } of hits.slice(0, LOCAL_RAG_K_FINAL)) {
+  for (const { chunk, score } of hits.slice(0, k)) {
     const header = `[${chunk.source} | ${chunk.section || "—"} | ${chunk.chunk_id}]`;
     const text = `${header}\n${chunk.text.trim()}`;
     const candidateTokens = estimateTokens(text) + (kept.length ? 2 : 0);
-    if (kept.length > 0 && tokens + candidateTokens > LOCAL_RAG_PROMPT_TOKEN_BUDGET) {
+    if (kept.length > 0 && tokens + candidateTokens > budget) {
       break;
     }
     kept.push({
@@ -398,14 +570,7 @@ export async function localRagRetrieve(
   return {
     contextBlock: body ? buildContextDataBlock("база знаний", body) : "",
     sources: kept.map((p) => p.source),
-    topCosine,
-    threshold,
-    poolRanked,
-    keptAfterFilter,
     injectedCount: kept.length,
-    rerankLatencyMs,
-    latencyMs: Date.now() - t0,
-    dontKnow: false,
   };
 }
 
@@ -437,7 +602,7 @@ function clip(s: string, max: number): string {
  */
 export async function chatLocalLlm(
   env: Env,
-  { model, q, history, context }: LocalLlmChatParams,
+  { model, q, history, context, systemPrompt, options }: LocalLlmChatParams,
   onDelta?: (delta: string) => void,
 ): Promise<LocalLlmChatResult> {
   const { baseUrl, timeoutMs } = localLlmConfig(env);
@@ -454,16 +619,19 @@ export async function chatLocalLlm(
             role: "system",
             // День 28: retrieved-контекст едет в system делимитерами
             // «данные, не инструкции» (SEC-F3) — после базового промпта.
-            content: context
-              ? `${LOCAL_LLM_SYSTEM_PROMPT}\n\n${context}`
-              : LOCAL_LLM_SYSTEM_PROMPT,
+            // День 29: базовый промпт — под кейс (RAG-промпт при контексте),
+            // если не передан override (baseline-arm скрипта local-llm:tune).
+            content: localSystemPrompt({ systemPrompt, context }),
           },
           ...(history ?? []).map((m) => ({ role: m.role, content: m.content })),
           { role: "user", content: q },
         ],
         stream: true,
-        // num_ctx 2048 ⇒ KV ≈48–56 МБ + веса ≈0.6–0.8 ГБ RSS (design §2.1).
-        options: { num_ctx: 2048 },
+        // День 29 (proposals 261010 §3.1-1): тюнинг-профиль — темп 0.2 /
+        // num_predict 320 / num_ctx из каталога (0.5b: 2048 — прод VPS без
+        // изменений; 1.5b: 4096 ⇒ KV ≈100–110 МБ). День 28 (без профиля):
+        // только {num_ctx: 2048}, температура/длина — дефолты рантайма.
+        options: localLlmWireOptions(model, options),
       }),
       // OLLAMA_TIMEOUT_MS — общий потолок ходки (дефолт 120 с < дефолтов
       // undici, отдельной конфигурации транспорта не нужно).

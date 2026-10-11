@@ -31,6 +31,8 @@ import {
   isLocalCatalogId,
   localDontKnowAnswer,
   localHistoryTurns,
+  localLlmTuning,
+  localLlmWireOptions,
   localRagRetrieve,
   probeLocalLlm,
 } from "../services/local-llm.js";
@@ -275,6 +277,9 @@ export async function registerChatRoutes(
           if (heartbeat !== null) reply.raw.on("close", () => clearInterval(heartbeat));
           try {
             rag = await localRagRetrieve(deps.rag, deps.reranker, body.input, {
+              // День 29 (proposals 261010 §3.1-1): бюджет контекста —
+              // из тюнинг-профиля модели (0.5b: 1000, 1.5b: 2000 ток).
+              promptTokenBudget: localLlmTuning(requested).ragPromptTokenBudget,
               onPhase: (text) => {
                 searchPhase = text;
                 onProgress?.("local-rag", text);
@@ -296,6 +301,9 @@ export async function registerChatRoutes(
             clientTurnId: body.clientTurnId,
             model: requested,
             history: localHistory.length,
+            // День 29: фактические options ходки (тюнинг-профиль) — evidence
+            // смока/логов; форма — как уходит в Ollama (snake_case).
+            localOpts: localLlmWireOptions(requested),
             ...(rag
               ? {
                   localRag: {

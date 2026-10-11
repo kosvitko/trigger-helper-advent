@@ -5,6 +5,7 @@ import {
   LOCAL_LLM_DEFAULT_MODEL,
   LOCAL_LLM_CATALOG,
   localLlmConfig,
+  localLlmTuning,
   localRagRetrieve,
   probeLocalLlm,
 } from "../services/local-llm.js";
@@ -249,7 +250,11 @@ async function runRagCheck(
   console.log("─".repeat(72));
   const rag = createRagService(env);
   const reranker = createReranker(env);
-  const retrieval = await localRagRetrieve(rag, reranker, q);
+  const retrieval = await localRagRetrieve(rag, reranker, q, {
+    // День 29: бюджет контекста — тюнинг-профиль модели, как в продуктовом
+    // пути /api/chat (до дня 29 — константа 1000).
+    promptTokenBudget: localLlmTuning(model).ragPromptTokenBudget,
+  });
   if (retrieval.dontKnow) {
     console.error(
       `FAIL: dontKnow-гейт (косинус top-1 ${retrieval.topCosine} < порога ${retrieval.threshold}) — контекста нет, wiring не проверить`,
