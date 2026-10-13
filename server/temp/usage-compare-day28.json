@@ -1,0 +1,29 @@
+{
+  "requests": 60,
+  "cost_usd": 0.006431,
+  "cost_rub": 0,
+  "total_tokens": 17443,
+  "cache_hit_tokens": 6528,
+  "by_model": {
+    "qwen2.5:1.5b": {
+      "requests": 30,
+      "cost_usd": 0,
+      "cost_rub": 0,
+      "total_tokens": 0,
+      "cache_hit_tokens": 0
+    },
+    "deepseek-flash": {
+      "requests": 30,
+      "cost_usd": 0.006431,
+      "cost_rub": 0,
+      "total_tokens": 17443,
+      "cache_hit_tokens": 6528
+    }
+  },
+  "expensive_day": "2026-10-09",
+  "expensive_asks_today": 0,
+  "budget_day": "2026-10-09",
+  "cost_rub_today": 0.6625,
+  "cost_rub_expensive_today": 0,
+  "updated_at": "2026-10-09T15:28:48.342Z"
+}

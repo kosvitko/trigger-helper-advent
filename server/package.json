@@ -14,6 +14,9 @@
     "rag:eval-chat": "tsx src/scripts/eval-rag-chat.ts",
     "rag:tune": "tsx src/scripts/tune-dontknow.ts && tsx src/scripts/tune-rerank.ts",
     "rag:compare": "tsx src/scripts/compare-local-rag.ts",
+  "review:commit": "tsx src/scripts/review-commit.ts",
+  "review:push": "tsx src/scripts/review-push.ts",
+  "review:pr": "tsx src/scripts/review-pr.ts",
     "local-llm:check": "tsx src/scripts/local-llm-check.ts",
     "local-llm:tune": "tsx src/scripts/tune-local-llm.ts"
   },

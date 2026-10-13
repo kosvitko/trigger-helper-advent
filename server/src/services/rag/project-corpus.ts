@@ -5,12 +5,20 @@ import type { CorpusFile } from "./corpus.js";
 import { repoRoot } from "./paths.js";
 
 /**
- * Day31 project RAG corpus (design D-31-5/12): README + STACK + shared schemas only.
+ * Day31 project RAG corpus (design D-31-5/12): README + STACK + shared schemas.
+ * Day32 (гейт 261013, Pick D): + код сервера и клиента — «документация + код»
+ * для AI-ревью; chunking остаётся существующий structured (адаптация чанков
+ * под код — вне дня, честно в NOTES).
  */
 
 const CORPUS_README = "README.md";
 const CORPUS_STACK = "docs/STACK.md";
-const SCHEMAS_GLOB = "shared/src/schemas/**/*.ts";
+const SCHEMAS_DIR = "shared/src/schemas";
+const CODE_DIRS: Array<{ dir: string; ext: string }> = [
+  { dir: "server/src", ext: ".ts" },
+  { dir: "client/src", ext: ".ts" },
+  { dir: "client/src", ext: ".svelte" },
+];
 
 function normalizeText(raw: string): string {
   return raw
@@ -41,10 +49,17 @@ export class ProjectCorpusReader {
     for (const fixed of [CORPUS_README, CORPUS_STACK]) {
       if (await exists(path.join(this.root, fixed))) sources.push(fixed);
     }
-    const schemaDir = path.join(this.root, "shared/src/schemas");
+    const schemaDir = path.join(this.root, SCHEMAS_DIR);
     if (await exists(schemaDir)) {
       for await (const rel of glob("**/*.ts", { cwd: schemaDir })) {
-        sources.push(path.posix.join("shared/src/schemas", rel.split(path.sep).join("/")));
+        sources.push(path.posix.join(SCHEMAS_DIR, rel.split(path.sep).join("/")));
+      }
+    }
+    for (const { dir, ext } of CODE_DIRS) {
+      const abs = path.join(this.root, dir);
+      if (!(await exists(abs))) continue;
+      for await (const rel of glob(`**/*${ext}`, { cwd: abs })) {
+        sources.push(path.posix.join(dir, rel.split(path.sep).join("/")));
       }
     }
     sources.sort();
@@ -61,11 +76,11 @@ export class ProjectCorpusReader {
         console.log(`[rag/project-corpus] skip empty file: ${source}`);
         continue;
       }
-      const isSchemaTs = source.startsWith("shared/src/schemas/") && source.endsWith(".ts");
+      const isMarkdown = source.endsWith(".md");
       files.push({
         source,
         file: path.basename(source),
-        title: isSchemaTs ? path.basename(source) : (firstH1(text) ?? path.basename(source)),
+        title: isMarkdown ? (firstH1(text) ?? path.basename(source)) : path.basename(source),
         text,
       });
     }

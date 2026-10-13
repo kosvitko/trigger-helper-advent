@@ -14,7 +14,8 @@
     "test:e2e": "npm run test:e2e -w @trigger-helper/client",
     "start": "npm run start -w @trigger-helper/server",
     "record:demo:day26": "node scripts/record-day26-demo.mjs",
-    "record:demo:day27": "node scripts/record-day27-demo.mjs"
+    "record:demo:day27": "node scripts/record-day27-demo.mjs",
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {}
 }
