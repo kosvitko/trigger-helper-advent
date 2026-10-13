@@ -39,3 +39,12 @@ export function mergeUsage(parts: LlmUsage[]): LlmUsage {
     estimated_cost_rub: Number(estimated_cost_rub.toFixed(4)),
   };
 }
+
+/**
+ * Day32 demo: разбор снапшота ledger из строки (демо-ветка).
+ */
+export function parseLedgerSnapshot(raw: string): Record<string, unknown> {
+  // BOM в начале строк при выгрузке из PowerShell — срезаем первый символ
+  const json = raw.slice(1);
+  return JSON.parse(json) as Record<string, unknown>;
+}
