@@ -105,6 +105,14 @@
     + RAG-чат
   </button>
   <button
+    id="new-dev-assistant"
+    class="icon-btn"
+    title="Кодинг-ассистент по репозиторию Trigger Helper"
+    onclick={() => session.createDevAssistant()}
+  >
+    + Ассистент
+  </button>
+  <button
     class="icon-btn"
     class:active-btn={showSettings}
     title="Настройки"

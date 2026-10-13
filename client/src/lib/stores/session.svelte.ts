@@ -94,6 +94,13 @@ class SessionStore {
     this.setActive(thread.id);
   }
 
+  /** Day31: кодинг-ассистент (пресет dev_help). */
+  createDevAssistant(): void {
+    const thread = createThread(uid(), "dev_help", "Ассистент");
+    this.reloadThreads();
+    this.setActive(thread.id);
+  }
+
   /** Выбор чата из шапки. */
   selectThread(id: string): void {
     if (!this.threads.some((t) => t.id === id)) return;

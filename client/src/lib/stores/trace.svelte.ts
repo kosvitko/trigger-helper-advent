@@ -359,7 +359,11 @@ function toolCallsSteps(ctx: AgentRunContext, turnId: string): ToolSteps {
   let ragData: RagStepData | undefined;
   const calls = ctx.tool?.calls ?? [];
   calls.forEach((call, i) => {
-    if (call.name === "rag_ask" && isRagPayload(call.payload)) {
+    // Day31: project_search payload matches rag SourcesChip shape (labels/sources).
+    if (
+      (call.name === "rag_ask" || call.name === "project_search") &&
+      isRagPayload(call.payload)
+    ) {
       const p = call.payload;
       const usageTokens = tokensOf(p.usage);
       const usageRub = rubOf(p.usage);
@@ -391,7 +395,7 @@ function toolCallsSteps(ctx: AgentRunContext, turnId: string): ToolSteps {
       steps.push({
         id: `${turnId}:rag:${i}`,
         kind: "rag",
-        title: "rag_ask",
+        title: call.name,
         data: {
           sub: `«${data.question}»`,
           cost: usageTokens !== null ? fmtTok(usageTokens) : "—",
@@ -399,7 +403,21 @@ function toolCallsSteps(ctx: AgentRunContext, turnId: string): ToolSteps {
         },
       });
       // Средние стадии пайплайна (Костя 041004: «больше шагов внутри хода»):
-      // рерайт → поиск → черновик → верификация — подшаги rag_ask.
+      // рерайт → поиск → черновик → верификация — подшаги rag_ask (не project_search).
+      if (call.name === "project_search") {
+        steps.push({
+          id: `${turnId}:projfind:${i}`,
+          kind: "rag",
+          title: "· поиск по докам проекта",
+          data: {
+            sub:
+              `фрагментов ${data.sourcesCount}` +
+              (data.topCosine !== null ? ` · косинус top-1 ${data.topCosine.toFixed(3)}` : ""),
+            cost: "0 ток",
+          },
+        });
+        return;
+      }
       if (data.rewrite) {
         steps.push({
           id: `${turnId}:ragrw:${i}`,

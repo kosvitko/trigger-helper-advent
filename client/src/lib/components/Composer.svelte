@@ -6,9 +6,24 @@
 
   let text = $state("");
 
+  const isDev = $derived(session.activeThread?.preset === "dev_help");
+  const placeholder = $derived(
+    isDev
+      ? "Спроси про код: /help где RAG? · ветка · файл"
+      : "Опишите, что болит — найдём точки и подскажем самопомощь",
+  );
+
   async function send(): Promise<void> {
-    const t = text.trim();
+    let t = text.trim();
     if (!t || dialog.typing) return; // busy-guard: повторный клик/Enter не стреляет
+    // Day31: /help в треде ассистента; из care — создаём тред ассистента.
+    if (t === "/help" || t.startsWith("/help ")) {
+      if (!isDev) session.createDevAssistant();
+      const q = t === "/help" ? "" : t.slice("/help".length).trim();
+      t =
+        q ||
+        "Перечисли свои возможности: какой корпус, какие тулзы, 2–3 примера вопросов.";
+    }
     text = ""; // очистка МГНОВЕННО (как в старом UI) — бабл уже в ленте, typing-индикатор виден
     await dialog.send(t); // typing=true синхронно → кнопка «Отправляем…» сразу
   }
@@ -26,7 +41,7 @@
     id="composer-input"
     bind:value={text}
     onkeydown={onkeydown}
-    placeholder="Опишите, что болит — найдём точки и подскажем самопомощь"
+    placeholder={placeholder}
     rows="2"
   ></textarea>
   <div class="row">

@@ -32,7 +32,7 @@ import { LlmUsageSchema } from "./ask.js";
 /** 04-MIN-9: енум пресетов stateless-чата сужен до живых {care, rag_chat}.
  * Легаси AgentPresetIdSchema (strict/open) остаётся широким до cutover
  * (CH-6): старые персист-инстансы ещё проходят per-record safeParse. */
-export const ChatPresetIdSchema = z.enum(["care", "rag_chat"]);
+export const ChatPresetIdSchema = z.enum(["care", "rag_chat", "dev_help"]);
 export type ChatPresetId = z.infer<typeof ChatPresetIdSchema>;
 
 export const ChatDialogueRoleSchema = z.enum(["user", "assistant"]);

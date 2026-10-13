@@ -62,6 +62,28 @@ export const CHAT_PRESETS: AgentPreset[] = [
     outputPolicy: { trim: true, maxChars: 4_000, formatHint: "open" },
     defaultTemperature: 0.3,
   },
+  {
+    // Day31: coding assistant for developing Trigger Helper (design D-31-*).
+    id: "dev_help",
+    label: "Ассистент",
+    role: "кодинг-ассистент по репозиторию Trigger Helper",
+    instructions:
+      "Ты помогаешь разрабатывать Trigger Helper. Read-only: не предлагай commit/push и не выдумывай правки как уже сделанные. " +
+      "ОБЯЗАН пользоваться инструментами: project_search (доки/схемы), repo_git_branch, repo_list_files, repo_read_file. " +
+      "Пути и имена файлов называй ТОЛЬКО из результатов тулзов этого хода. " +
+      "Формат путей: в обратных кавычках `path/to/file`. Без медицинских дисклеймеров и без советов по массажу. " +
+      "Если в корпусе/репо нет ответа — скажи честно, что искал.",
+    layers: {
+      strategic: "Помочь разработчику сориентироваться в коде и контрактах этого репо.",
+      operational:
+        "Сначала тулзы (поиск по докам + git/файлы), потом краткий ответ с реальными путями.",
+      task: "Ответ: суть → пути/контракты → что ещё можно открыть тулзами.",
+    },
+    inputPolicy: { trim: true, maxChars: 4_000, requireNonEmpty: true },
+    outputPolicy: { trim: true, maxChars: 4_000, formatHint: "open" },
+    defaultTemperature: 0.2,
+    skipDisclaimer: true,
+  },
 ];
 
 export function getChatPreset(id: string): AgentPreset | undefined {
@@ -73,6 +95,7 @@ export function buildPresetSystemPrompt(presetLike: {
   instructions: string;
   layers: AgentPreset["layers"];
   outputPolicy: AgentPreset["outputPolicy"];
+  skipDisclaimer?: boolean;
 }): string {
   const formatLine =
     presetLike.outputPolicy.formatHint === "short"
@@ -81,13 +104,14 @@ export function buildPresetSystemPrompt(presetLike: {
         ? "Формат ответа: можно развёрнуто, но по делу."
         : "Формат ответа: спокойно, мягко, 1–2 шага.";
 
-  return [
+  const lines = [
     `Роль: ${presetLike.role}`,
     `Инструкции: ${presetLike.instructions}`,
     `Strategic: ${presetLike.layers.strategic}`,
     `Operational: ${presetLike.layers.operational}`,
     `Task: ${presetLike.layers.task}`,
     formatLine,
-    DISCLAIMER,
-  ].join("\n");
+  ];
+  if (!presetLike.skipDisclaimer) lines.push(DISCLAIMER);
+  return lines.join("\n");
 }

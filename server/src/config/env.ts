@@ -63,6 +63,12 @@ const envSchema = z.object({
    */
   LOCAL_LLM_ENABLED: z.string().optional(),
   /**
+   * Day31: coding-assistant preset `dev_help`. "0"/"false" → fail-closed in
+   * chat + hidden from GET /api/agents. Default: enabled (absent = on) for
+   * local; set 0 on VPS.
+   */
+  DEV_HELP_ENABLED: z.string().optional(),
+  /**
    * Day30: max concurrent local-branch turns (product semaphore around
    * RAG+generation). Default 1 — matches OLLAMA_NUM_PARALLEL=1 (gate D-1).
    * Second client waits; SSE step `local-queue` shows position.

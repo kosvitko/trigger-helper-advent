@@ -20,6 +20,7 @@ import { createPipelinesService } from "./services/pipelines.js";
 import { createRagAnswerService } from "./services/rag/answer.js";
 import { createReranker } from "./services/rag/rerank.js";
 import { createRewriteQueries } from "./services/rag/rewrite.js";
+import { createProjectSearch } from "./services/rag/project-search.js";
 import { createRagService } from "./services/rag/store.js";
 import { createSchedulerService } from "./services/scheduler.js";
 import { initLocalLlmGate } from "./services/local-llm-gate.js";
@@ -74,6 +75,7 @@ async function main(): Promise<void> {
   // (MCP_SERVERS). Async boot (tools/list, ≤10 s/server) is awaited before
   // listen; external failures degrade instead of crashing (design §3.1/§3.3).
   const mcpRegistry = await createMcpRegistry({ port: env.PORT });
+  const projectSearch = createProjectSearch(env);
   const llmAgent = createLlmAgent(
     deepSeekService,
     env.DEEPSEEK_MODEL,
@@ -82,6 +84,8 @@ async function main(): Promise<void> {
     mcpRegistry,
     // Day25: конвейер дня 24 как библиотека для локальной тулзы rag_ask (D-2).
     ragAnswer,
+    // Day31: dev_help project_search over data/project-rag.
+    projectSearch,
   );
 
   await registerIpRateLimit(app, env);

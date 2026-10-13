@@ -26,23 +26,30 @@ export async function registerAgentRoutes(
   app: FastifyInstance,
   deps: AgentRouteDeps,
 ): Promise<void> {
-  app.get("/api/agents", async () => ({
-    presets: CHAT_PRESETS,
-    caps: {
-      maxInstances: deps.env.MAX_INSTANCES,
-      maxAgentsPerInstance: deps.env.MAX_AGENTS_PER_INSTANCE,
-    },
-    /** Day09: Lab placeholder default (0 = off). */
-    autoCompress: { defaultEvery: deps.env.AGENT_COMPRESS_EVERY },
-    /** Day10 Lab meta. */
-    contextStrategies: [...CONTEXT_STRATEGIES],
-    factKeys: [...FACT_KEYS],
-    memoryLayers: ["short", "working", "long"],
-    historyCaps: AGENT_HISTORY_CAPS,
-    /** Day13: canonical transition map — UI generates goto-buttons from it. */
-    taskTransitions: ALLOWED_TRANSITIONS,
-    /** Day15′ (260919): русские имена этапов/переходов — один источник для UI. */
-    stageLabels: STAGE_LABELS,
-    stageGotoLabels: STAGE_GOTO_LABELS,
-  }));
+  app.get("/api/agents", async () => {
+    const devOff =
+      deps.env.DEV_HELP_ENABLED === "0" ||
+      deps.env.DEV_HELP_ENABLED === "false";
+    return {
+      presets: devOff
+        ? CHAT_PRESETS.filter((p) => p.id !== "dev_help")
+        : CHAT_PRESETS,
+      caps: {
+        maxInstances: deps.env.MAX_INSTANCES,
+        maxAgentsPerInstance: deps.env.MAX_AGENTS_PER_INSTANCE,
+      },
+      /** Day09: Lab placeholder default (0 = off). */
+      autoCompress: { defaultEvery: deps.env.AGENT_COMPRESS_EVERY },
+      /** Day10 Lab meta. */
+      contextStrategies: [...CONTEXT_STRATEGIES],
+      factKeys: [...FACT_KEYS],
+      memoryLayers: ["short", "working", "long"],
+      historyCaps: AGENT_HISTORY_CAPS,
+      /** Day13: canonical transition map — UI generates goto-buttons from it. */
+      taskTransitions: ALLOWED_TRANSITIONS,
+      /** Day15′ (260919): русские имена этапов/переходов — один источник для UI. */
+      stageLabels: STAGE_LABELS,
+      stageGotoLabels: STAGE_GOTO_LABELS,
+    };
+  });
 }

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { loadEnv } from "../config/env.js";
 import { createCorpusReader } from "../services/rag/corpus.js";
+import { createProjectCorpusReader } from "../services/rag/project-corpus.js";
 import { chunkFile, endsInsideBlock, endsInsideSentence, type ChunkDraft, type RagStrategy } from "../services/rag/chunking.js";
 import { createEmbedder, DEFAULT_EMBEDDINGS_MODEL, type Embedder } from "../services/rag/embeddings.js";
 import { resolveFromRoot } from "../services/rag/paths.js";
@@ -145,11 +146,24 @@ function printReport(
   );
 }
 
+function corpusMode(): "points" | "project" {
+  const flag = process.argv.find((a) => a.startsWith("--corpus="));
+  if (flag?.endsWith("=project")) return "project";
+  return "points";
+}
+
 async function main(): Promise<void> {
   const env = loadEnv();
   const model = env.RAG_EMBEDDINGS_MODEL ?? DEFAULT_EMBEDDINGS_MODEL;
-  const indexDir = resolveFromRoot(env.RAG_INDEX_DIR, "data/rag");
+  const projectCorpus = corpusMode() === "project";
+  const indexDir = projectCorpus
+    ? resolveFromRoot(undefined, "data/project-rag")
+    : resolveFromRoot(env.RAG_INDEX_DIR, "data/rag");
   const compareOnly = process.argv.includes("--compare-only");
+
+  if (projectCorpus && compareOnly) {
+    throw new Error("compare-only не поддерживается для --corpus=project");
+  }
 
   if (compareOnly) {
     // Fast path: existing indexes + 10 query embeddings (seconds, ₽0).
@@ -178,15 +192,19 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(`[rag] corpus: reading…`);
-  const files = await createCorpusReader().readAll();
+  console.log(`[rag] corpus: reading… (${projectCorpus ? "project" : "points"})`);
+  const files = projectCorpus
+    ? await createProjectCorpusReader().readAll()
+    : await createCorpusReader().readAll();
   console.log(`[rag] corpus: ${files.length} files, ${files.reduce((a, f) => a + f.text.length, 0)} chars`);
 
   const embedder = await createEmbedder(env, model);
   const indexes = new Map<RagStrategy, RagIndex>();
   const buildStats = {} as Record<RagStrategy, BuildStats>;
 
-  for (const strategy of RAG_STRATEGIES) {
+  const strategies: RagStrategy[] = projectCorpus ? ["structured"] : [...RAG_STRATEGIES];
+
+  for (const strategy of strategies) {
     const t0 = Date.now();
     const drafts = files.flatMap((f) => chunkFile(f, strategy));
     const stats = computeStats(drafts, strategy, Date.now() - t0);
@@ -212,6 +230,11 @@ async function main(): Promise<void> {
     await writeJsonAtomic(path.join(indexDir, `rag-index-${strategy}.json`), index);
     indexes.set(strategy, index);
     console.log(`[rag/${strategy}] index written (${(Date.now() - t0) / 1000}s total)`);
+  }
+
+  if (projectCorpus) {
+    console.log(`[rag/project] index written to ${indexDir} (structured only, probes skipped)`);
+    return;
   }
 
   const { byStrategy, probeRows } = await runProbeComparison(indexes, embedder);

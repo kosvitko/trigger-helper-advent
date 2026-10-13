@@ -3,7 +3,8 @@ import { LlmUsageSchema } from "./ask.js";
 
 /** Day25 + C+: живые пресеты stateless-чата (strict/open умерли со старым UI
  *  и stateful-инстансами — cutover CH-6, старые записи не поддерживаем). */
-export const AgentPresetIdSchema = z.enum(["care", "rag_chat"]);
+/** Day31: `dev_help` — coding assistant preset (project RAG + repo tools). */
+export const AgentPresetIdSchema = z.enum(["care", "rag_chat", "dev_help"]);
 export type AgentPresetId = z.infer<typeof AgentPresetIdSchema>;
 
 export const AgentContextLayersSchema = z.object({
@@ -37,6 +38,8 @@ export const AgentPresetSchema = z.object({
   outputPolicy: AgentOutputPolicySchema,
   defaultModel: z.string().optional(),
   defaultTemperature: z.number().min(0).max(2).default(0.7),
+  /** Day31: omit medical DISCLAIMER from system prompt (coding assistant). */
+  skipDisclaimer: z.boolean().optional(),
 });
 export type AgentPreset = z.infer<typeof AgentPresetSchema>;
 

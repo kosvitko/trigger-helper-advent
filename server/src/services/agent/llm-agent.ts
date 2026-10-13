@@ -25,6 +25,13 @@ import { callMcpTool } from "../mcp-client.js";
 import { toWireToolSpecs, type McpRegistry } from "../mcp-registry.js";
 import { costRubFromUsage } from "../pricing.js";
 import type { RagAnswerService } from "../rag/answer.js";
+import {
+  PROJECT_SEARCH_TOOL,
+  buildProjectSearchToolSpec,
+  runProjectSearch,
+  type ProjectSearcher,
+} from "../rag/project-search.js";
+import { buildRepoToolSpecs, dispatchRepoTool } from "../repo-tools.js";
 import { normalizeRu } from "../rag/text.js";
 import { buildPresetSystemPrompt as buildSystemPrompt } from "@trigger-helper/shared";
 // Day25 (D-2): локальная тулза rag_ask — KISS-модуль без реестра; и память
@@ -168,6 +175,8 @@ export type AgentRunOverrides = {
   /** Day25 (04-F-9): effective-флаг локальной тулзы rag_ask — считает routes
    *  (пресет-дефолт + точечный override), llm-agent пресет-агностичен. */
   ragTool?: boolean;
+  /** Day31: dev_help — project_search + repo_* in-process tools. */
+  devHelp?: boolean;
   /** Day25 (D-4): память задачи мини-чата — инжект-блок после task-блока. */
   chatTaskState?: ChatTaskState | null;
 };
@@ -758,6 +767,8 @@ export class LlmAgent {
     /** Day25: RAG-answer service for the local rag_ask tool (D-2, Q-a —
      *  конвейер дня 24 как библиотека в том же процессе). */
     private readonly ragAnswer?: RagAnswerService,
+    /** Day31: project docs index for dev_help project_search. */
+    private readonly projectSearch?: ProjectSearcher,
   ) {}
 
   /** Effective context window for a model (DEMO_CONTEXT_LIMIT wins). */
@@ -836,11 +847,15 @@ export class LlmAgent {
     // байт-в-байт сегодняшний путь (дни 17–20 не меняются).
     const localRagEnabled =
       overrides.ragTool === true && this.ragAnswer !== undefined;
+    const devHelpEnabled =
+      overrides.devHelp === true && this.projectSearch !== undefined;
     const toolSpecs: ToolSpec[] = localRagEnabled
       ? [buildRagToolSpec()]
-      : overrides.tools && this.mcpRegistry
-        ? toWireToolSpecs(this.mcpRegistry.getToolSpecs())
-        : [];
+      : devHelpEnabled
+        ? [buildProjectSearchToolSpec(), ...buildRepoToolSpecs()]
+        : overrides.tools && this.mcpRegistry
+          ? toWireToolSpecs(this.mcpRegistry.getToolSpecs())
+          : [];
     // Day20 D-7 (security L4): untrusted tool results are data, not
     // instructions — one system line, tools-runs only, last system slot
     // before the user turn; included in the preflight estimate (extraSystem).
@@ -963,6 +978,7 @@ export class LlmAgent {
     let result = await chatGuard(messages, {
       ...baseChatOptions,
       ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
+      ...(devHelpEnabled ? { toolChoice: "required" as const } : {}),
     });
 
     // Day19: multi-round tool loop (day18 D-5 lifted by canon gate) — the
@@ -979,8 +995,8 @@ export class LlmAgent {
     // Day20 D-5: rounds cap 4→8 — a sequential cross-server flow (search →
     // find_related → format_citations → saveToFile) spends one round per
     // dependent call; worst case bounded in the design (≤22 min).
-    const MAX_TOOL_ROUNDS = 8;
-    const MAX_TOOL_CALLS = 8;
+    const MAX_TOOL_ROUNDS = devHelpEnabled ? 5 : 8;
+    const MAX_TOOL_CALLS = devHelpEnabled ? 6 : 8;
     // Day19 D-2: summarize nests an LLM call — the 10 s client default
     // would kill it.
     const TOOL_CALL_TIMEOUT_MS = 90_000;
@@ -988,7 +1004,8 @@ export class LlmAgent {
     const registry = this.mcpRegistry;
     // Day25 (04-F-8): вход цикла — registry ИЛИ включённая локальная тулза;
     // rag-ход без реестра всё равно получает tool-loop.
-    const toolsActive = registry !== undefined || localRagEnabled;
+    const toolsActive =
+      registry !== undefined || localRagEnabled || devHelpEnabled;
     // Day25 (05-M-4): состояние цикла общее и живёт снаружи — ветка (б) рельсы
     // ре-ентерит ТОТ ЖЕ tool-loop (общие dispatch/trace/ragCalledThisTurn),
     // не ad-hoc второй путь.
@@ -1064,13 +1081,22 @@ export class LlmAgent {
           // registry.resolve (коллизий нет: MCP-имена `<server>_<native>`).
           const isLocalRag =
             localRagEnabled && call.function.name === RAG_TOOL_NAME;
-          const resolved = isLocalRag
-            ? undefined
-            : registry?.resolve(call.function.name);
+          const isDevHelpProject =
+            devHelpEnabled &&
+            call.function.name === PROJECT_SEARCH_TOOL &&
+            this.projectSearch !== undefined;
+          const isDevHelpRepo =
+            devHelpEnabled && call.function.name.startsWith("repo_");
+          const resolved =
+            isLocalRag || isDevHelpProject || isDevHelpRepo
+              ? undefined
+              : registry?.resolve(call.function.name);
           // Day19: visible stage in the chat feed of THIS thread (UI-only;
           // excluded from the LLM context via historyToChat label filter).
           if (isLocalRag) {
             onStage?.(stageTextFor("rag", call.function.name, args));
+          } else if (isDevHelpProject || isDevHelpRepo) {
+            onStage?.(stageTextFor("dev", call.function.name, args));
           } else if (resolved) {
             onStage?.(stageTextFor(resolved.serverName, resolved.nativeName, args));
           }
@@ -1110,6 +1136,60 @@ export class LlmAgent {
               role: "tool",
               tool_call_id: call.id,
               content: clipToolThread(outcome.content),
+            });
+            continue;
+          }
+          if (isDevHelpProject && this.projectSearch) {
+            const query =
+              typeof args.query === "string" ? args.query : String(args.query ?? "");
+            emit(
+              "project_search",
+              `Ищу в документации: ${query.slice(0, 80) || "…"}`,
+            );
+            const outcome = await runProjectSearch(query, this.projectSearch);
+            if (outcome.ok) {
+              emitUpdate(
+                "project_search",
+                `Найдено ${outcome.payload.sources.length} источников · косинус ${outcome.payload.topCosine?.toFixed(3) ?? "—"}`,
+              );
+            } else {
+              emitUpdate("project_search", "Ошибка или пустой запрос");
+            }
+            trace.push({
+              name: call.function.name,
+              server: "project",
+              arguments: args,
+              ok: outcome.ok,
+              latencyMs: Date.now() - started,
+              resultClip: clipToolResult(outcome.content),
+              payload: outcome.payload,
+            });
+            followup.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: clipToolThread(outcome.content),
+            });
+            continue;
+          }
+          if (isDevHelpRepo) {
+            emit(call.function.name, "Читаю репозиторий…");
+            const outcome = await dispatchRepoTool(call.function.name, args);
+            emitUpdate(
+              call.function.name,
+              outcome.ok ? "Готово" : "Ошибка",
+            );
+            trace.push({
+              name: call.function.name,
+              server: "repo",
+              arguments: args,
+              ok: outcome.ok,
+              latencyMs: Date.now() - started,
+              resultClip: outcome.clip,
+            });
+            followup.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: clipToolThread(outcome.text),
             });
             continue;
           }
@@ -1354,6 +1434,29 @@ export class LlmAgent {
       }
       // Day25: утечка DSML не должна показываться пользователю (мусор в ленте).
       current = { ...current, reply: stripDsmlReply(current.reply) };
+    } else if (
+      // Day31: тот же DSML-мусор на free deepseek в tool-loop dev_help
+      // (repo_*/project_search) — вне medical-рельсы стрип не срабатывал.
+      enteredLoop &&
+      String(current.reply ?? "").includes("｜｜DSML｜｜")
+    ) {
+      const cleaned = stripDsmlLines(current.reply);
+      if (cleaned.length > 0) {
+        current = { ...current, reply: cleaned };
+      } else {
+        // Тулзы уже отработали — один no-tools followup за нарратив.
+        followup.push({
+          role: "system",
+          content:
+            "Инструменты этого хода уже исполнены. Ответь пользователю обычным текстом " +
+            "по результатам тулзов (пути в обратных кавычках). Синтаксис вызова текстом запрещён.",
+        });
+        const second = await chatGuard(followup, baseChatOptions);
+        usages.push(second.usage);
+        latencySum += second.latency_ms;
+        current = { ...second, reply: stripDsmlReply(second.reply) };
+        railRetried = true;
+      }
     }
 
     if (enteredLoop || railRetried) {
@@ -1736,6 +1839,7 @@ export function createLlmAgent(
   contextLimitOverride = 0,
   mcpRegistry?: McpRegistry,
   ragAnswer?: RagAnswerService,
+  projectSearch?: ProjectSearcher,
 ): LlmAgent {
   return new LlmAgent(
     deepSeek,
@@ -1743,5 +1847,6 @@ export function createLlmAgent(
     contextLimitOverride,
     mcpRegistry,
     ragAnswer,
+    projectSearch,
   );
 }

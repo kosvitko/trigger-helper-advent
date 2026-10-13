@@ -213,6 +213,25 @@ export async function registerChatRoutes(
         return reply.status(400).send(failPayload("schema_invalid", message));
       }
 
+      // Day31: coding assistant — kill-switch (D-31-17).
+      const isDevHelp = body.preset === "dev_help";
+      const devHelpOff =
+        deps.env.DEV_HELP_ENABLED === "0" ||
+        deps.env.DEV_HELP_ENABLED === "false";
+      if (isDevHelp && devHelpOff) {
+        const message =
+          "Кодинг-ассистент отключён на сервере (DEV_HELP_ENABLED=0).";
+        request.log.warn(
+          { code: "dev_help_disabled", clientTurnId: body.clientTurnId },
+          "chat: turn rejected (dev_help_disabled)",
+        );
+        if (wantsSse) {
+          sseFail("schema_invalid", 403, message);
+          return reply;
+        }
+        return reply.status(403).send(failPayload("schema_invalid", message));
+      }
+
       // День 26 (D-26-9): локальная модель — единая вставка ДО allow-list
       // (иначе локальный id был бы отклонён ниже как unknown_model). Ветка —
       // одна ходка без FSM/RAG/истории (D-26-2); allow-list, budget,
@@ -221,6 +240,16 @@ export async function registerChatRoutes(
       // не установленная модель / мало RAM — дуплексный отказ по образцу
       // schema_invalid (sseFail-событие для SSE, реальный 503 для JSON).
       const requested = body.overrides?.model;
+      // Day31 (D-31-14): локальная модель не ведёт tool-loop ассистента.
+      if (isDevHelp && requested && isLocalCatalogId(requested)) {
+        const message =
+          "Кодинг-ассистент работает только с облачной моделью — снимите локальную в чипе.";
+        if (wantsSse) {
+          sseFail("schema_invalid", 400, message);
+          return reply;
+        }
+        return reply.status(400).send(failPayload("schema_invalid", message));
+      }
       if (requested && isLocalCatalogId(requested)) {
         const probe = await probeLocalLlm(deps.env);
         const entry = probe.entries.find((e) => e.id === requested);
@@ -589,22 +618,26 @@ export async function registerChatRoutes(
 
       // SEC-F2 (рельса — только расширение): пресетная рельса rag_chat
       // не отключается клиентским override — семантика agents.ts:511.
+      // Day31: dev_help never uses medical rag_ask rail.
       const effectiveRagTool =
-        body.preset === "rag_chat" || body.overrides?.ragTool === true;
+        !isDevHelp &&
+        (body.preset === "rag_chat" || body.overrides?.ragTool === true);
 
       const runOverrides = {
         model: effectiveModelOverride,
         temperature: body.overrides?.temperature,
-        tools: body.overrides?.tools,
+        tools: isDevHelp ? false : body.overrides?.tools,
         ragTool: effectiveRagTool,
+        devHelp: isDevHelp,
         // Контракт уже оконил диалог (soft-cap 100 == HISTORY_FULL_CAP);
         // "full" держит капы run и контракта согласованными.
         historyMode: "full" as const,
-        memoryFacts: tail.memory?.facts,
-        activeProfile: tail.profile ?? null,
-        taskState: tail.task ?? null,
-        invariants: tail.invariants,
-        chatTaskState: tail.chatTask ?? null,
+        // Day31 (D-31-7): strip care context for coding assistant.
+        memoryFacts: isDevHelp ? undefined : tail.memory?.facts,
+        activeProfile: isDevHelp ? null : (tail.profile ?? null),
+        taskState: isDevHelp ? null : (tail.task ?? null),
+        invariants: isDevHelp ? undefined : tail.invariants,
+        chatTaskState: isDevHelp ? null : (tail.chatTask ?? null),
       };
       const firstResult = await deps.llmAgent.run(
         agent,
