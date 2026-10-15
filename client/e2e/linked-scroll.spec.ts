@@ -81,7 +81,9 @@ test.describe("linked scroll (P2, D-2)", () => {
     await page.waitForTimeout(900);
 
     // — фаза 2: трейс ведёт — блок хода 6 на линию фокуса —
+    // (wheel-событие = живой интент: без него трейс-лидер игнорируется)
     await trace.evaluate((el, sel) => {
+      el.dispatchEvent(new Event("wheel"));
       const t = el.querySelector<HTMLElement>(sel);
       if (t) el.scrollTop += t.getBoundingClientRect().top - el.getBoundingClientRect().top - 56;
     }, `[data-turn-id="${turnId(6)}"]`);
@@ -134,5 +136,115 @@ test.describe("linked scroll (P2, D-2)", () => {
     await expect
       .poll(() => topDelta(turn10, trace), { timeout: 5_000 })
       .toBeLessThanOrEqual(FOCUS_OFFSET + TOL);
+  });
+
+  test("длинный чат: отправка Enter без мыши — хвост остаётся хвостом (репорт 261015)", async ({ page, context }) => {
+    await mockChat(context);
+    await seedLocalData(context, { threads: [scrollThread()] });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/");
+    await expect(page.locator(`.msg.bot[data-turn-id="${turnId(TURNS)}"]`)).toBeVisible({ timeout: 10_000 });
+
+    const feed = page.locator("[data-feed]");
+    const trace = page.locator("[data-trace]");
+    /** 0 = прижат к низу. */
+    const gap = (box: ReturnType<typeof page.locator>) =>
+      box.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+    /** Отступ якоря от верха контейнера. */
+    const topDelta = (anchor: ReturnType<typeof page.locator>, box: ReturnType<typeof page.locator>) =>
+      Promise.all([anchor.boundingBox(), box.boundingBox()]).then(([ab, bb]) =>
+        ab && bb ? ab.y - bb.y : null,
+      );
+
+    // после загрузки длинного треда лента прижата к низу
+    await expect.poll(() => gap(feed), { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+    // отправка клавиатурой (репро: без мыши) — фокус в композере, Enter
+    await page.locator("#composer-input").fill("ls-q15: вопрос хода 15");
+    await page.keyboard.press("Enter");
+
+    // ход 15 в фокусе трейса
+    const turn15 = page.locator(`.trace .turn[data-turn-id="${turnId(15)}"]`);
+    await expect(turn15).toHaveClass(/focused/, { timeout: 10_000 });
+
+    // хвост очереди проехал (typing → ответ) — диалог НЕ отмотан к старому ходу
+    await page.waitForTimeout(1_200);
+    await expect.poll(() => gap(feed), { timeout: 5_000 }).toBeLessThanOrEqual(2);
+
+    // трейс — новый ход у линии фокуса, не «второй сверху старый»
+    await expect
+      .poll(() => topDelta(turn15, trace), { timeout: 5_000 })
+      .toBeGreaterThanOrEqual(FOCUS_OFFSET - TOL);
+    expect(await topDelta(turn15, trace)).toBeLessThanOrEqual(FOCUS_OFFSET + TOL);
+  });
+
+  test("stick-to-bottom: чтение истории не прерывается автоскроллом; возврат к краю возвращает его (Костя 15.10)", async ({ page, context }) => {
+    await mockChat(context);
+    await seedLocalData(context, { threads: [scrollThread()] });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/");
+    await expect(page.locator(`.msg.bot[data-turn-id="${turnId(TURNS)}"]`)).toBeVisible({ timeout: 10_000 });
+
+    const feed = page.locator("[data-feed]");
+    const gap = (box: ReturnType<typeof page.locator>) =>
+      box.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+
+    // — фаза 1: пользователь уехал читать историю (верх ленты) —
+    await feed.evaluate((el) => {
+      el.scrollTop = 0;
+    });
+
+    // ход 15 приходит, а лента стоит на истории — автоскролл не дёргает
+    await page.locator("#composer-input").fill("ls-q15: вопрос хода 15");
+    await page.keyboard.press("Enter");
+    await expect(page.locator(`.msg.bot[data-turn-id="${turnId(15)}"]`)).toBeVisible({ timeout: 10_000 });
+    expect(await feed.evaluate((el) => el.scrollTop)).toBe(0);
+
+    // — фаза 2: возврат к нижнему краю — автоскролл возвращается —
+    await feed.evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+    await page.locator("#composer-input").fill("ls-q16: вопрос хода 16");
+    await page.keyboard.press("Enter");
+
+    const turn16 = page.locator(`.trace .turn[data-turn-id="${turnId(16)}"]`);
+    await expect(turn16).toHaveClass(/focused/, { timeout: 10_000 });
+    await expect.poll(() => gap(feed), { timeout: 5_000 }).toBeLessThanOrEqual(24);
+  });
+
+  test("чтение истории через трейс: отправка и ответ модели не дёргают экраны (репорт 261015-2)", async ({ page, context }) => {
+    await mockChat(context);
+    await seedLocalData(context, { threads: [scrollThread()] });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/");
+    await expect(page.locator(`.msg.bot[data-turn-id="${turnId(TURNS)}"]`)).toBeVisible({ timeout: 10_000 });
+
+    const feed = page.locator("[data-feed]");
+    const trace = page.locator("[data-trace]");
+
+    // пользователь уехал читать историю ЧЕРЕЗ трейс (wheel + скролл)
+    await trace.evaluate((el, sel) => {
+      el.dispatchEvent(new Event("wheel"));
+      const t = el.querySelector<HTMLElement>(sel);
+      if (t) el.scrollTop += t.getBoundingClientRect().top - el.getBoundingClientRect().top - 56;
+    }, `[data-turn-id="${turnId(4)}"]`);
+
+    // лента синхронизировалась за трейсом — мы в истории, не у хвоста
+    const bubble4 = page.locator(`.msg.bot[data-turn-id="${turnId(4)}"]`);
+    await expect.poll(() => feed.evaluate((el) => el.scrollTop), { timeout: 5_000 }).toBeGreaterThan(200);
+    await expect(bubble4).toBeVisible();
+
+    const feedTop = await feed.evaluate((el) => el.scrollTop);
+    const traceTop = await trace.evaluate((el) => el.scrollTop);
+
+    // отправка без мыши + ответ модели — экраны стоят на истории:
+    // без дёрганья вниз-обратно и без автоскролла к хвосту
+    await page.locator("#composer-input").fill("ls-q15: читаю историю");
+    await page.keyboard.press("Enter");
+    await expect(page.locator(`.msg.bot[data-turn-id="${turnId(15)}"]`)).toBeVisible({ timeout: 10_000 });
+    await page.waitForTimeout(900); // хвост: typing ушёл, трейс доложил ход
+
+    expect(Math.abs((await feed.evaluate((el) => el.scrollTop)) - feedTop)).toBeLessThanOrEqual(4);
+    expect(Math.abs((await trace.evaluate((el) => el.scrollTop)) - traceTop)).toBeLessThanOrEqual(40);
   });
 });

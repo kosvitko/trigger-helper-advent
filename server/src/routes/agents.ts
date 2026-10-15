@@ -30,9 +30,21 @@ export async function registerAgentRoutes(
     const devOff =
       deps.env.DEV_HELP_ENABLED === "0" ||
       deps.env.DEV_HELP_ENABLED === "false";
+    // Day33: support — то же правило «выключен env → скрыт из справочника».
+    const supportOff =
+      deps.env.SUPPORT_ENABLED === "0" ||
+      deps.env.SUPPORT_ENABLED === "false";
+    // Day34: files — то же правило.
+    const filesOff =
+      deps.env.FILES_ENABLED === "0" ||
+      deps.env.FILES_ENABLED === "false";
+    const hidden = new Set<string>();
+    if (devOff) hidden.add("dev_help");
+    if (supportOff) hidden.add("support");
+    if (filesOff) hidden.add("files");
     return {
-      presets: devOff
-        ? CHAT_PRESETS.filter((p) => p.id !== "dev_help")
+      presets: hidden.size
+        ? CHAT_PRESETS.filter((p) => !hidden.has(p.id))
         : CHAT_PRESETS,
       caps: {
         maxInstances: deps.env.MAX_INSTANCES,

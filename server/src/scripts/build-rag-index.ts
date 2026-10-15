@@ -3,6 +3,7 @@ import path from "node:path";
 import { loadEnv } from "../config/env.js";
 import { createCorpusReader } from "../services/rag/corpus.js";
 import { createProjectCorpusReader } from "../services/rag/project-corpus.js";
+import { createSupportCorpusReader } from "../services/rag/support-corpus.js";
 import { chunkFile, endsInsideBlock, endsInsideSentence, type ChunkDraft, type RagStrategy } from "../services/rag/chunking.js";
 import { createEmbedder, DEFAULT_EMBEDDINGS_MODEL, type Embedder } from "../services/rag/embeddings.js";
 import { resolveFromRoot } from "../services/rag/paths.js";
@@ -146,23 +147,29 @@ function printReport(
   );
 }
 
-function corpusMode(): "points" | "project" {
+function corpusMode(): "points" | "project" | "support" {
   const flag = process.argv.find((a) => a.startsWith("--corpus="));
   if (flag?.endsWith("=project")) return "project";
+  if (flag?.endsWith("=support")) return "support";
   return "points";
 }
 
 async function main(): Promise<void> {
   const env = loadEnv();
   const model = env.RAG_EMBEDDINGS_MODEL ?? DEFAULT_EMBEDDINGS_MODEL;
-  const projectCorpus = corpusMode() === "project";
+  const mode = corpusMode();
+  const projectCorpus = mode === "project";
+  // Day33: support — пользовательский FAQ-корпус, тот же путь сборки.
+  const supportCorpus = mode === "support";
   const indexDir = projectCorpus
     ? resolveFromRoot(undefined, "data/project-rag")
-    : resolveFromRoot(env.RAG_INDEX_DIR, "data/rag");
+    : supportCorpus
+      ? resolveFromRoot(undefined, "data/support-rag")
+      : resolveFromRoot(env.RAG_INDEX_DIR, "data/rag");
   const compareOnly = process.argv.includes("--compare-only");
 
-  if (projectCorpus && compareOnly) {
-    throw new Error("compare-only не поддерживается для --corpus=project");
+  if ((projectCorpus || supportCorpus) && compareOnly) {
+    throw new Error(`compare-only не поддерживается для --corpus=${mode}`);
   }
 
   if (compareOnly) {
@@ -192,17 +199,19 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(`[rag] corpus: reading… (${projectCorpus ? "project" : "points"})`);
-  const files = projectCorpus
-    ? await createProjectCorpusReader().readAll()
-    : await createCorpusReader().readAll();
+  console.log(`[rag] corpus: reading… (${mode})`);
+  const files = supportCorpus
+    ? await createSupportCorpusReader().readAll()
+    : projectCorpus
+      ? await createProjectCorpusReader().readAll()
+      : await createCorpusReader().readAll();
   console.log(`[rag] corpus: ${files.length} files, ${files.reduce((a, f) => a + f.text.length, 0)} chars`);
 
   const embedder = await createEmbedder(env, model);
   const indexes = new Map<RagStrategy, RagIndex>();
   const buildStats = {} as Record<RagStrategy, BuildStats>;
 
-  const strategies: RagStrategy[] = projectCorpus ? ["structured"] : [...RAG_STRATEGIES];
+  const strategies: RagStrategy[] = projectCorpus || supportCorpus ? ["structured"] : [...RAG_STRATEGIES];
 
   for (const strategy of strategies) {
     const t0 = Date.now();
@@ -232,8 +241,8 @@ async function main(): Promise<void> {
     console.log(`[rag/${strategy}] index written (${(Date.now() - t0) / 1000}s total)`);
   }
 
-  if (projectCorpus) {
-    console.log(`[rag/project] index written to ${indexDir} (structured only, probes skipped)`);
+  if (projectCorpus || supportCorpus) {
+    console.log(`[rag/${mode}] index written to ${indexDir} (structured only, probes skipped)`);
     return;
   }
 

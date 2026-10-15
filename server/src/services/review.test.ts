@@ -3,6 +3,7 @@ import type { LlmUsage } from "@trigger-helper/shared";
 import type { ChatResult, DeepSeekService } from "./deepseek.js";
 import { parseNameStatus } from "../scripts/review-common.js";
 import { createProjectCorpusReader } from "./rag/project-corpus.js";
+import { createSupportCorpusReader } from "./rag/support-corpus.js";
 import type { ProjectSearcher } from "./rag/project-search.js";
 import {
   buildRagQuery,
@@ -196,5 +197,18 @@ describe("project corpus (day32: документация + код)", () => {
     expect(sources.some((s) => s.startsWith("server/src/"))).toBe(true);
     expect(sources.some((s) => s.startsWith("client/src/"))).toBe(true);
     expect(sources.some((s) => s.startsWith("shared/src/schemas/"))).toBe(true);
+  });
+});
+
+describe("support corpus (day33: пользовательский FAQ-корпус)", () => {
+  it("whitelist — ровно 4 пользовательских источника", async () => {
+    const reader = createSupportCorpusReader();
+    const sources = await reader.listSources();
+    expect(sources).toEqual([
+      "docs/product/faq.md",
+      "README.md",
+      "docs/product/disclaimer.md",
+      "docs/product/atlas.md",
+    ]);
   });
 });

@@ -10,6 +10,7 @@
     "test": "vitest run",
     "rag:index": "tsx src/scripts/build-rag-index.ts",
     "rag:index:project": "tsx src/scripts/build-rag-index.ts --corpus=project",
+    "rag:index:support": "tsx src/scripts/build-rag-index.ts --corpus=support",
     "rag:eval": "tsx src/scripts/eval-rag-answer.ts",
     "rag:eval-chat": "tsx src/scripts/eval-rag-chat.ts",
     "rag:tune": "tsx src/scripts/tune-dontknow.ts && tsx src/scripts/tune-rerank.ts",

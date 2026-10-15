@@ -32,7 +32,13 @@ import { LlmUsageSchema } from "./ask.js";
 /** 04-MIN-9: енум пресетов stateless-чата сужен до живых {care, rag_chat}.
  * Легаси AgentPresetIdSchema (strict/open) остаётся широким до cutover
  * (CH-6): старые персист-инстансы ещё проходят per-record safeParse. */
-export const ChatPresetIdSchema = z.enum(["care", "rag_chat", "dev_help"]);
+export const ChatPresetIdSchema = z.enum([
+  "care",
+  "rag_chat",
+  "dev_help",
+  "support",
+  "files",
+]);
 export type ChatPresetId = z.infer<typeof ChatPresetIdSchema>;
 
 export const ChatDialogueRoleSchema = z.enum(["user", "assistant"]);
@@ -124,6 +130,14 @@ export const ChatRequestSchema = z.object({
   token: z.string().min(8).max(128).optional(),
   /** D-6(7)/SEC-F6: безконтентная корреляция логов (анонимный ledger). */
   clientTurnId: z.string().min(8).max(64).optional(),
+  /** 15.10 (Костя): приветствие при первом сообщении за МЕСТНЫЕ сутки —
+   *  время с клиента, не с сервера (localTime «ЧЧ:ММ» + флаг «первое сегодня»). */
+  greet: z
+    .object({
+      localTime: z.string().regex(/^\d{2}:\d{2}$/),
+      firstOfDay: z.boolean(),
+    })
+    .optional(),
 });
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 

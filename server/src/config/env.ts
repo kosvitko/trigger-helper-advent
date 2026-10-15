@@ -69,6 +69,17 @@ const envSchema = z.object({
    */
   DEV_HELP_ENABLED: z.string().optional(),
   /**
+   * Day33: user-support preset `support`. "0"/"false" → fail-closed in
+   * chat + hidden from GET /api/agents. Default: enabled (absent = on),
+   * local and VPS alike — дневной лимит free-asks и IP-rate уже капят расход.
+   */
+  SUPPORT_ENABLED: z.string().optional(),
+  /**
+   * Day34: files-assistant preset `files`. "0"/"false" → fail-closed in
+   * chat + hidden from GET /api/agents. Default: enabled (absent = on).
+   */
+  FILES_ENABLED: z.string().optional(),
+  /**
    * Day30: max concurrent local-branch turns (product semaphore around
    * RAG+generation). Default 1 — matches OLLAMA_NUM_PARALLEL=1 (gate D-1).
    * Second client waits; SSE step `local-queue` shows position.

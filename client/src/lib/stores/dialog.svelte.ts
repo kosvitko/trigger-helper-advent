@@ -18,6 +18,8 @@ import {
   type TaskState,
 } from "@trigger-helper/shared";
 import { sendChat } from "../api-chat";
+// 15.10: приветствие при первом сообщении за местные сутки — флаг с клиента.
+import { isFirstLocalDayTurn, localTimeHm } from "../greeting";
 import {
   applyTurnResult,
   buildContextTail,
@@ -121,6 +123,15 @@ class DialogStore {
     let userMsg: AgentMessage | null = null;
     try {
       const { threadId, preset } = session.requireActiveThread();
+      // 15.10 (Костя): приветствие при первом сообщении за местные сутки —
+      // время с клиента; dev_help (внутренний ассистент) не здоровается.
+      const greet =
+        preset === "dev_help"
+          ? undefined
+          : {
+              localTime: localTimeHm(),
+              firstOfDay: isFirstLocalDayTurn([...this.messages.values()]),
+            };
       userMsg = {
         id: `local-${uid()}`,
         role: "user",
@@ -138,6 +149,7 @@ class DialogStore {
         {
           input,
           preset,
+          greet,
           contextTail: buildContextTail(threadId),
           overrides: settings.chatOverrides(),
           compress: shouldCompressNow(

@@ -1,0 +1,7 @@
+[
+  { "id": 1001, "name": "Анна", "email": "anna@example.com", "plan": "free", "createdAt": "2026-10-09T11:20:00+03:00" },
+  { "id": 1002, "name": "Борис", "email": "boris@example.com", "plan": "free", "createdAt": "2026-10-10T19:45:00+03:00" },
+  { "id": 1003, "name": "Вера", "email": "vera@example.com", "plan": "pro", "createdAt": "2026-09-28T09:10:00+03:00" },
+  { "id": 1004, "name": "Глеб", "email": "gleb@example.com", "plan": "free", "createdAt": "2026-10-11T14:05:00+03:00" },
+  { "id": 1005, "name": "Дарья", "email": "darya@example.com", "plan": "pro", "createdAt": "2026-09-30T16:30:00+03:00" }
+]

@@ -376,8 +376,15 @@ describe("04-MAJ-2 — SSE-контракт ошибок", () => {
 });
 
 describe("05-MINOR-3 — пресет-таблица shared", () => {
-  it("ровно два пресета: care и rag_chat, оба валидны", () => {
-    expect(CHAT_PRESETS.map((p) => p.id)).toEqual(["care", "rag_chat"]);
+  // Day31 + Day33 + Day34: dev_help, support и files вошли в таблицу.
+  it("пять пресетов: care, rag_chat, dev_help, support, files — все валидны", () => {
+    expect(CHAT_PRESETS.map((p) => p.id)).toEqual([
+      "care",
+      "rag_chat",
+      "dev_help",
+      "support",
+      "files",
+    ]);
     for (const preset of CHAT_PRESETS) {
       expect(AgentPresetSchema.parse(preset)).toEqual(preset);
     }

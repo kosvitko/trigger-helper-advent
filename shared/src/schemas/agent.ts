@@ -3,8 +3,16 @@ import { LlmUsageSchema } from "./ask.js";
 
 /** Day25 + C+: живые пресеты stateless-чата (strict/open умерли со старым UI
  *  и stateful-инстансами — cutover CH-6, старые записи не поддерживаем). */
-/** Day31: `dev_help` — coding assistant preset (project RAG + repo tools). */
-export const AgentPresetIdSchema = z.enum(["care", "rag_chat", "dev_help"]);
+/** Day31: `dev_help` — coding assistant preset (project RAG + repo tools).
+ * Day33: `support` — user-support assistant preset (FAQ RAG + crm tools).
+ * Day34: `files` — files assistant preset (repo search/read + files_write). */
+export const AgentPresetIdSchema = z.enum([
+  "care",
+  "rag_chat",
+  "dev_help",
+  "support",
+  "files",
+]);
 export type AgentPresetId = z.infer<typeof AgentPresetIdSchema>;
 
 export const AgentContextLayersSchema = z.object({

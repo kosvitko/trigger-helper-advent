@@ -21,6 +21,8 @@ import { createRagAnswerService } from "./services/rag/answer.js";
 import { createReranker } from "./services/rag/rerank.js";
 import { createRewriteQueries } from "./services/rag/rewrite.js";
 import { createProjectSearch } from "./services/rag/project-search.js";
+import { createSupportSearch } from "./services/rag/support-search.js";
+import { createCrmStore } from "./services/crm-tools.js";
 import { createRagService } from "./services/rag/store.js";
 import { createSchedulerService } from "./services/scheduler.js";
 import { initLocalLlmGate } from "./services/local-llm-gate.js";
@@ -76,6 +78,9 @@ async function main(): Promise<void> {
   // listen; external failures degrade instead of crashing (design §3.1/§3.3).
   const mcpRegistry = await createMcpRegistry({ port: env.PORT });
   const projectSearch = createProjectSearch(env);
+  // Day33: support preset — FAQ-индекс (support_search) + read-only тикет-стор.
+  const supportSearch = createSupportSearch(env);
+  const crmStore = createCrmStore();
   const llmAgent = createLlmAgent(
     deepSeekService,
     env.DEEPSEEK_MODEL,
@@ -86,6 +91,9 @@ async function main(): Promise<void> {
     ragAnswer,
     // Day31: dev_help project_search over data/project-rag.
     projectSearch,
+    // Day33: support_search over data/support-rag + crm_* tools.
+    supportSearch,
+    crmStore,
   );
 
   await registerIpRateLimit(app, env);

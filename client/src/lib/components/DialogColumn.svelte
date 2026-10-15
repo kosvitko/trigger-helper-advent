@@ -37,12 +37,28 @@
   });
 
   // Автоскролл ленты вниз (новое сообщение/typing — единственные триггеры).
+  // Stick-to-bottom (Костя, 15.10): дёргаем вниз только ленту, стоявшую у
+  // нижнего края — уехавшего читать историю автоскролл не отматывает;
+  // возврат к краю возвращает автоскролл. Смена треда — всегда к хвосту.
   let feedEl = $state<HTMLDivElement | null>(null);
+  let stick = true;
+  const STICK_EPS_PX = 24;
+
+  function onFeedScroll(): void {
+    if (!feedEl) return;
+    stick = feedEl.scrollTop + feedEl.clientHeight >= feedEl.scrollHeight - STICK_EPS_PX;
+  }
+
+  $effect(() => {
+    void session.activeThreadId; // новый тред — лента стартует у хвоста
+    stick = true;
+  });
+
   $effect(() => {
     void dialog.messages.size;
     void dialog.typing;
     void dialog.queueStatus;
-    if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
+    if (feedEl && stick) feedEl.scrollTop = feedEl.scrollHeight;
   });
 </script>
 
@@ -51,7 +67,7 @@
   <span class="meta">{threadLabel} · {currentModel}</span>
 </div>
 
-<div class="feed" bind:this={feedEl} data-feed>
+<div class="feed" bind:this={feedEl} onscroll={onFeedScroll} data-feed>
   {#if messages.length === 0 && !dialog.typing}
     <div class="empty">Опишите, что болит — найдём точки и подскажем самопомощь</div>
   {/if}

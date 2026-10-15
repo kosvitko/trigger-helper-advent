@@ -248,4 +248,84 @@ describe("POST /api/chat — серверный HTTP/SSE-контракт", () =
     expect(llmAgent.run).not.toHaveBeenCalled();
     await app.close();
   });
+
+  // Day33: kill-switch пресета support (SUPPORT_ENABLED, unset=on).
+  it("support при SUPPORT_ENABLED=0 → 403 fail-closed", async () => {
+    const { app, llmAgent } = await buildChatTestApp({
+      env: { SUPPORT_ENABLED: "0" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat",
+      headers: { "content-type": "application/json" },
+      payload: {
+        input: "тикет 17: почему закончились вопросы?",
+        preset: "support",
+        contextTail: { summaries: [], dialogue: [] },
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toMatch(/Поддержка отключена/);
+    expect(llmAgent.run).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("support при unset SUPPORT_ENABLED → 200 (default on)", async () => {
+    const { app } = await buildChatTestApp({
+      run: async () => mockRunOk("ответ поддержки"),
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat",
+      headers: { "content-type": "application/json" },
+      payload: {
+        input: "тикет 17: почему закончились вопросы?",
+        preset: "support",
+        contextTail: { summaries: [], dialogue: [] },
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().reply).toBe("ответ поддержки");
+    await app.close();
+  });
+
+  // Day34: kill-switch пресета files (FILES_ENABLED, unset=on).
+  it("files при FILES_ENABLED=0 → 403 fail-closed", async () => {
+    const { app, llmAgent } = await buildChatTestApp({
+      env: { FILES_ENABLED: "0" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat",
+      headers: { "content-type": "application/json" },
+      payload: {
+        input: "найди все места использования dispatchRepoTool",
+        preset: "files",
+        contextTail: { summaries: [], dialogue: [] },
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toMatch(/Файловый ассистент отключён/);
+    expect(llmAgent.run).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("files при unset FILES_ENABLED → 200 (default on)", async () => {
+    const { app } = await buildChatTestApp({
+      run: async () => mockRunOk("ответ файлового ассистента"),
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat",
+      headers: { "content-type": "application/json" },
+      payload: {
+        input: "найди все места использования dispatchRepoTool",
+        preset: "files",
+        contextTail: { summaries: [], dialogue: [] },
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().reply).toBe("ответ файлового ассистента");
+    await app.close();
+  });
 });

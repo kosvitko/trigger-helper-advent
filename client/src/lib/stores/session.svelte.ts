@@ -101,6 +101,20 @@ class SessionStore {
     this.setActive(thread.id);
   }
 
+  /** Day33: поддержка пользователей (пресет support). */
+  createSupportChat(): void {
+    const thread = createThread(uid(), "support", "Поддержка");
+    this.reloadThreads();
+    this.setActive(thread.id);
+  }
+
+  /** Day34: файловый ассистент (пресет files). */
+  createFilesChat(): void {
+    const thread = createThread(uid(), "files", "Файлы");
+    this.reloadThreads();
+    this.setActive(thread.id);
+  }
+
   /** Выбор чата из шапки. */
   selectThread(id: string): void {
     if (!this.threads.some((t) => t.id === id)) return;

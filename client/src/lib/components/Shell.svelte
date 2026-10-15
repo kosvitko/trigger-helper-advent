@@ -112,6 +112,24 @@
   >
     + Ассистент
   </button>
+  <!-- Day33: поддержка пользователей (пресет support). -->
+  <button
+    id="new-support-chat"
+    class="icon-btn"
+    title="Поддержка пользователей Trigger Helper"
+    onclick={() => session.createSupportChat()}
+  >
+    + Поддержка
+  </button>
+  <!-- Day34: файловый ассистент (пресет files). -->
+  <button
+    id="new-files-chat"
+    class="icon-btn"
+    title="Файловый ассистент: поиск по коду + артефакты в workspace"
+    onclick={() => session.createFilesChat()}
+  >
+    + Файлы
+  </button>
   <button
     class="icon-btn"
     class:active-btn={showSettings}

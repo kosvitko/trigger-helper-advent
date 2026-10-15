@@ -360,8 +360,11 @@ function toolCallsSteps(ctx: AgentRunContext, turnId: string): ToolSteps {
   const calls = ctx.tool?.calls ?? [];
   calls.forEach((call, i) => {
     // Day31: project_search payload matches rag SourcesChip shape (labels/sources).
+    // Day33: support_search — тот же rag-вид карточки.
     if (
-      (call.name === "rag_ask" || call.name === "project_search") &&
+      (call.name === "rag_ask" ||
+        call.name === "project_search" ||
+        call.name === "support_search") &&
       isRagPayload(call.payload)
     ) {
       const p = call.payload;
@@ -404,11 +407,14 @@ function toolCallsSteps(ctx: AgentRunContext, turnId: string): ToolSteps {
       });
       // Средние стадии пайплайна (Костя 041004: «больше шагов внутри хода»):
       // рерайт → поиск → черновик → верификация — подшаги rag_ask (не project_search).
-      if (call.name === "project_search") {
+      if (call.name === "project_search" || call.name === "support_search") {
         steps.push({
           id: `${turnId}:projfind:${i}`,
           kind: "rag",
-          title: "· поиск по докам проекта",
+          title:
+            call.name === "support_search"
+              ? "· поиск по FAQ поддержки"
+              : "· поиск по докам проекта",
           data: {
             sub:
               `фрагментов ${data.sourcesCount}` +

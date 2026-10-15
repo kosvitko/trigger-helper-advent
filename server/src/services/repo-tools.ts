@@ -14,12 +14,26 @@ const execFileAsync = promisify(execFile);
 export const REPO_GIT_BRANCH_TOOL = "repo_git_branch";
 export const REPO_LIST_FILES_TOOL = "repo_list_files";
 export const REPO_READ_FILE_TOOL = "repo_read_file";
+export const REPO_SEARCH_TOOL = "repo_search";
+
+/** Day34: workspace артефактов files_write (files-tools.ts) — единственное
+ * читаемое исключение внутри var/. */
+export const FILES_WORKSPACE_REL = "var/files-workspace";
 
 const READ_OUTPUT_CHAR_CAP = 3_800;
 const CLIP_CHAR_CAP = 4_000;
 
 const ALLOWED_READ_EXT = new Set([".ts", ".svelte", ".md", ".json"]);
-const ALLOWED_LIST_ROOTS = ["server/src", "client/src", "shared/src"] as const;
+const ALLOWED_LIST_ROOTS = [
+  "server/src",
+  "client/src",
+  "shared/src",
+  // Day34: workspace артефактов — листается/читается как обычный корень.
+  FILES_WORKSPACE_REL,
+] as const;
+
+const SEARCH_MATCH_CAP = 50;
+const SEARCH_QUERY_MAX = 200;
 
 export type RepoToolDispatchResult = {
   ok: boolean;
@@ -42,6 +56,10 @@ function isDenied(rel: string): boolean {
   const parts = norm.split("/");
   for (const part of parts) {
     if (part.startsWith(".env")) return true;
+  }
+  // Day34: workspace артефактов — единственное исключение запрета var/.
+  if (norm === FILES_WORKSPACE_REL || norm.startsWith(`${FILES_WORKSPACE_REL}/`)) {
+    return false;
   }
   if (norm === "var" || norm.startsWith("var/")) return true;
   if (norm.startsWith("node_modules/") || norm.includes("/node_modules/")) return true;
@@ -153,11 +171,35 @@ export function buildRepoReadFileToolSpec(): ToolSpec {
   };
 }
 
+export function buildRepoSearchToolSpec(): ToolSpec {
+  return {
+    type: "function",
+    function: {
+      name: REPO_SEARCH_TOOL,
+      description:
+        "Поиск подстроки (без учёта регистра) по файлам репозитория из allowlist " +
+        "(server/src, client/src, shared/src, var/files-workspace, README.md, docs/STACK.md); " +
+        "возвращает «path:line: строка» — сам выбирай, что прочитать подробнее.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Искомая подстрока (идентификатор, имя тулзы, слово).",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  };
+}
+
 export function buildRepoToolSpecs(): ToolSpec[] {
   return [
     buildRepoGitBranchToolSpec(),
     buildRepoListFilesToolSpec(),
     buildRepoReadFileToolSpec(),
+    buildRepoSearchToolSpec(),
   ];
 }
 
@@ -254,6 +296,72 @@ async function runReadFile(args: Record<string, unknown>): Promise<RepoToolDispa
   return { ok: true, text, clip: clipText(text) };
 }
 
+async function collectSearchFiles(): Promise<string[]> {
+  const files: string[] = [];
+  for (const root of ALLOWED_LIST_ROOTS) {
+    const stack: string[] = [root];
+    while (stack.length) {
+      const dir = stack.pop() as string;
+      let entries;
+      try {
+        entries = await fs.readdir(path.join(repoRoot, dir), { withFileTypes: true });
+      } catch {
+        continue; // корня может не быть (workspace до первой записи)
+      }
+      for (const entry of entries) {
+        const rel = `${dir}/${entry.name}`;
+        if (isDenied(rel)) continue;
+        if (entry.isDirectory()) {
+          stack.push(rel);
+          continue;
+        }
+        if (ALLOWED_READ_EXT.has(path.posix.extname(entry.name).toLowerCase())) {
+          files.push(rel);
+        }
+      }
+    }
+  }
+  files.push("README.md", "docs/STACK.md");
+  return files.sort();
+}
+
+async function runSearch(args: Record<string, unknown>): Promise<RepoToolDispatchResult> {
+  const rawQuery = typeof args.query === "string" ? args.query.trim() : "";
+  if (!rawQuery) {
+    const text = "repo_search: query обязателен";
+    return { ok: false, text, clip: clipText(text) };
+  }
+  if (rawQuery.length > SEARCH_QUERY_MAX) {
+    const text = `repo_search: query длиннее ${SEARCH_QUERY_MAX} симв`;
+    return { ok: false, text, clip: clipText(text) };
+  }
+  const needle = rawQuery.toLowerCase();
+  const files = await collectSearchFiles();
+  const lines: string[] = [];
+  let matches = 0;
+  for (const rel of files) {
+    let raw: string;
+    try {
+      raw = await fs.readFile(path.join(repoRoot, rel), "utf8");
+    } catch {
+      continue;
+    }
+    const rows = raw.replace(/\r\n?/g, "\n").split("\n");
+    for (let i = 0; i < rows.length; i++) {
+      if (!rows[i].toLowerCase().includes(needle)) continue;
+      matches++;
+      if (lines.length < SEARCH_MATCH_CAP) {
+        lines.push(`${rel}:${i + 1}: ${rows[i].trim().slice(0, 160)}`);
+      }
+    }
+  }
+  const header =
+    `найдено ${matches} совпадений по «${rawQuery}»` +
+    (matches > SEARCH_MATCH_CAP ? ` (показаны первые ${SEARCH_MATCH_CAP})` : "");
+  const text = lines.length ? `${header}\n${lines.join("\n")}` : header;
+  return { ok: true, text, clip: clipText(text) };
+}
+
 export async function dispatchRepoTool(
   name: string,
   args: Record<string, unknown>,
@@ -265,6 +373,8 @@ export async function dispatchRepoTool(
       return runListFiles(args);
     case REPO_READ_FILE_TOOL:
       return runReadFile(args);
+    case REPO_SEARCH_TOOL:
+      return runSearch(args);
     default: {
       const text = `unknown repo tool: ${name}`;
       return { ok: false, text, clip: clipText(text) };

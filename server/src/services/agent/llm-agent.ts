@@ -31,7 +31,21 @@ import {
   runProjectSearch,
   type ProjectSearcher,
 } from "../rag/project-search.js";
-import { buildRepoToolSpecs, dispatchRepoTool } from "../repo-tools.js";
+import { buildFilesWriteToolSpec, dispatchFilesTool, FILES_WRITE_TOOL } from "../files-tools.js";
+import {
+  buildRepoListFilesToolSpec,
+  buildRepoReadFileToolSpec,
+  buildRepoSearchToolSpec,
+  buildRepoToolSpecs,
+  dispatchRepoTool,
+} from "../repo-tools.js";
+import {
+  SUPPORT_SEARCH_TOOL,
+  buildSupportSearchToolSpec,
+  runSupportSearch,
+  type SupportSearcher,
+} from "../rag/support-search.js";
+import { buildCrmToolSpecs, dispatchCrmTool, type CrmStore } from "../crm-tools.js";
 import { normalizeRu } from "../rag/text.js";
 import { buildPresetSystemPrompt as buildSystemPrompt } from "@trigger-helper/shared";
 // Day25 (D-2): локальная тулза rag_ask — KISS-модуль без реестра; и память
@@ -177,9 +191,32 @@ export type AgentRunOverrides = {
   ragTool?: boolean;
   /** Day31: dev_help — project_search + repo_* in-process tools. */
   devHelp?: boolean;
+  /** Day33: support — support_search + crm_* in-process tools. */
+  support?: boolean;
+  /** Day34: files — repo_search/list/read + files_write in-process tools. */
+  files?: boolean;
   /** Day25 (D-4): память задачи мини-чата — инжект-блок после task-блока. */
   chatTaskState?: ChatTaskState | null;
+  /** 15.10 (Костя): приветствие — первое сообщение за местные сутки клиента
+   *  (время с клиента, не с сервера); инжект в хвост instructions пресета. */
+  greet?: { localTime: string; firstOfDay: boolean };
 };
+
+/** 15.10 (Костя): строка приветствия в системный промпт — первое сообщение
+ *  пользователя за его местные сутки. Время — клиентское; ночью — нейтральное
+ *  приветствие вместо времени суток. */
+export function greetSystemLine(greet: {
+  localTime: string;
+  firstOfDay: boolean;
+}): string {
+  if (!greet.firstOfDay) return "";
+  return (
+    `ПРИВЕТСТВИЕ: сейчас у пользователя примерно ${greet.localTime} его местного времени ` +
+    `(утро ~5–11, день ~12–16, вечер ~17–23, ночь ~0–4) и это его первое сообщение за сегодняшние сутки. ` +
+    `Начни ответ коротким приветствием по времени — «Доброе утро» / «Добрый день» / «Добрый вечер», ` +
+    `ночью — нейтральное «Здравствуйте» или «Приветствую» — и сразу переходи к сути, без расспросов о делах. `
+  );
+}
 
 /** Request-size facts for the day08 UI (estimate; API usage is the fact). */
 export type AgentRunTokens = {
@@ -769,6 +806,10 @@ export class LlmAgent {
     private readonly ragAnswer?: RagAnswerService,
     /** Day31: project docs index for dev_help project_search. */
     private readonly projectSearch?: ProjectSearcher,
+    /** Day33: support FAQ index for support_search (support preset). */
+    private readonly supportSearch?: SupportSearcher,
+    /** Day33: read-only ticket store for crm_* tools (support preset). */
+    private readonly crmStore?: CrmStore,
   ) {}
 
   /** Effective context window for a model (DEMO_CONTEXT_LIMIT wins). */
@@ -805,7 +846,12 @@ export class LlmAgent {
       overrides.temperature ?? agent.defaultTemperature ?? 0.7;
     const historyMode: AgentHistoryMode = overrides.historyMode ?? "tail";
 
-    const systemPrompt = buildSystemPrompt(agent);
+    // 15.10: приветствие (первое сообщение за местные сутки) — в хвост
+    // instructions пресета; compress-путь своим промптом не здоровается.
+    const greetLine = overrides.greet ? greetSystemLine(overrides.greet) : "";
+    const systemPrompt = buildSystemPrompt(
+      greetLine ? { ...agent, instructions: `${agent.instructions} ${greetLine}` } : agent,
+    );
     const historyChat = historyToChat(history, historyMode);
     const memoryBuilt = overrides.memoryFacts?.length
       ? buildMemoryInject(overrides.memoryFacts)
@@ -849,13 +895,29 @@ export class LlmAgent {
       overrides.ragTool === true && this.ragAnswer !== undefined;
     const devHelpEnabled =
       overrides.devHelp === true && this.projectSearch !== undefined;
+    // Day33: support — оба ингедиента (FAQ-индекс + тикет-стор) обязательны.
+    const supportEnabled =
+      overrides.support === true &&
+      this.supportSearch !== undefined &&
+      this.crmStore !== undefined;
+    // Day34: files — тулзы самодостаточны (repo_* + files_write).
+    const filesEnabled = overrides.files === true;
     const toolSpecs: ToolSpec[] = localRagEnabled
       ? [buildRagToolSpec()]
       : devHelpEnabled
         ? [buildProjectSearchToolSpec(), ...buildRepoToolSpecs()]
-        : overrides.tools && this.mcpRegistry
-          ? toWireToolSpecs(this.mcpRegistry.getToolSpecs())
-          : [];
+        : supportEnabled
+          ? [buildSupportSearchToolSpec(), ...buildCrmToolSpecs()]
+          : filesEnabled
+            ? [
+                buildRepoSearchToolSpec(),
+                buildRepoListFilesToolSpec(),
+                buildRepoReadFileToolSpec(),
+                buildFilesWriteToolSpec(),
+              ]
+            : overrides.tools && this.mcpRegistry
+              ? toWireToolSpecs(this.mcpRegistry.getToolSpecs())
+              : [];
     // Day20 D-7 (security L4): untrusted tool results are data, not
     // instructions — one system line, tools-runs only, last system slot
     // before the user turn; included in the preflight estimate (extraSystem).
@@ -978,7 +1040,9 @@ export class LlmAgent {
     let result = await chatGuard(messages, {
       ...baseChatOptions,
       ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
-      ...(devHelpEnabled ? { toolChoice: "required" as const } : {}),
+      ...(devHelpEnabled || supportEnabled || filesEnabled
+        ? { toolChoice: "required" as const }
+        : {}),
     });
 
     // Day19: multi-round tool loop (day18 D-5 lifted by canon gate) — the
@@ -995,8 +1059,19 @@ export class LlmAgent {
     // Day20 D-5: rounds cap 4→8 — a sequential cross-server flow (search →
     // find_related → format_citations → saveToFile) spends one round per
     // dependent call; worst case bounded in the design (≤22 min).
-    const MAX_TOOL_ROUNDS = devHelpEnabled ? 5 : 8;
-    const MAX_TOOL_CALLS = devHelpEnabled ? 6 : 8;
+    // Day34: файловый флоу длиннее Q&A (search + чтение всех попаданий +
+    // запись + возможная правка) — капы как у общего MCP-пути; dev_help/
+    // support остаются 5/6.
+    const MAX_TOOL_ROUNDS = filesEnabled
+      ? 8
+      : devHelpEnabled || supportEnabled
+        ? 5
+        : 8;
+    const MAX_TOOL_CALLS = filesEnabled
+      ? 10
+      : devHelpEnabled || supportEnabled
+        ? 6
+        : 8;
     // Day19 D-2: summarize nests an LLM call — the 10 s client default
     // would kill it.
     const TOOL_CALL_TIMEOUT_MS = 90_000;
@@ -1005,7 +1080,11 @@ export class LlmAgent {
     // Day25 (04-F-8): вход цикла — registry ИЛИ включённая локальная тулза;
     // rag-ход без реестра всё равно получает tool-loop.
     const toolsActive =
-      registry !== undefined || localRagEnabled || devHelpEnabled;
+      registry !== undefined ||
+      localRagEnabled ||
+      devHelpEnabled ||
+      supportEnabled ||
+      filesEnabled;
     // Day25 (05-M-4): состояние цикла общее и живёт снаружи — ветка (б) рельсы
     // ре-ентерит ТОТ ЖЕ tool-loop (общие dispatch/trace/ragCalledThisTurn),
     // не ad-hoc второй путь.
@@ -1087,8 +1166,25 @@ export class LlmAgent {
             this.projectSearch !== undefined;
           const isDevHelpRepo =
             devHelpEnabled && call.function.name.startsWith("repo_");
+          const isSupportSearch =
+            supportEnabled &&
+            call.function.name === SUPPORT_SEARCH_TOOL &&
+            this.supportSearch !== undefined;
+          const isSupportCrm =
+            supportEnabled && call.function.name.startsWith("crm_");
+          // Day34: files — repo_* (поиск/чтение) + files_write.
+          const isFilesRepo =
+            filesEnabled && call.function.name.startsWith("repo_");
+          const isFilesWrite =
+            filesEnabled && call.function.name === FILES_WRITE_TOOL;
           const resolved =
-            isLocalRag || isDevHelpProject || isDevHelpRepo
+            isLocalRag ||
+            isDevHelpProject ||
+            isDevHelpRepo ||
+            isSupportSearch ||
+            isSupportCrm ||
+            isFilesRepo ||
+            isFilesWrite
               ? undefined
               : registry?.resolve(call.function.name);
           // Day19: visible stage in the chat feed of THIS thread (UI-only;
@@ -1097,6 +1193,10 @@ export class LlmAgent {
             onStage?.(stageTextFor("rag", call.function.name, args));
           } else if (isDevHelpProject || isDevHelpRepo) {
             onStage?.(stageTextFor("dev", call.function.name, args));
+          } else if (isSupportSearch || isSupportCrm) {
+            onStage?.(stageTextFor("support", call.function.name, args));
+          } else if (isFilesRepo || isFilesWrite) {
+            onStage?.(stageTextFor("files", call.function.name, args));
           } else if (resolved) {
             onStage?.(stageTextFor(resolved.serverName, resolved.nativeName, args));
           }
@@ -1171,8 +1271,13 @@ export class LlmAgent {
             });
             continue;
           }
-          if (isDevHelpRepo) {
-            emit(call.function.name, "Читаю репозиторий…");
+          if (isDevHelpRepo || isFilesRepo) {
+            emit(
+              call.function.name,
+              call.function.name === "repo_search"
+                ? "Ищу по файлам репозитория…"
+                : "Читаю репозиторий…",
+            );
             const outcome = await dispatchRepoTool(call.function.name, args);
             emitUpdate(
               call.function.name,
@@ -1181,6 +1286,86 @@ export class LlmAgent {
             trace.push({
               name: call.function.name,
               server: "repo",
+              arguments: args,
+              ok: outcome.ok,
+              latencyMs: Date.now() - started,
+              resultClip: outcome.clip,
+            });
+            followup.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: clipToolThread(outcome.text),
+            });
+            continue;
+          }
+          if (isSupportSearch && this.supportSearch) {
+            const query =
+              typeof args.query === "string" ? args.query : String(args.query ?? "");
+            emit(
+              "support_search",
+              `Ищу в базе поддержки: ${query.slice(0, 80) || "…"}`,
+            );
+            const outcome = await runSupportSearch(query, this.supportSearch);
+            if (outcome.ok) {
+              emitUpdate(
+                "support_search",
+                `Найдено ${outcome.payload.sources.length} источников · косинус ${outcome.payload.topCosine?.toFixed(3) ?? "—"}`,
+              );
+            } else {
+              emitUpdate("support_search", "Ошибка или пустой запрос");
+            }
+            trace.push({
+              name: call.function.name,
+              server: "support",
+              arguments: args,
+              ok: outcome.ok,
+              latencyMs: Date.now() - started,
+              resultClip: clipToolResult(outcome.content),
+              payload: outcome.payload,
+            });
+            followup.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: clipToolThread(outcome.content),
+            });
+            continue;
+          }
+          if (isSupportCrm && this.crmStore) {
+            emit(call.function.name, "Смотрю обращение…");
+            const outcome = await dispatchCrmTool(
+              call.function.name,
+              args,
+              this.crmStore,
+            );
+            emitUpdate(
+              call.function.name,
+              outcome.ok ? "Готово" : "Ошибка",
+            );
+            trace.push({
+              name: call.function.name,
+              server: "crm",
+              arguments: args,
+              ok: outcome.ok,
+              latencyMs: Date.now() - started,
+              resultClip: outcome.clip,
+            });
+            followup.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: clipToolThread(outcome.text),
+            });
+            continue;
+          }
+          if (isFilesWrite) {
+            emit(
+              "files_write",
+              `Записываю файл: ${typeof args.path === "string" ? args.path : "…"}`,
+            );
+            const outcome = await dispatchFilesTool(call.function.name, args);
+            emitUpdate("files_write", outcome.ok ? "Готово" : "Ошибка");
+            trace.push({
+              name: call.function.name,
+              server: "files",
               arguments: args,
               ok: outcome.ok,
               latencyMs: Date.now() - started,
@@ -1840,6 +2025,8 @@ export function createLlmAgent(
   mcpRegistry?: McpRegistry,
   ragAnswer?: RagAnswerService,
   projectSearch?: ProjectSearcher,
+  supportSearch?: SupportSearcher,
+  crmStore?: CrmStore,
 ): LlmAgent {
   return new LlmAgent(
     deepSeek,
@@ -1848,5 +2035,7 @@ export function createLlmAgent(
     mcpRegistry,
     ragAnswer,
     projectSearch,
+    supportSearch,
+    crmStore,
   );
 }

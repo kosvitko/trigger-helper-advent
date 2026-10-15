@@ -232,6 +232,44 @@ export async function registerChatRoutes(
         return reply.status(403).send(failPayload("schema_invalid", message));
       }
 
+      // Day33: support assistant — kill-switch (SUPPORT_ENABLED, unset=on).
+      const isSupport = body.preset === "support";
+      const supportOff =
+        deps.env.SUPPORT_ENABLED === "0" ||
+        deps.env.SUPPORT_ENABLED === "false";
+      if (isSupport && supportOff) {
+        const message =
+          "Поддержка отключена на сервере (SUPPORT_ENABLED=0).";
+        request.log.warn(
+          { code: "support_disabled", clientTurnId: body.clientTurnId },
+          "chat: turn rejected (support_disabled)",
+        );
+        if (wantsSse) {
+          sseFail("schema_invalid", 403, message);
+          return reply;
+        }
+        return reply.status(403).send(failPayload("schema_invalid", message));
+      }
+
+      // Day34: files assistant — kill-switch (FILES_ENABLED, unset=on).
+      const isFiles = body.preset === "files";
+      const filesOff =
+        deps.env.FILES_ENABLED === "0" ||
+        deps.env.FILES_ENABLED === "false";
+      if (isFiles && filesOff) {
+        const message =
+          "Файловый ассистент отключён на сервере (FILES_ENABLED=0).";
+        request.log.warn(
+          { code: "files_disabled", clientTurnId: body.clientTurnId },
+          "chat: turn rejected (files_disabled)",
+        );
+        if (wantsSse) {
+          sseFail("schema_invalid", 403, message);
+          return reply;
+        }
+        return reply.status(403).send(failPayload("schema_invalid", message));
+      }
+
       // День 26 (D-26-9): локальная модель — единая вставка ДО allow-list
       // (иначе локальный id был бы отклонён ниже как unknown_model). Ветка —
       // одна ходка без FSM/RAG/истории (D-26-2); allow-list, budget,
@@ -241,9 +279,17 @@ export async function registerChatRoutes(
       // schema_invalid (sseFail-событие для SSE, реальный 503 для JSON).
       const requested = body.overrides?.model;
       // Day31 (D-31-14): локальная модель не ведёт tool-loop ассистента.
-      if (isDevHelp && requested && isLocalCatalogId(requested)) {
-        const message =
-          "Кодинг-ассистент работает только с облачной моделью — снимите локальную в чипе.";
+      // Day33: поддержка — тот же запрет (crm_*/support_search — облачный ход).
+      if (
+        (isDevHelp || isSupport || isFiles) &&
+        requested &&
+        isLocalCatalogId(requested)
+      ) {
+        const message = isSupport
+          ? "Поддержка работает только с облачной моделью — снимите локальную в чипе."
+          : isFiles
+            ? "Файловый ассистент работает только с облачной моделью — снимите локальную в чипе."
+            : "Кодинг-ассистент работает только с облачной моделью — снимите локальную в чипе.";
         if (wantsSse) {
           sseFail("schema_invalid", 400, message);
           return reply;
@@ -618,26 +664,42 @@ export async function registerChatRoutes(
 
       // SEC-F2 (рельса — только расширение): пресетная рельса rag_chat
       // не отключается клиентским override — семантика agents.ts:511.
-      // Day31: dev_help never uses medical rag_ask rail.
+      // Day31/Day33: dev_help и support не используют мед-rельсу rag_ask.
       const effectiveRagTool =
         !isDevHelp &&
+        !isSupport &&
+        !isFiles &&
         (body.preset === "rag_chat" || body.overrides?.ragTool === true);
 
       const runOverrides = {
         model: effectiveModelOverride,
         temperature: body.overrides?.temperature,
-        tools: isDevHelp ? false : body.overrides?.tools,
+        tools:
+          isDevHelp || isSupport || isFiles
+            ? false
+            : body.overrides?.tools,
         ragTool: effectiveRagTool,
         devHelp: isDevHelp,
+        // Day33: support — support_search + crm_* in-process tools.
+        support: isSupport,
+        // Day34: files — repo_search/list/read + files_write in-process tools.
+        files: isFiles,
         // Контракт уже оконил диалог (soft-cap 100 == HISTORY_FULL_CAP);
         // "full" держит капы run и контракта согласованными.
         historyMode: "full" as const,
-        // Day31 (D-31-7): strip care context for coding assistant.
-        memoryFacts: isDevHelp ? undefined : tail.memory?.facts,
-        activeProfile: isDevHelp ? null : (tail.profile ?? null),
-        taskState: isDevHelp ? null : (tail.task ?? null),
-        invariants: isDevHelp ? undefined : tail.invariants,
-        chatTaskState: isDevHelp ? null : (tail.chatTask ?? null),
+        // Day31 (D-31-7) / Day33 / Day34: strip care context for tool presets.
+        memoryFacts:
+          isDevHelp || isSupport || isFiles ? undefined : tail.memory?.facts,
+        activeProfile:
+          isDevHelp || isSupport || isFiles ? null : (tail.profile ?? null),
+        taskState: isDevHelp || isSupport || isFiles ? null : (tail.task ?? null),
+        invariants:
+          isDevHelp || isSupport || isFiles ? undefined : tail.invariants,
+        chatTaskState:
+          isDevHelp || isSupport || isFiles ? null : (tail.chatTask ?? null),
+        // 15.10: приветствие — первое сообщение за местные сутки клиента
+        // (время с клиента; сервер только проксирует в промпт).
+        greet: body.greet,
       };
       const firstResult = await deps.llmAgent.run(
         agent,

@@ -7,10 +7,18 @@
   let text = $state("");
 
   const isDev = $derived(session.activeThread?.preset === "dev_help");
+  // Day33: placeholder треда поддержки.
+  const isSupport = $derived(session.activeThread?.preset === "support");
+  // Day34: placeholder файлового ассистента.
+  const isFiles = $derived(session.activeThread?.preset === "files");
   const placeholder = $derived(
     isDev
       ? "Спроси про код: /help где RAG? · ветка · файл"
-      : "Опишите, что болит — найдём точки и подскажем самопомощь",
+      : isSupport
+        ? "Опишите проблему или спросите о продукте — можно с номером тикета: „тикет 17: почему закончились вопросы?”"
+        : isFiles
+          ? "Задача целью: „найди все места использования … и сохрани справочник в файл”"
+          : "Опишите, что болит — найдём точки и подскажем самопомощь",
   );
 
   async function send(): Promise<void> {
