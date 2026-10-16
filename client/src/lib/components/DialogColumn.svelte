@@ -58,6 +58,12 @@
     void dialog.messages.size;
     void dialog.typing;
     void dialog.queueStatus;
+    // Cust-fix 261015-7 (репорт Кости по д34): своя отправка — не «чтение
+    // истории»: последняя реплика от юзера ⇒ всегда к хвосту (своё сообщение
+    // и typing должны быть в кадре). Ответ ассистента растёт дальше — только
+    // если юзер не уехал читать выше (правило stick-to-bottom д33 не трогаем).
+    const last = dialog.ordered.at(-1);
+    if (last && last.role === "user") stick = true;
     if (feedEl && stick) feedEl.scrollTop = feedEl.scrollHeight;
   });
 </script>

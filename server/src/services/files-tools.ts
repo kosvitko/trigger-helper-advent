@@ -246,3 +246,28 @@ export async function dispatchFilesTool(
   const text = `unknown files tool: ${name}`;
   return { ok: false, text, clip: clipText(text) };
 }
+
+// --- Day34 cust-fix (Костя 15.10): рельс «просил артефакт — ход записал» ---
+// Реплики юзера естественные, без имён тулзов/файлов; сервер сам понимает
+// намерение и (в llm-agent) дожимает ход до files_write одним re-prompt'ом.
+
+/** Глаголы «сделай артефакт». */
+const FILES_RAIL_SAVE_VERBS =
+  /(сохрани|запиши|выгрузи|оформи|сгенерируй|перепиши|перезапиши|пересобери|собери)/i;
+/** Глаголы изменения (требуют цель/анафору рядом). */
+const FILES_RAIL_MUTATE_VERBS =
+  /(обнови|дополни|добавь|убери|доработай|расширь|поменяй|исправь)/i;
+/** Цель/анафора артефакта: «добавь туда раздел», «обнови справочник». */
+const FILES_RAIL_TARGETS =
+  /(файл|справочник|readme|changelog|документ|раздел|заметк|информац|туда|него|в н[её]м)/i;
+/** Чтение без изменения — запись не требуется. */
+const FILES_RAIL_READ_INTENT =
+  /(покажи|выведи|прочитай|что записано|что в файле|содержимое|открой)/i;
+
+/** true — реплика пользователя просит создать/обновить файловый артефакт. */
+export function filesRailWantsArtifact(input: string): boolean {
+  const text = input.toLowerCase();
+  if (FILES_RAIL_READ_INTENT.test(text)) return false;
+  if (FILES_RAIL_SAVE_VERBS.test(text)) return true;
+  return FILES_RAIL_MUTATE_VERBS.test(text) && FILES_RAIL_TARGETS.test(text);
+}

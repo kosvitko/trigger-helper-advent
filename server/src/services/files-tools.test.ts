@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { repoRoot } from "./rag/paths.js";
 import { FILES_WORKSPACE_REL } from "./repo-tools.js";
-import { FILES_WRITE_TOOL, dispatchFilesTool } from "./files-tools.js";
+import { FILES_WRITE_TOOL, dispatchFilesTool, filesRailWantsArtifact } from "./files-tools.js";
 
 const ws = path.join(repoRoot, ...FILES_WORKSPACE_REL.split("/"));
 
@@ -82,5 +82,24 @@ describe("files-tools Day34: jail + diff", () => {
     const r = await dispatchFilesTool("files_x", {});
     expect(r.ok).toBe(false);
     expect(r.text).toMatch(/unknown files tool/);
+  });
+});
+
+describe("files-rail: естественные реплики (cust-fix 15.10)", () => {
+  it("просьбу артефакта узнаёт без имён тулзов и файлов", () => {
+    expect(filesRailWantsArtifact("Оформи это справочником и сохрани.")).toBe(true);
+    expect(filesRailWantsArtifact("Добавь туда информацию про jail и allowlist.")).toBe(true);
+    expect(filesRailWantsArtifact("Пересобери справочник начисто.")).toBe(true);
+    expect(filesRailWantsArtifact("найди все места вызова и сохрани справочник")).toBe(true);
+  });
+
+  it("чистый поиск и чтение запись не требуют", () => {
+    expect(
+      filesRailWantsArtifact(
+        "Собираюсь рефакторить тулзы репозитория. Найди, где используется dispatchRepoTool.",
+      ),
+    ).toBe(false);
+    expect(filesRailWantsArtifact("Покажи, что записано в файле")).toBe(false);
+    expect(filesRailWantsArtifact("что такое атлас триггерных точек?")).toBe(false);
   });
 });

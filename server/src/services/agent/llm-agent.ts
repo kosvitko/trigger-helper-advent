@@ -31,7 +31,7 @@ import {
   runProjectSearch,
   type ProjectSearcher,
 } from "../rag/project-search.js";
-import { buildFilesWriteToolSpec, dispatchFilesTool, FILES_WRITE_TOOL } from "../files-tools.js";
+import { buildFilesWriteToolSpec, dispatchFilesTool, FILES_WRITE_TOOL, filesRailWantsArtifact } from "../files-tools.js";
 import {
   buildRepoListFilesToolSpec,
   buildRepoReadFileToolSpec,
@@ -1094,9 +1094,12 @@ export class LlmAgent {
     let latencySum = 0;
     const executed = new Set<string>();
     // Day25 (D-3): трекинг рельсы «RAG каждый ход + источники всегда».
-    let ragCalledThisTurn = false;
-    let ragLastLabels: string[] = [];
-    let ragSourcesExempt = false; // dontKnow | ok:false ⇒ источники exempt
+  let ragCalledThisTurn = false;
+  let ragLastLabels: string[] = [];
+  let ragSourcesExempt = false; // dontKnow | ok:false ⇒ источники exempt
+  // Day34 cust-fix (Костя 15.10): трекинг files_write для рельсы «просил
+  // артефакт — ход записал» (аналог ragCalledThisTurn).
+  let filesWriteCalledThisTurn = false;
 
     const processToolChain = async (entry: ChatResult): Promise<ChatResult> => {
       let current = entry;
@@ -1362,6 +1365,7 @@ export class LlmAgent {
               `Записываю файл: ${typeof args.path === "string" ? args.path : "…"}`,
             );
             const outcome = await dispatchFilesTool(call.function.name, args);
+            filesWriteCalledThisTurn = true;
             emitUpdate("files_write", outcome.ok ? "Готово" : "Ошибка");
             trace.push({
               name: call.function.name,
@@ -1619,6 +1623,45 @@ export class LlmAgent {
       }
       // Day25: утечка DSML не должна показываться пользователю (мусор в ленте).
       current = { ...current, reply: stripDsmlReply(current.reply) };
+    } else if (
+      // Day34 cust-fix (Костя 15.10): рельса «просил артефакт — ход записал» —
+      // реплика юзера естественная (без имён тулзов), намерение распознаёт
+      // filesRailWantsArtifact; один re-prompt по образцу rag-рельсы, повторное
+      // нарушение — честный meta.railViolated. Ловит и «файл уже есть, норм».
+      filesEnabled &&
+      filesRailWantsArtifact(input) &&
+      !filesWriteCalledThisTurn
+    ) {
+      const preRetry = current;
+      try {
+        if (!enteredLoop) {
+          usages.push(current.usage);
+          latencySum += current.latency_ms;
+        }
+        followup.push({
+          role: "system",
+          content:
+            "Пользователь просит файловый артефакт (создать или обновить). Заверши ход вызовом files_write с ПОЛНЫМ содержимым. " +
+            "Существующий артефакт сначала перечитай repo_read_file и сверь с целью — ответ «файл уже есть» без записи недопустим. " +
+            "В тексте ответа — что изменилось и diff; вызовы инструментов делай только штатным function-calling.",
+        });
+        const retry = await chatGuard(followup, {
+          ...baseChatOptions,
+          ...(toolSpecs.length > 0
+            ? { tools: toolSpecs, toolChoice: "required" as const }
+            : {}),
+        });
+        usages.push(retry.usage);
+        latencySum += retry.latency_ms;
+        current = await processToolChain(retry);
+        railRetried = true;
+        if (!filesWriteCalledThisTurn) railViolated = true;
+      } catch {
+        // Сбой rail-повтора не валит ход (паттерн Day27-fix): первый ответ
+        // остаётся, meta.railViolated=true.
+        railViolated = true;
+        if (!String(current.reply ?? "").trim()) current = preRetry;
+      }
     } else if (
       // Day31: тот же DSML-мусор на free deepseek в tool-loop dev_help
       // (repo_*/project_search) — вне medical-рельсы стрип не срабатывал.
